@@ -25,7 +25,9 @@ static func build_all(
 			)
 			if polygon.is_empty():
 				break
-		polygons[cell_id] = polygon
+		polygons[cell_id] = SpatialGeometry.remove_consecutive_duplicate_points(
+			polygon, epsilon
+		)
 	return polygons
 
 
@@ -36,13 +38,15 @@ static func _clip_to_nearer_half_plane(
 		return polygon
 	var result := PackedVector2Array()
 	var normal := other - center
-	var threshold := (other.length_squared() - center.length_squared()) * 0.5
+	# Centering the half-plane at the midpoint avoids subtracting two large
+	# squared world coordinates, which is unstable with Vector2 float precision.
+	var midpoint := (center + other) * 0.5
 	var previous := polygon[polygon.size() - 1]
-	var previous_value := previous.dot(normal) - threshold
+	var previous_value := (previous - midpoint).dot(normal)
 	var previous_inside := previous_value <= epsilon
 
 	for current in polygon:
-		var current_value := current.dot(normal) - threshold
+		var current_value := (current - midpoint).dot(normal)
 		var current_inside := current_value <= epsilon
 		if current_inside != previous_inside:
 			var denominator := previous_value - current_value

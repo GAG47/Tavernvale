@@ -2,6 +2,10 @@ extends SceneTree
 
 var _failures := PackedStringArray()
 var _default_generation_ms := 0
+var _default_cell_count := 0
+var _default_vertex_count := 0
+var _default_edge_count := 0
+var _default_border_cell_count := 0
 
 
 func _init() -> void:
@@ -9,18 +13,33 @@ func _init() -> void:
 
 
 func _run_all() -> void:
-	_test_determinism()
-	_test_different_seed()
-	_test_no_jitter()
-	_test_default_jitter()
-	_test_neighbor_symmetry_and_connectivity()
-	_test_area_coverage_and_polygons()
-	_test_serialization_regeneration()
-	_test_default_scale_and_validator()
+	var test_groups: Array[Callable] = [
+		_test_determinism,
+		_test_different_seed,
+		_test_no_jitter,
+		_test_default_jitter,
+		_test_neighbor_symmetry_and_connectivity,
+		_test_area_coverage_and_polygons,
+		_test_serialization_regeneration,
+		_test_border_neighbors_use_shared_edges,
+		_test_vertex_dedup_and_shared_edge_ids,
+		_test_default_scale_and_validator,
+	]
+	for test_group in test_groups:
+		test_group.call()
 
 	if _failures.is_empty():
-		print("Spatial Skeleton: all 9 test groups passed")
-		print("Default graph: 10000 cells generated in %d ms" % _default_generation_ms)
+		print("Spatial Skeleton: all %d test groups passed" % test_groups.size())
+		print(
+			"Default graph: cells=%d vertices=%d edges=%d border_cells=%d generated=%d ms"
+			% [
+				_default_cell_count,
+				_default_vertex_count,
+				_default_edge_count,
+				_default_border_cell_count,
+				_default_generation_ms,
+			]
+		)
 		quit(0)
 	else:
 		for failure in _failures:
@@ -150,6 +169,79 @@ func _test_serialization_regeneration() -> void:
 		_expect(_graphs_equal(first, second), "config data round-trip must regenerate the same graph")
 
 
+func _test_border_neighbors_use_shared_edges() -> void:
+	var graph := SpatialGenerator.generate(SpatialConfig.new(2025, 420.0, 240.0, 840, 0.9))
+	_expect(graph != null, "border-topology graph should generate")
+	if graph == null:
+		return
+	var shared_pairs := _build_shared_cell_pair_lookup(graph)
+	var candidate_pairs := _build_delaunay_cell_pair_lookup(graph)
+	var border_count := 0
+	for cell_id in graph.cell_count():
+		if not graph.cell_is_border[cell_id]:
+			continue
+		border_count += 1
+		for neighbor_id in graph.cell_neighbors[cell_id]:
+			var pair := SpatialGeometry.canonical_edge(cell_id, neighbor_id)
+			_expect(
+				shared_pairs.has(pair),
+				"border neighbor %d <-> %d must share a non-degenerate Voronoi edge"
+				% [cell_id, neighbor_id]
+			)
+			_expect(
+				candidate_pairs.has(pair),
+				"final border neighbor %d <-> %d should originate from Delaunay candidates"
+				% [cell_id, neighbor_id]
+			)
+	_expect(border_count > 0, "border-topology graph should contain border cells")
+	var rejected_candidate_count := 0
+	for pair in candidate_pairs:
+		if not shared_pairs.has(pair):
+			rejected_candidate_count += 1
+	_expect(
+		rejected_candidate_count > 0,
+		"bounded graph should reject Delaunay candidate edges without a shared Voronoi edge"
+	)
+
+
+func _test_vertex_dedup_and_shared_edge_ids() -> void:
+	var graph := SpatialGenerator.generate(SpatialConfig.new(3030, 320.0, 320.0, 1024, 0.9))
+	_expect(graph != null, "vertex-topology graph should generate")
+	if graph == null:
+		return
+	var shared_pairs := _build_shared_cell_pair_lookup(graph)
+	for edge_id in graph.edge_count():
+		var edge: Vector2i = graph.edge_vertex_ids[edge_id]
+		var cells: PackedInt32Array = graph.edge_cells[edge_id]
+		_expect(cells.size() == 1 or cells.size() == 2, "edge %d must have one or two cells" % edge_id)
+		if cells.size() == 2:
+			_expect(
+				_cell_uses_edge(graph, cells[0], edge) and _cell_uses_edge(graph, cells[1], edge),
+				"shared edge %d endpoints must use identical vertex IDs in both cells" % edge_id
+			)
+	for vertex_id in graph.vertex_cells.size():
+		var cells_seen := {}
+		var cells: PackedInt32Array = graph.vertex_cells[vertex_id]
+		for cell_id in cells:
+			_expect(not cells_seen.has(cell_id), "vertex %d must not repeat cell %d" % [vertex_id, cell_id])
+			cells_seen[cell_id] = true
+			_expect(
+				graph.cell_vertex_ids[cell_id].has(vertex_id),
+				"vertex %d -> cell %d must be reciprocal" % [vertex_id, cell_id]
+			)
+		for first_index in cells.size():
+			for second_index in range(first_index + 1, cells.size()):
+				var first_cell := cells[first_index]
+				var second_cell := cells[second_index]
+				var pair := SpatialGeometry.canonical_edge(first_cell, second_cell)
+				if not shared_pairs.has(pair):
+					_expect(
+						not graph.cell_neighbors[first_cell].has(second_cell),
+						"cells %d and %d sharing only vertex %d must not be neighbors"
+						% [first_cell, second_cell, vertex_id]
+					)
+
+
 func _test_default_scale_and_validator() -> void:
 	var started := Time.get_ticks_msec()
 	var graph := SpatialGenerator.generate(SpatialConfig.new())
@@ -157,6 +249,11 @@ func _test_default_scale_and_validator() -> void:
 	_expect(graph != null, "default 10k graph should generate")
 	if graph == null:
 		return
+	_default_cell_count = graph.cell_count()
+	_default_vertex_count = graph.vertex_positions.size()
+	_default_edge_count = graph.edge_count()
+	for is_border in graph.cell_is_border:
+		_default_border_cell_count += int(bool(is_border))
 	_expect(graph.cell_count() == 10000, "default config should produce 10000 cells")
 	var errors := SpatialValidator.validate(graph)
 	_expect(errors.is_empty(), "default 10k graph validator should pass: " + "; ".join(errors))
@@ -173,8 +270,49 @@ func _graphs_equal(first: SpatialGraph, second: SpatialGraph) -> bool:
 		and first.cell_is_border == second.cell_is_border
 		and first.vertex_positions == second.vertex_positions
 		and first.vertex_cells == second.vertex_cells
+		and first.edge_vertex_ids == second.edge_vertex_ids
+		and first.edge_cells == second.edge_cells
 		and first.delaunay_triangles == second.delaunay_triangles
 	)
+
+
+func _build_shared_cell_pair_lookup(graph: SpatialGraph) -> Dictionary:
+	var result := {}
+	var edge_epsilon := SpatialGeometry.edge_epsilon_for_size(
+		graph.config.world_width, graph.config.world_height
+	)
+	for edge_id in graph.edge_count():
+		var cells: PackedInt32Array = graph.edge_cells[edge_id]
+		var edge: Vector2i = graph.edge_vertex_ids[edge_id]
+		if (
+			cells.size() == 2
+			and graph.vertex_positions[edge.x].distance_to(graph.vertex_positions[edge.y])
+				> edge_epsilon
+		):
+			result[SpatialGeometry.canonical_edge(cells[0], cells[1])] = edge_id
+	return result
+
+
+func _build_delaunay_cell_pair_lookup(graph: SpatialGraph) -> Dictionary:
+	var result := {}
+	for triangle_start in range(0, graph.delaunay_triangles.size(), 3):
+		var first := graph.delaunay_triangles[triangle_start]
+		var second := graph.delaunay_triangles[triangle_start + 1]
+		var third := graph.delaunay_triangles[triangle_start + 2]
+		result[SpatialGeometry.canonical_edge(first, second)] = true
+		result[SpatialGeometry.canonical_edge(second, third)] = true
+		result[SpatialGeometry.canonical_edge(third, first)] = true
+	return result
+
+
+func _cell_uses_edge(graph: SpatialGraph, cell_id: int, edge: Vector2i) -> bool:
+	var vertex_ids: PackedInt32Array = graph.cell_vertex_ids[cell_id]
+	for vertex_index in vertex_ids.size():
+		if SpatialGeometry.canonical_edge(
+			vertex_ids[vertex_index], vertex_ids[(vertex_index + 1) % vertex_ids.size()]
+		) == edge:
+			return true
+	return false
 
 
 func _expect(condition: bool, message: String) -> void:

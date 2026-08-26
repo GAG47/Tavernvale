@@ -73,6 +73,7 @@ func _draw() -> void:
 		_draw_seed_points()
 	if show_ids:
 		_draw_cell_ids()
+	_draw_selected_shared_edges()
 	_draw_information()
 
 
@@ -100,15 +101,44 @@ func _draw_border_cells() -> void:
 
 
 func _draw_delaunay_edges() -> void:
-	for cell_id in graph.cell_count():
-		for neighbor_id in graph.cell_neighbors[cell_id]:
-			if neighbor_id > cell_id:
-				draw_line(
-					_to_screen(graph.cell_centers[cell_id]),
-					_to_screen(graph.cell_centers[neighbor_id]),
-					Color(0.35, 0.8, 0.95, 0.45),
-					1.0
-				)
+	var drawn_edges := {}
+	for triangle_start in range(0, graph.delaunay_triangles.size(), 3):
+		var first := graph.delaunay_triangles[triangle_start]
+		var second := graph.delaunay_triangles[triangle_start + 1]
+		var third := graph.delaunay_triangles[triangle_start + 2]
+		_draw_delaunay_edge(first, second, drawn_edges)
+		_draw_delaunay_edge(second, third, drawn_edges)
+		_draw_delaunay_edge(third, first, drawn_edges)
+
+
+func _draw_delaunay_edge(first_cell: int, second_cell: int, drawn_edges: Dictionary) -> void:
+	var edge := SpatialGeometry.canonical_edge(first_cell, second_cell)
+	if drawn_edges.has(edge):
+		return
+	drawn_edges[edge] = true
+	draw_line(
+		_to_screen(graph.cell_centers[first_cell]),
+		_to_screen(graph.cell_centers[second_cell]),
+		Color(0.35, 0.8, 0.95, 0.45),
+		1.0
+	)
+
+
+func _draw_selected_shared_edges() -> void:
+	if selected_cell_id < 0:
+		return
+	for edge_id in graph.edge_count():
+		var cells: PackedInt32Array = graph.edge_cells[edge_id]
+		if cells.size() != 2 or not cells.has(selected_cell_id):
+			continue
+		var edge: Vector2i = graph.edge_vertex_ids[edge_id]
+		draw_line(
+			_to_screen(graph.vertex_positions[edge.x]),
+			_to_screen(graph.vertex_positions[edge.y]),
+			Color(0.2, 1.0, 0.45),
+			4.0,
+			true
+		)
 
 
 func _draw_seed_points() -> void:
@@ -141,6 +171,7 @@ func _draw_information() -> void:
 		lines.append("Area: %.5f" % graph.cell_areas[selected_cell_id])
 		lines.append("Neighbor Count: %d" % graph.cell_neighbors[selected_cell_id].size())
 		lines.append("Neighbors: %s" % str(graph.cell_neighbors[selected_cell_id]))
+		lines.append("Shared Edges: %d" % _selected_shared_edge_count())
 		lines.append("is_border: %s" % str(bool(graph.cell_is_border[selected_cell_id])))
 	var font := ThemeDB.fallback_font
 	for line_index in lines.size():
@@ -198,3 +229,11 @@ func _closed_screen_polygon(polygon: PackedVector2Array) -> PackedVector2Array:
 
 func _on_off(value: bool) -> String:
 	return "ON" if value else "OFF"
+
+
+func _selected_shared_edge_count() -> int:
+	var count := 0
+	for edge_cells in graph.edge_cells:
+		if edge_cells.size() == 2 and edge_cells.has(selected_cell_id):
+			count += 1
+	return count
