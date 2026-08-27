@@ -1,61 +1,91 @@
 class_name DelaunayGraph
 extends RefCounted
 
+## Builds identity-based topology directly from Godot's Delaunay triangle
+## indices. Coordinates never participate in deciding triangle or edge IDs.
 
-static func build(points: PackedVector2Array) -> Dictionary:
-	var triangles := Geometry2D.triangulate_delaunay(points)
-	var neighbor_sets: Array = []
-	neighbor_sets.resize(points.size())
-	for cell_id in points.size():
-		neighbor_sets[cell_id] = {}
+
+static func build(points: PackedVector2Array, real_point_count: int = -1) -> Dictionary:
+	var triangles := _triangulate_with_stable_ids(points, real_point_count)
+	var point_triangles: Array = []
+	point_triangles.resize(points.size())
+	for point_id in points.size():
+		point_triangles[point_id] = PackedInt32Array()
+	var edge_triangles := {}
+	var errors := PackedStringArray()
+
+	if triangles.size() % 3 != 0:
+		errors.append("Delaunay triangle index count is not divisible by three")
+		return {
+			"triangles": triangles,
+			"point_triangles": point_triangles,
+			"edge_triangles": edge_triangles,
+			"errors": errors,
+		}
 
 	for triangle_start in range(0, triangles.size(), 3):
-		_add_edge(neighbor_sets, triangles[triangle_start], triangles[triangle_start + 1])
-		_add_edge(neighbor_sets, triangles[triangle_start + 1], triangles[triangle_start + 2])
-		_add_edge(neighbor_sets, triangles[triangle_start + 2], triangles[triangle_start])
-	# Geometry2D correctly returns no triangles for fewer than three points and
-	# for a fully collinear lattice. The one-dimensional Delaunay graph is the
-	# sorted chain of adjacent sites, which also gives the required half-planes.
-	if triangles.is_empty() and points.size() > 1:
-		_add_collinear_edges(points, neighbor_sets)
+		var triangle_id: int = triangle_start / 3
+		var first := triangles[triangle_start]
+		var second := triangles[triangle_start + 1]
+		var third := triangles[triangle_start + 2]
+		if first == second or second == third or third == first:
+			errors.append(
+				"Delaunay triangle %d repeats point IDs [%d, %d, %d]"
+				% [triangle_id, first, second, third]
+			)
+			continue
+		point_triangles[first].append(triangle_id)
+		point_triangles[second].append(triangle_id)
+		point_triangles[third].append(triangle_id)
+		_add_edge_triangle(edge_triangles, first, second, triangle_id)
+		_add_edge_triangle(edge_triangles, second, third, triangle_id)
+		_add_edge_triangle(edge_triangles, third, first, triangle_id)
 
-	var neighbors: Array = []
-	neighbors.resize(points.size())
-	for cell_id in points.size():
-		var ids: Array = neighbor_sets[cell_id].keys()
-		ids.sort()
-		neighbors[cell_id] = PackedInt32Array(ids)
-	return {"triangles": triangles, "neighbors": neighbors}
-
-
-static func _add_edge(neighbor_sets: Array, first: int, second: int) -> void:
-	if first == second:
-		return
-	neighbor_sets[first][second] = true
-	neighbor_sets[second][first] = true
-
-
-static func _add_collinear_edges(points: PackedVector2Array, neighbor_sets: Array) -> void:
-	var ids: Array = range(points.size())
-	var use_x := _coordinate_span(points, true) >= _coordinate_span(points, false)
-	ids.sort_custom(func(first: int, second: int) -> bool:
-		var first_primary: float = points[first].x if use_x else points[first].y
-		var second_primary: float = points[second].x if use_x else points[second].y
-		if not is_equal_approx(first_primary, second_primary):
-			return first_primary < second_primary
-		var first_secondary: float = points[first].y if use_x else points[first].x
-		var second_secondary: float = points[second].y if use_x else points[second].x
-		return first_secondary < second_secondary
-	)
-	for index in ids.size() - 1:
-		_add_edge(neighbor_sets, ids[index], ids[index + 1])
+	for edge in edge_triangles:
+		if edge_triangles[edge].size() > 2:
+			errors.append(
+				"Delaunay edge %s is nonmanifold with triangle IDs %s"
+				% [edge, edge_triangles[edge]]
+			)
+	return {
+		"triangles": triangles,
+		"point_triangles": point_triangles,
+		"edge_triangles": edge_triangles,
+		"errors": errors,
+	}
 
 
-static func _coordinate_span(points: PackedVector2Array, use_x: bool) -> float:
-	var minimum := INF
-	var maximum := -INF
-	for point in points:
-		var value: float = point.x if use_x else point.y
-		minimum = minf(minimum, value)
-		maximum = maxf(maximum, value)
-	return maximum - minimum
+static func _triangulate_with_stable_ids(
+		points: PackedVector2Array, real_point_count: int
+) -> PackedInt32Array:
+	if real_point_count <= 0 or real_point_count >= points.size():
+		return Geometry2D.triangulate_delaunay(points)
+
+	# Geometry2D is insertion-order sensitive for large float32 point sets with
+	# a collinear outer ring. Feeding that ring first avoids rare overlapping
+	# triangle artifacts. The mapping immediately restores the required stable
+	# IDs (real points first, boundary points appended), and triangulation still
+	# happens once over the complete point set.
+	var engine_points := PackedVector2Array()
+	var stable_ids := PackedInt32Array()
+	for stable_id in range(real_point_count, points.size()):
+		engine_points.append(points[stable_id])
+		stable_ids.append(stable_id)
+	for stable_id in real_point_count:
+		engine_points.append(points[stable_id])
+		stable_ids.append(stable_id)
+	var engine_triangles := Geometry2D.triangulate_delaunay(engine_points)
+	var triangles := PackedInt32Array()
+	triangles.resize(engine_triangles.size())
+	for index in engine_triangles.size():
+		triangles[index] = stable_ids[engine_triangles[index]]
+	return triangles
+
+
+static func _add_edge_triangle(
+		edge_triangles: Dictionary, first: int, second: int, triangle_id: int
+) -> void:
+	var edge := SpatialGeometry.canonical_edge(first, second)
+	if not edge_triangles.has(edge):
+		edge_triangles[edge] = PackedInt32Array()
+	edge_triangles[edge].append(triangle_id)

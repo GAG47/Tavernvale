@@ -2,9 +2,9 @@ class_name WorldCompositionDebugView
 extends Node2D
 
 @export var seed: int = 1
-@export var world_width: float = 1400.0
-@export var world_height: float = 700.0
-@export var target_cell_count: int = 10000
+@export var world_width: float = 2000.0
+@export var world_height: float = 1000.0
+@export var target_cell_count: int = 20000
 @export_range(0.0, 1.0) var jitter: float = 0.9
 @export_enum("continents", "pangea", "archipelago", "mediterranean", "old_world", "shattered") var template_id := "continents"
 
@@ -68,7 +68,36 @@ func _draw() -> void:
 			3.0,
 			true
 		)
+	_mask_outside_logical_world()
 	_draw_information()
+
+
+func _mask_outside_logical_world() -> void:
+	var viewport_size := get_viewport_rect().size
+	var map_rect := Rect2(
+		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
+	)
+	var background := Color(0.035, 0.04, 0.055)
+	draw_rect(Rect2(Vector2.ZERO, Vector2(map_rect.position.x, viewport_size.y)), background)
+	draw_rect(
+		Rect2(
+			Vector2(map_rect.end.x, 0.0),
+			Vector2(maxf(0.0, viewport_size.x - map_rect.end.x), viewport_size.y)
+		),
+		background
+	)
+	draw_rect(
+		Rect2(Vector2(map_rect.position.x, 0.0), Vector2(map_rect.size.x, map_rect.position.y)),
+		background
+	)
+	draw_rect(
+		Rect2(
+			Vector2(map_rect.position.x, map_rect.end.y),
+			Vector2(map_rect.size.x, maxf(0.0, viewport_size.y - map_rect.end.y))
+		),
+		background
+	)
+	draw_rect(map_rect, Color(0.72, 0.76, 0.82), false, 2.0)
 
 
 func _value_color(value: int) -> Color:
@@ -109,7 +138,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := "V: continuous grayscale" if show_continuous_value else "L: >=20 reference outline"
 	var lines := PackedStringArray([
-		"World Composition v1.1.1 Debug",
+		"World Composition v1.1.2 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],

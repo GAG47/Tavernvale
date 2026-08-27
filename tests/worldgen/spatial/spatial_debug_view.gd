@@ -2,16 +2,18 @@ class_name SpatialDebugView
 extends Node2D
 
 @export var seed: int = 1
-@export var world_width: float = 1400.0
-@export var world_height: float = 700.0
-@export var target_cell_count: int = 10000
+@export var world_width: float = 2000.0
+@export var world_height: float = 1000.0
+@export var target_cell_count: int = 20000
 @export_range(0.0, 1.0) var jitter: float = 0.9
 
 var graph: SpatialGraph
 var selected_cell_id := -1
 var show_voronoi := true
 var show_delaunay := false
-var show_seeds := false
+var show_real_seeds := false
+var show_boundary_seeds := false
+var show_voronoi_vertices := false
 var show_ids := false
 var show_border_cells := true
 var _generation_ms := 0
@@ -46,7 +48,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_D:
 				show_delaunay = not show_delaunay
 			KEY_S:
-				show_seeds = not show_seeds
+				show_real_seeds = not show_real_seeds
+			KEY_A:
+				show_boundary_seeds = not show_boundary_seeds
+			KEY_X:
+				show_voronoi_vertices = not show_voronoi_vertices
 			KEY_I:
 				show_ids = not show_ids
 			KEY_B:
@@ -62,6 +68,12 @@ func _draw() -> void:
 	if graph == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "SpatialGraph generation failed")
 		return
+	draw_rect(
+		Rect2(_to_screen(Vector2.ZERO), Vector2(world_width, world_height) * _view_scale),
+		Color(0.45, 0.5, 0.58),
+		false,
+		2.0
+	)
 	_draw_selection_fill()
 	if show_voronoi:
 		_draw_voronoi_edges()
@@ -69,8 +81,12 @@ func _draw() -> void:
 		_draw_border_cells()
 	if show_delaunay:
 		_draw_delaunay_edges()
-	if show_seeds:
-		_draw_seed_points()
+	if show_real_seeds:
+		_draw_real_seed_points()
+	if show_boundary_seeds:
+		_draw_boundary_seed_points()
+	if show_voronoi_vertices:
+		_draw_voronoi_vertex_points()
 	if show_ids:
 		_draw_cell_ids()
 	_draw_selected_shared_edges()
@@ -111,14 +127,14 @@ func _draw_delaunay_edges() -> void:
 		_draw_delaunay_edge(third, first, drawn_edges)
 
 
-func _draw_delaunay_edge(first_cell: int, second_cell: int, drawn_edges: Dictionary) -> void:
-	var edge := SpatialGeometry.canonical_edge(first_cell, second_cell)
+func _draw_delaunay_edge(first_seed: int, second_seed: int, drawn_edges: Dictionary) -> void:
+	var edge := SpatialGeometry.canonical_edge(first_seed, second_seed)
 	if drawn_edges.has(edge):
 		return
 	drawn_edges[edge] = true
 	draw_line(
-		_to_screen(graph.cell_centers[first_cell]),
-		_to_screen(graph.cell_centers[second_cell]),
+		_to_screen(graph.seed_position(first_seed)),
+		_to_screen(graph.seed_position(second_seed)),
 		Color(0.35, 0.8, 0.95, 0.45),
 		1.0
 	)
@@ -141,9 +157,19 @@ func _draw_selected_shared_edges() -> void:
 		)
 
 
-func _draw_seed_points() -> void:
+func _draw_real_seed_points() -> void:
 	for center in graph.cell_centers:
 		draw_circle(_to_screen(center), 2.2, Color(0.95, 0.25, 0.3))
+
+
+func _draw_boundary_seed_points() -> void:
+	for center in graph.boundary_seed_positions:
+		draw_circle(_to_screen(center), 3.0, Color(1.0, 0.82, 0.15))
+
+
+func _draw_voronoi_vertex_points() -> void:
+	for vertex in graph.vertex_positions:
+		draw_circle(_to_screen(vertex), 1.8, Color(0.35, 1.0, 0.55))
 
 
 func _draw_cell_ids() -> void:
@@ -158,10 +184,12 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.96))
 	var lines := PackedStringArray([
 		"Spatial Skeleton Debug",
-		"Cells: %d | Vertices: %d" % [graph.cell_count(), graph.vertex_positions.size()],
+		"Real: %d | Boundary: %d" % [graph.cell_count(), graph.boundary_seed_count()],
+		"Triangles / Vertices: %d" % graph.vertex_positions.size(),
 		"Generated: %d ms" % _generation_ms,
 		"V Voronoi [%s]   D Delaunay [%s]" % [_on_off(show_voronoi), _on_off(show_delaunay)],
-		"S Seeds [%s]      I IDs [%s]" % [_on_off(show_seeds), _on_off(show_ids)],
+		"S Real Seeds [%s] A Aux Seeds [%s]" % [_on_off(show_real_seeds), _on_off(show_boundary_seeds)],
+		"X Vertices [%s]   I IDs [%s]" % [_on_off(show_voronoi_vertices), _on_off(show_ids)],
 		"B Border [%s]     Click to inspect" % _on_off(show_border_cells),
 	])
 	if selected_cell_id >= 0:

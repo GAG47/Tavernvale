@@ -33,7 +33,7 @@ func _run_all() -> void:
 		_test_mask_preserves_spatial_graph,
 		_test_template_order,
 		_test_no_disallowed_pathfinding,
-		_test_default_10k_templates_and_validator,
+		_test_default_20k_templates_and_validator,
 	]
 	for test_group in test_groups:
 		test_group.call()
@@ -93,6 +93,8 @@ func _test_uint8_integer_semantics_and_power_tables() -> void:
 	_expect(CompositionOperations.uint8_value(104.2) == 100, "Uint8 write must clamp values above 100")
 	_expect(is_equal_approx(CompositionOperations.get_blob_power(10000), 0.98), "10k blobPower must be 0.98")
 	_expect(is_equal_approx(CompositionOperations.get_line_power(10000), 0.81), "10k linePower must be 0.81")
+	_expect(is_equal_approx(CompositionOperations.get_blob_power(20000), 0.99), "20k blobPower must be 0.99")
+	_expect(is_equal_approx(CompositionOperations.get_line_power(20000), 0.82), "20k linePower must be 0.82")
 	_expect(is_equal_approx(CompositionOperations.get_blob_power(1234), 0.98), "blobPower fallback must be 0.98")
 	_expect(is_equal_approx(CompositionOperations.get_line_power(1234), 0.81), "linePower fallback must be 0.81")
 
@@ -326,20 +328,20 @@ func _test_no_disallowed_pathfinding() -> void:
 	_expect(not source.contains("a_star") and not source.contains("astar"), "Composition operations source must not use A*")
 
 
-func _test_default_10k_templates_and_validator() -> void:
+func _test_default_20k_templates_and_validator() -> void:
 	var graph_started := Time.get_ticks_msec()
 	_default_graph = SpatialGenerator.generate(SpatialConfig.new())
 	var graph_ms := Time.get_ticks_msec() - graph_started
-	_expect(_default_graph != null, "default 10k SpatialGraph should generate for Composition")
+	_expect(_default_graph != null, "default 20k SpatialGraph should generate for Composition")
 	if _default_graph == null:
 		return
 	_expect(
-		absi(_default_graph.cell_count() - 10000) <= 100,
-		"default 2:1 Composition graph must contain approximately 10k Cells"
+		_default_graph.cell_count() == 20000,
+		"default 2:1 Composition graph must contain exactly 20k real Cells"
 	)
 	_expect(
-		_default_graph.config.world_width == 1400.0 and _default_graph.config.world_height == 700.0,
-		"all default Composition templates must run on the 1400x700 SpatialGraph"
+		_default_graph.config.world_width == 2000.0 and _default_graph.config.world_height == 1000.0,
+		"all default Composition templates must run on the logical 2000x1000 SpatialGraph"
 	)
 	for template_id_string in CompositionTemplates.template_ids():
 		var template_id := StringName(template_id_string)
@@ -349,11 +351,15 @@ func _test_default_10k_templates_and_validator() -> void:
 		)
 		var elapsed := Time.get_ticks_msec() - started
 		_default_composition_ms[String(template_id)] = elapsed
-		_expect(layer != null, "%s must generate on default 10k Cells" % template_id)
+		_expect(layer != null, "%s must generate on default 20k real Cells" % template_id)
 		if layer == null:
 			continue
 		var validation_errors := WorldCompositionValidator.validate(layer, _default_graph)
 		_expect(validation_errors.is_empty(), "%s validator must pass: %s" % [template_id, "; ".join(validation_errors)])
+		_expect(
+			layer.continental_value.size() == _default_graph.cell_count(),
+			"%s continental_value must exclude all boundary seeds" % template_id
+		)
 		_expect(_all_values_valid(layer.continental_value), "%s must contain only integer values in 0..100" % template_id)
 		_default_statistics[String(template_id)] = WorldCompositionValidator.statistics(layer)
 	print("Default SpatialGraph generation: %d ms" % graph_ms)
@@ -422,7 +428,7 @@ func _finish() -> void:
 		for template_id in _default_composition_ms:
 			var stats: Dictionary = _default_statistics[template_id]
 			print(
-				"%s 10k: %d ms | min=%d max=%d mean=%.3f | >=5 %.3f%% >=10 %.3f%% >=20 %.3f%% >=40 %.3f%% >=60 %.3f%%"
+				"%s 20k: %d ms | min=%d max=%d mean=%.3f | >=5 %.3f%% >=10 %.3f%% >=20 %.3f%% >=40 %.3f%% >=60 %.3f%%"
 				% [
 					template_id,
 					_default_composition_ms[template_id],

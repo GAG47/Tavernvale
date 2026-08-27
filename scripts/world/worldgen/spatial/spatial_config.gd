@@ -2,17 +2,17 @@ class_name SpatialConfig
 extends RefCounted
 
 var seed: int = 1
-var world_width: float = 1400.0
-var world_height: float = 700.0
-var target_cell_count: int = 10000
+var world_width: float = 2000.0
+var world_height: float = 1000.0
+var target_cell_count: int = 20000
 var jitter: float = 0.9
 
 
 func _init(
 		seed_value: int = 1,
-		width: float = 1400.0,
-		height: float = 700.0,
-		cell_count: int = 10000,
+		width: float = 2000.0,
+		height: float = 1000.0,
+		cell_count: int = 20000,
 		jitter_amount: float = 0.9
 ) -> void:
 	seed = seed_value
@@ -48,9 +48,9 @@ func to_dict() -> Dictionary:
 static func from_dict(data: Dictionary) -> SpatialConfig:
 	return SpatialConfig.new(
 		int(data.get("seed", 1)),
-		float(data.get("world_width", 1400.0)),
-		float(data.get("world_height", 700.0)),
-		int(data.get("target_cell_count", 10000)),
+		float(data.get("world_width", 2000.0)),
+		float(data.get("world_height", 1000.0)),
+		int(data.get("target_cell_count", 20000)),
 		float(data.get("jitter", 0.9))
 	)
 
