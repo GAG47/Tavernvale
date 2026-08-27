@@ -2,7 +2,7 @@
 
 - Version: v0 / Project Foundation
 - Date: 2026-08-26
-- Commit: Pending
+- Commit: `64e0f35`
 
 ## 目标
 

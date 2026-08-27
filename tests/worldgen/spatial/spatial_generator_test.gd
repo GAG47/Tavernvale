@@ -16,7 +16,7 @@ func _run_all() -> void:
 	var test_groups: Array[Callable] = [
 		_test_determinism,
 		_test_different_seed,
-		_test_real_seed_grid_without_jitter,
+		_test_jitter_validation,
 		_test_default_jitter,
 		_test_neighbor_symmetry_and_connectivity,
 		_test_unclipped_polygons,
@@ -71,20 +71,24 @@ func _test_different_seed() -> void:
 		_expect(first.cell_polygons != second.cell_polygons, "different seeds should change polygons")
 
 
-func _test_real_seed_grid_without_jitter() -> void:
-	var config := SpatialConfig.new(99, 240.0, 120.0, 128, 0.0)
-	var dimensions := SpatialGenerator._calculate_grid_dimensions(config)
-	var centers := SpatialGenerator._create_centers(config, dimensions.x, dimensions.y)
-	var spacing_x := config.world_width / dimensions.x
-	var spacing_y := config.world_height / dimensions.y
-	for row in dimensions.y:
-		for column in dimensions.x:
-			var expected := Vector2((column + 0.5) * spacing_x, (row + 0.5) * spacing_y)
-			_expect(
-				centers[row * dimensions.x + column].is_equal_approx(expected),
-				"jitter=0 real seed %d must remain on the regular lattice"
-				% (row * dimensions.x + column)
-			)
+func _test_jitter_validation() -> void:
+	_expect(SpatialConfig.new().validate().is_empty(), "default jitter=0.9 must remain valid")
+	_expect(
+		SpatialConfig.new(99, 240.0, 120.0, 128, 0.000001).validate().is_empty(),
+		"positive jitter values must remain valid"
+	)
+	_expect(
+		not SpatialConfig.new(99, 240.0, 120.0, 128, 0.0).validate().is_empty(),
+		"jitter=0 must be rejected"
+	)
+	_expect(
+		not SpatialConfig.new(99, 240.0, 120.0, 128, -0.1).validate().is_empty(),
+		"negative jitter must be rejected"
+	)
+	_expect(
+		not SpatialConfig.new(99, 240.0, 120.0, 128, 1.01).validate().is_empty(),
+		"jitter above 1 must be rejected"
+	)
 
 
 func _test_default_jitter() -> void:

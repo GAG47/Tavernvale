@@ -5,7 +5,7 @@ extends Node2D
 @export var world_width: float = 2000.0
 @export var world_height: float = 1000.0
 @export var target_cell_count: int = 20000
-@export_range(0.0, 1.0) var jitter: float = 0.9
+@export_range(0.000001, 1.0) var jitter: float = 0.9
 @export_enum("continents", "pangea", "archipelago", "mediterranean", "old_world", "shattered") var template_id := "continents"
 
 var graph: SpatialGraph
@@ -60,7 +60,7 @@ func _draw() -> void:
 		return
 	for cell_id in graph.cell_count():
 		var color := _value_color(composition.continental_value[cell_id])
-		draw_colored_polygon(_screen_polygon(graph.cell_polygons[cell_id]), color)
+		_draw_cell_triangle_fan(cell_id, color)
 	if selected_cell_id >= 0:
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
@@ -70,6 +70,33 @@ func _draw() -> void:
 		)
 	_mask_outside_logical_world()
 	_draw_information()
+
+
+func _draw_cell_triangle_fan(cell_id: int, color: Color) -> void:
+	var vertex_ids: PackedInt32Array = graph.cell_vertex_ids[cell_id]
+	if vertex_ids.size() < 3:
+		return
+	var center := graph.cell_centers[cell_id]
+	var epsilon := SpatialGeometry.epsilon_for_size(
+		graph.config.world_width, graph.config.world_height
+	)
+	for vertex_index in vertex_ids.size():
+		var first := graph.vertex_positions[vertex_ids[vertex_index]]
+		var second := graph.vertex_positions[
+			vertex_ids[(vertex_index + 1) % vertex_ids.size()]
+		]
+		var triangle_area := absf((first - center).cross(second - center)) * 0.5
+		if triangle_area < epsilon:
+			continue
+		draw_primitive(
+			PackedVector2Array([
+				_to_screen(center),
+				_to_screen(first),
+				_to_screen(second),
+			]),
+			PackedColorArray([color, color, color]),
+			PackedVector2Array()
+		)
 
 
 func _mask_outside_logical_world() -> void:
@@ -138,7 +165,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := "V: continuous grayscale" if show_continuous_value else "L: >=20 reference outline"
 	var lines := PackedStringArray([
-		"World Composition v1.1.2 Debug",
+		"World Composition v1.1.3 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -207,6 +234,10 @@ func _screen_polygon(polygon: PackedVector2Array) -> PackedVector2Array:
 	for index in polygon.size():
 		result[index] = _view_offset + polygon[index] * _view_scale
 	return result
+
+
+func _to_screen(world_position: Vector2) -> Vector2:
+	return _view_offset + world_position * _view_scale
 
 
 func _closed_screen_polygon(polygon: PackedVector2Array) -> PackedVector2Array:

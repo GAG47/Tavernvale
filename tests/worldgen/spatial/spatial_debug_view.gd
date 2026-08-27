@@ -5,7 +5,7 @@ extends Node2D
 @export var world_width: float = 2000.0
 @export var world_height: float = 1000.0
 @export var target_cell_count: int = 20000
-@export_range(0.0, 1.0) var jitter: float = 0.9
+@export_range(0.000001, 1.0) var jitter: float = 0.9
 
 var graph: SpatialGraph
 var selected_cell_id := -1

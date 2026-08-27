@@ -30,8 +30,8 @@ func validate() -> PackedStringArray:
 		errors.append("world_height must be greater than zero")
 	if target_cell_count <= 0:
 		errors.append("target_cell_count must be greater than zero")
-	if jitter < 0.0 or jitter > 1.0:
-		errors.append("jitter must be in the inclusive range [0, 1]")
+	if jitter <= 0.0 or jitter > 1.0:
+		errors.append("jitter must be in the range (0, 1]")
 	return errors
 
 
