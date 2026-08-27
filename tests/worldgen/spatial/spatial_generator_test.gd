@@ -243,8 +243,16 @@ func _test_vertex_dedup_and_shared_edge_ids() -> void:
 
 
 func _test_default_scale_and_validator() -> void:
+	var default_config := SpatialConfig.new()
+	_expect(default_config.world_width == 1400.0, "default world width must be 1400")
+	_expect(default_config.world_height == 700.0, "default world height must be 700")
+	_expect(
+		default_config.world_width / default_config.world_height == 2.0,
+		"default world aspect ratio must be 2:1"
+	)
+	_expect(default_config.target_cell_count == 10000, "default target Cell Count must remain 10000")
 	var started := Time.get_ticks_msec()
-	var graph := SpatialGenerator.generate(SpatialConfig.new())
+	var graph := SpatialGenerator.generate(default_config)
 	_default_generation_ms = Time.get_ticks_msec() - started
 	_expect(graph != null, "default 10k graph should generate")
 	if graph == null:
@@ -254,7 +262,11 @@ func _test_default_scale_and_validator() -> void:
 	_default_edge_count = graph.edge_count()
 	for is_border in graph.cell_is_border:
 		_default_border_cell_count += int(bool(is_border))
-	_expect(graph.cell_count() == 10000, "default config should produce 10000 cells")
+	_expect(
+		absi(graph.cell_count() - default_config.target_cell_count) <= 100,
+		"default 2:1 config should produce approximately 10000 cells"
+	)
+	_expect(graph.columns == 141 and graph.rows == 71, "default 2:1 grid dimensions must remain stable")
 	var errors := SpatialValidator.validate(graph)
 	_expect(errors.is_empty(), "default 10k graph validator should pass: " + "; ".join(errors))
 

@@ -2,8 +2,8 @@ class_name SpatialDebugView
 extends Node2D
 
 @export var seed: int = 1
-@export var world_width: float = 1000.0
-@export var world_height: float = 1000.0
+@export var world_width: float = 1400.0
+@export var world_height: float = 700.0
 @export var target_cell_count: int = 10000
 @export_range(0.0, 1.0) var jitter: float = 0.9
 

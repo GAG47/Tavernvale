@@ -2,11 +2,11 @@ class_name WorldCompositionDebugView
 extends Node2D
 
 @export var seed: int = 1
-@export var world_width: float = 1000.0
-@export var world_height: float = 1000.0
+@export var world_width: float = 1400.0
+@export var world_height: float = 700.0
 @export var target_cell_count: int = 10000
 @export_range(0.0, 1.0) var jitter: float = 0.9
-@export_enum("continents", "pangea") var template_id := "continents"
+@export_enum("continents", "pangea", "archipelago", "mediterranean", "old_world", "shattered") var template_id := "continents"
 
 var graph: SpatialGraph
 var composition: WorldCompositionLayer
@@ -40,7 +40,9 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_L:
 				show_continuous_value = false
 			KEY_T:
-				template_id = "pangea" if template_id == "continents" else "continents"
+				var template_ids := CompositionTemplates.template_ids()
+				var current_index := template_ids.find(template_id)
+				template_id = template_ids[(current_index + 1) % template_ids.size()]
 				_regenerate_composition()
 			KEY_R:
 				seed += 1
@@ -107,8 +109,10 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := "V: continuous grayscale" if show_continuous_value else "L: >=20 reference outline"
 	var lines := PackedStringArray([
-		"World Composition v1.1 Debug",
-		"Template: %s | Seed: %d" % [template_id, seed],
+		"World Composition v1.1.1 Debug",
+		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
+		"Seed: %d" % seed,
+		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Mode: " + mode,

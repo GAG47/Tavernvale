@@ -22,6 +22,7 @@ func _run_all() -> void:
 		_test_determinism_and_seed_isolation,
 		_test_different_seed,
 		_test_uint8_integer_semantics_and_power_tables,
+		_test_add_semantics,
 		_test_hill_neighbor_propagation,
 		_test_pit_shared_height_algorithm,
 		_test_range_path_and_prominence,
@@ -40,29 +41,32 @@ func _run_all() -> void:
 
 
 func _test_determinism_and_seed_isolation() -> void:
-	var config := WorldCompositionConfig.new(123456, CompositionTemplates.CONTINENTS)
 	var spatial_rng := DeterministicRng.new(DeterministicRng.spatial_seed(777))
 	var spatial_before := spatial_rng.next_float()
-	var first := WorldCompositionGenerator.generate(_graph, config)
+	for template_id in CompositionTemplates.template_ids():
+		var config := WorldCompositionConfig.new(123456, StringName(template_id))
+		var first := WorldCompositionGenerator.generate(_graph, config)
+		var second := WorldCompositionGenerator.generate(_graph, config)
+		_expect(first != null and second != null, "%s determinism layers should generate" % template_id)
+		if first != null and second != null:
+			_expect(
+				first.continental_value == second.continental_value,
+				"%s must reproduce continental_value for the same Seed" % template_id
+			)
+			_expect(
+				first.operation_metadata == second.operation_metadata,
+				"%s must reproduce operation metadata for the same Seed" % template_id
+			)
 	var spatial_after := spatial_rng.next_float()
 	var control_rng := DeterministicRng.new(DeterministicRng.spatial_seed(777))
 	var control_before := control_rng.next_float()
 	var control_after := control_rng.next_float()
-	var second := WorldCompositionGenerator.generate(_graph, config)
-	_expect(first != null and second != null, "determinism layers should generate")
-	if first != null and second != null:
-		_expect(
-			first.continental_value == second.continental_value,
-			"same Seed + Template must reproduce continental_value"
-		)
-		_expect(
-			first.operation_metadata == second.operation_metadata,
-			"same Seed + Template must reproduce operation metadata"
-		)
-		_expect(
-			WorldCompositionValidator.validate_determinism(_graph, config).is_empty(),
-			"Validator determinism check must pass"
-		)
+	_expect(
+		WorldCompositionValidator.validate_determinism(
+			_graph, WorldCompositionConfig.new(123456, CompositionTemplates.CONTINENTS)
+		).is_empty(),
+		"Validator determinism check must pass"
+	)
 	_expect(
 		spatial_before == control_before and spatial_after == control_after,
 		"Composition RNG must not alter an independent Spatial RNG stream"
@@ -91,6 +95,48 @@ func _test_uint8_integer_semantics_and_power_tables() -> void:
 	_expect(is_equal_approx(CompositionOperations.get_line_power(10000), 0.81), "10k linePower must be 0.81")
 	_expect(is_equal_approx(CompositionOperations.get_blob_power(1234), 0.98), "blobPower fallback must be 0.98")
 	_expect(is_equal_approx(CompositionOperations.get_line_power(1234), 0.81), "linePower fallback must be 0.81")
+
+
+func _test_add_semantics() -> void:
+	var all_values := _filled_values(_graph.cell_count(), 10)
+	all_values[0] = 95
+	var all_operations := CompositionOperations.new(_graph, all_values, CompositionRng.new(500))
+	var all_metadata := all_operations.add({"value": 11, "target": &"all"})
+	_expect(bool(all_metadata.success), "Add 11 all must execute")
+	_expect(all_operations.continental_value[1] == 21, "Add 11 all must add 11 to every selected Cell")
+	_expect(all_operations.continental_value[0] == 100, "positive Add must clamp to 100")
+
+	var negative_values := _filled_values(_graph.cell_count(), 4)
+	var negative_operations := CompositionOperations.new(
+		_graph, negative_values, CompositionRng.new(500)
+	)
+	negative_operations.add({"value": -11, "target": &"all"})
+	_expect(negative_operations.continental_value[0] == 0, "negative Add must clamp to 0")
+
+	var land_values := _filled_values(_graph.cell_count(), 19)
+	land_values[0] = 20
+	land_values[1] = 25
+	land_values[2] = 80
+	var land_operations := CompositionOperations.new(_graph, land_values, CompositionRng.new(500))
+	land_operations.add({"value": -30, "target": &"land"})
+	_expect(land_operations.continental_value[0] == 20, "Add land must preserve the 20 reference")
+	_expect(land_operations.continental_value[1] == 20, "negative Add land must not cross below 20")
+	_expect(land_operations.continental_value[2] == 50, "Add land must subtract normally above its floor")
+	_expect(land_operations.continental_value[3] == 19, "Add land must not modify values below 20")
+
+	var range_values := _filled_values(_graph.cell_count(), 5)
+	range_values[0] = 9
+	range_values[1] = 10
+	range_values[2] = 15
+	range_values[3] = 20
+	range_values[4] = 21
+	var range_operations := CompositionOperations.new(_graph, range_values, CompositionRng.new(500))
+	range_operations.add({"value": 3, "target": &"10-20"})
+	_expect(range_operations.continental_value[0] == 9, "Add min-max must leave values below range unchanged")
+	_expect(range_operations.continental_value[1] == 13, "Add min-max must include its minimum")
+	_expect(range_operations.continental_value[2] == 18, "Add min-max must modify values inside range")
+	_expect(range_operations.continental_value[3] == 23, "Add min-max must include its maximum")
+	_expect(range_operations.continental_value[4] == 21, "Add min-max must leave values above range unchanged")
 
 
 func _test_hill_neighbor_propagation() -> void:
@@ -227,6 +273,10 @@ func _test_mask_preserves_spatial_graph() -> void:
 func _test_template_order() -> void:
 	var continents_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.CONTINENTS))
 	var pangea_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.PANGEA))
+	var archipelago_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.ARCHIPELAGO))
+	var mediterranean_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.MEDITERRANEAN))
+	var old_world_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.OLD_WORLD))
+	var shattered_signature := _template_signature(CompositionTemplates.operations_for(CompositionTemplates.SHATTERED))
 	_expect(continents_signature == PackedStringArray([
 		"Hill 1 80-85 60-80 40-60", "Hill 1 80-85 20-30 40-60",
 		"Hill 6-7 15-30 25-75 15-85", "Multiply 0.6 land",
@@ -243,6 +293,30 @@ func _test_template_order() -> void:
 		"Trough 3-4 25-35 5-95 10-20", "Trough 3-4 25-35 5-95 80-90",
 		"Range 5-6 30-40 10-90 35-65",
 	]), "Pangea operation script and order must exactly match the specification")
+	_expect(archipelago_signature == PackedStringArray([
+		"Add 11 all", "Range 2-3 40-60 20-80 20-80", "Hill 5 15-20 10-90 30-70",
+		"Hill 2 10-15 10-30 20-80", "Hill 2 10-15 60-90 20-80", "Smooth 3",
+		"Trough 10 20-30 5-95 5-95", "Strait 2 vertical", "Strait 2 horizontal",
+	]), "Archipelago operation script and order must exactly match the specification")
+	_expect(mediterranean_signature == PackedStringArray([
+		"Range 4-6 30-80 0-100 0-10", "Range 4-6 30-80 0-100 90-100",
+		"Hill 6-8 30-50 10-90 0-5", "Hill 6-8 30-50 10-90 95-100",
+		"Multiply 0.9 land", "Mask -2", "Smooth 1", "Hill 2-3 30-70 0-5 20-80",
+		"Hill 2-3 30-70 95-100 20-80", "Trough 3-6 40-50 0-100 0-10",
+		"Trough 3-6 40-50 0-100 90-100",
+	]), "Mediterranean operation script and order must exactly match the specification")
+	_expect(old_world_signature == PackedStringArray([
+		"Range 3 70 15-85 20-80", "Hill 2-3 50-70 15-45 20-80",
+		"Hill 2-3 50-70 65-85 20-80", "Hill 4-6 20-25 15-85 20-80",
+		"Multiply 0.5 land", "Smooth 2", "Range 3-4 20-50 15-35 20-45",
+		"Range 2-4 20-50 65-85 45-80", "Strait 3-7 vertical",
+		"Trough 6-8 20-50 15-85 45-65", "Pit 5-6 20-30 10-90 10-90",
+	]), "Old World operation script and order must exactly match the specification")
+	_expect(shattered_signature == PackedStringArray([
+		"Hill 8 35-40 15-85 30-70", "Trough 10-20 40-50 5-95 5-95",
+		"Range 5-7 30-40 10-90 20-80", "Pit 12-20 30-40 15-85 20-80",
+	]), "Shattered operation script and order must exactly match the specification")
+	_expect(CompositionTemplates.template_ids().size() == 6, "v1.1.1 must expose exactly six templates")
 
 
 func _test_no_disallowed_pathfinding() -> void:
@@ -259,8 +333,16 @@ func _test_default_10k_templates_and_validator() -> void:
 	_expect(_default_graph != null, "default 10k SpatialGraph should generate for Composition")
 	if _default_graph == null:
 		return
-	_expect(_default_graph.cell_count() == 10000, "default Composition graph must contain 10k Cells")
-	for template_id in [CompositionTemplates.CONTINENTS, CompositionTemplates.PANGEA]:
+	_expect(
+		absi(_default_graph.cell_count() - 10000) <= 100,
+		"default 2:1 Composition graph must contain approximately 10k Cells"
+	)
+	_expect(
+		_default_graph.config.world_width == 1400.0 and _default_graph.config.world_height == 700.0,
+		"all default Composition templates must run on the 1400x700 SpatialGraph"
+	)
+	for template_id_string in CompositionTemplates.template_ids():
+		var template_id := StringName(template_id_string)
 		var started := Time.get_ticks_msec()
 		var layer := WorldCompositionGenerator.generate(
 			_default_graph, WorldCompositionConfig.new(1, template_id)
@@ -285,6 +367,8 @@ func _template_signature(operations: Array[Dictionary]) -> PackedStringArray:
 				result.append("%s %s %s %s %s" % [operation.type, operation.count, operation.strength, operation.range_x, operation.range_y])
 			&"Multiply":
 				result.append("Multiply %s %s" % [_format_number(operation.factor), operation.target])
+			&"Add":
+				result.append("Add %s %s" % [_format_number(operation.value), operation.target])
 			&"Strait":
 				result.append("Strait %s %s" % [operation.width, operation.direction])
 			&"Smooth":
@@ -334,7 +418,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("World Composition: all 14 test groups passed")
+		print("World Composition: all 15 test groups passed")
 		for template_id in _default_composition_ms:
 			var stats: Dictionary = _default_statistics[template_id]
 			print(

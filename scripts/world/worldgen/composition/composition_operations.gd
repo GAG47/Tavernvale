@@ -79,6 +79,8 @@ func execute(operation: Dictionary) -> Dictionary:
 			metadata = add_trough(operation)
 		&"Strait":
 			metadata = add_strait(operation)
+		&"Add":
+			metadata = add(operation)
 		&"Multiply":
 			metadata = multiply(operation)
 		&"Smooth":
@@ -344,6 +346,42 @@ func add_strait(operation: Dictionary) -> Dictionary:
 		"path_continuous": _path_is_continuous(path_result.path, start),
 		"start": start,
 		"end": end,
+	}
+
+
+func add(operation: Dictionary) -> Dictionary:
+	var amount := float(operation.get("value", 0.0))
+	var target := String(operation.get("target", "all"))
+	var minimum := 0
+	var maximum := 100
+	var is_land := target == "land"
+	if is_land:
+		minimum = COMPOSITION_LAND_REFERENCE
+	elif target != "all":
+		var separator := target.find("-", 1)
+		if separator < 0:
+			return {"success": false, "error": "Add target must be all, land, or min-max"}
+		var limits := _parse_range(target)
+		minimum = int(limits.x)
+		maximum = int(limits.y)
+		if minimum > maximum:
+			return {"success": false, "error": "Add target minimum must not exceed maximum"}
+
+	var changed_cells := 0
+	for cell_id in graph.cell_count():
+		var value := continental_value[cell_id]
+		if value < minimum or value > maximum:
+			continue
+		var added_value := float(value) + amount
+		if is_land:
+			added_value = maxf(added_value, float(COMPOSITION_LAND_REFERENCE))
+		continental_value[cell_id] = uint8_value(added_value)
+		changed_cells += 1
+	return {
+		"success": true,
+		"value": amount,
+		"target": target,
+		"changed_cells": changed_cells,
 	}
 
 
