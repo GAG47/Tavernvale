@@ -13,6 +13,7 @@ extends Node2D
 var graph: SpatialGraph
 var composition: WorldCompositionLayer
 var terrain: TerrainHeightLayer
+var hydrology: HydrologyConditioningResult
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
 var selected_cell_id := -1
@@ -20,6 +21,7 @@ var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
+var _hydrology_conditioning_ms := 0
 var _climate_generation_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
@@ -36,6 +38,7 @@ enum ViewMode {
 	LAND_WATER,
 	TEMPERATURE,
 	PRECIPITATION,
+	HYDROLOGY_CONDITIONING,
 }
 
 
@@ -62,6 +65,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.TEMPERATURE
 			KEY_P:
 				view_mode = ViewMode.PRECIPITATION
+			KEY_D:
+				view_mode = ViewMode.HYDROLOGY_CONDITIONING
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -78,7 +83,7 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _draw() -> void:
-	if graph == null or composition == null or terrain == null or climate == null:
+	if graph == null or composition == null or terrain == null or hydrology == null or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
 	for cell_id in graph.cell_count():
@@ -161,8 +166,22 @@ func _cell_color(cell_id: int) -> Color:
 			return Color(0.64, 0.55, 0.34) if terrain.is_land(cell_id) else Color(0.08, 0.24, 0.46)
 		ViewMode.TEMPERATURE:
 			return _temperature_color(climate.temperature[cell_id])
-		_:
+		ViewMode.PRECIPITATION:
 			return _precipitation_color(climate.precipitation[cell_id])
+		_:
+			return _hydrology_action_color(cell_id)
+
+
+func _hydrology_action_color(cell_id: int) -> Color:
+	if hydrology.closed_basin_id[cell_id] >= 0:
+		return Color(0.62, 0.22, 0.78)
+	match hydrology.conditioning_action[cell_id]:
+		HydrologyConditioningResult.Action.FILL:
+			return Color(0.96, 0.72, 0.12)
+		HydrologyConditioningResult.Action.CARVE:
+			return Color(0.94, 0.22, 0.36)
+		_:
+			return Color(0.18, 0.22, 0.25) if terrain.is_land(cell_id) else Color(0.06, 0.14, 0.22)
 
 
 func _terrain_height_color(height: float) -> Color:
@@ -199,7 +218,7 @@ func _temperature_color(temperature: float) -> Color:
 
 func _precipitation_color(precipitation: float) -> Color:
 	var maximum := float(_climate_statistics.get("max_precipitation", 0.0))
-	var normalized := clampf(precipitation / maximum, 0.0, 1.0) if maximum > 0.0 else 0.0
+	var normalized := sqrt(clampf(precipitation / maximum, 0.0, 1.0)) if maximum > 0.0 else 0.0
 	if normalized < 0.25:
 		return Color(0.72, 0.50, 0.20).lerp(Color(0.55, 0.68, 0.25), normalized / 0.25)
 	if normalized < 0.55:
@@ -224,6 +243,7 @@ func _regenerate_composition() -> void:
 	if graph == null:
 		composition = null
 		terrain = null
+		hydrology = null
 		climate = null
 		return
 	var started := Time.get_ticks_msec()
@@ -232,10 +252,19 @@ func _regenerate_composition() -> void:
 	)
 	_composition_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
-	terrain = null if composition == null else TerrainHeightProjector.project(
+	var projected_terrain: TerrainHeightLayer = null if composition == null else TerrainHeightProjector.project(
 		composition.continental_value
 	)
 	_terrain_projection_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	hydrology = null if projected_terrain == null else HydrologyConditioner.condition(
+		graph, projected_terrain
+	)
+	terrain = null
+	if hydrology != null:
+		terrain = TerrainHeightLayer.new()
+		terrain.terrain_height = hydrology.terrain_height.duplicate()
+	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
 	climate = null if terrain == null else WorldClimateGenerator.generate(
@@ -255,17 +284,19 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Preliminary Climate v1.3 Debug",
+		"Hydrology Conditioning v1.4 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
+		"Hydrology: %d ms" % _hydrology_conditioning_ms,
 		"Climate: %d ms" % _climate_generation_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
 		"C Temperature   P Precipitation",
+		"D Hydrology Conditioning",
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
@@ -274,7 +305,14 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		lines.append("Cell ID: %d" % selected_cell_id)
-		lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
+		if view_mode == ViewMode.HYDROLOGY_CONDITIONING:
+			lines.append("Original Height: %.3f" % hydrology.original_height[selected_cell_id])
+			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
+			lines.append("Height Delta: %+.3f" % hydrology.height_delta[selected_cell_id])
+			lines.append("Action: %s" % hydrology.action_name(selected_cell_id))
+			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
+		else:
+			lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
 		lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
 			selected_cell_id, graph, climate_settings
 		))
@@ -320,6 +358,18 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Min Precipitation: %.2f" % _climate_statistics.min_precipitation)
 			lines.append("Max Precipitation: %.2f" % _climate_statistics.max_precipitation)
 			lines.append("Mean Precipitation: %.2f" % _climate_statistics.mean_precipitation)
+			lines.append("P25: %.2f" % _climate_statistics.precipitation_p25)
+			lines.append("P50 / Median: %.2f" % _climate_statistics.precipitation_p50)
+			lines.append("P75: %.2f" % _climate_statistics.precipitation_p75)
+			lines.append("P90: %.2f" % _climate_statistics.precipitation_p90)
+		ViewMode.HYDROLOGY_CONDITIONING:
+			lines.append("Initial Sink Count: %d" % hydrology.initial_sink_count)
+			lines.append("Filled Depression Count: %d" % hydrology.filled_depression_count)
+			lines.append("Breached Depression Count: %d" % hydrology.breached_depression_count)
+			lines.append("Closed Basin Count: %d" % hydrology.closed_basin_count)
+			lines.append("Modified Cell: %.2f%%" % (hydrology.modified_cell_ratio * 100.0))
+			lines.append("Max Raise: %.3f" % hydrology.max_raise)
+			lines.append("Max Cut: %.3f" % hydrology.max_cut)
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -367,6 +417,10 @@ func _calculate_climate_statistics() -> Dictionary:
 			"min_precipitation": 0.0,
 			"max_precipitation": 0.0,
 			"mean_precipitation": 0.0,
+			"precipitation_p25": 0.0,
+			"precipitation_p50": 0.0,
+			"precipitation_p75": 0.0,
+			"precipitation_p90": 0.0,
 		}
 	var min_temperature := INF
 	var max_temperature := -INF
@@ -383,6 +437,8 @@ func _calculate_climate_statistics() -> Dictionary:
 		min_precipitation = minf(min_precipitation, precipitation)
 		max_precipitation = maxf(max_precipitation, precipitation)
 		precipitation_sum += precipitation
+	var sorted_precipitation := climate.precipitation.duplicate()
+	sorted_precipitation.sort()
 	var count := float(climate.cell_count())
 	return {
 		"min_temperature": min_temperature,
@@ -391,7 +447,26 @@ func _calculate_climate_statistics() -> Dictionary:
 		"min_precipitation": min_precipitation,
 		"max_precipitation": max_precipitation,
 		"mean_precipitation": precipitation_sum / count,
+		"precipitation_p25": _percentile(sorted_precipitation, 0.25),
+		"precipitation_p50": _percentile(sorted_precipitation, 0.50),
+		"precipitation_p75": _percentile(sorted_precipitation, 0.75),
+		"precipitation_p90": _percentile(sorted_precipitation, 0.90),
 	}
+
+
+func _percentile(sorted_values: PackedFloat32Array, percentile: float) -> float:
+	if sorted_values.is_empty():
+		return 0.0
+	var position := float(sorted_values.size() - 1) * percentile
+	var lower_index := floori(position)
+	var upper_index := ceili(position)
+	if lower_index == upper_index:
+		return sorted_values[lower_index]
+	return lerpf(
+		sorted_values[lower_index],
+		sorted_values[upper_index],
+		position - lower_index
+	)
 
 
 func _view_mode_name() -> String:
@@ -404,8 +479,10 @@ func _view_mode_name() -> String:
 			return "Land / Water"
 		ViewMode.TEMPERATURE:
 			return "Temperature"
-		_:
+		ViewMode.PRECIPITATION:
 			return "Precipitation"
+		_:
+			return "Hydrology Conditioning"
 
 
 func _select_cell_at(world_position: Vector2) -> void:

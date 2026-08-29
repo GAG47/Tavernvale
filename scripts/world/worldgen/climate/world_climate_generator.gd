@@ -48,7 +48,6 @@ static func generate(
 	layer.precipitation = _generate_precipitation(
 		graph,
 		terrain,
-		layer.temperature,
 		resolved_settings,
 		DeterministicRng.new(_climate_seed(graph.config.seed))
 	)
@@ -112,7 +111,6 @@ static func _sea_level_temperature(
 static func _generate_precipitation(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
-		temperature: PackedFloat32Array,
 		settings: WorldClimateSettings,
 		rng: DeterministicRng
 ) -> PackedFloat32Array:
@@ -129,12 +127,12 @@ static func _generate_precipitation(
 	if not westerly.is_empty():
 		_pass_wind(
 			westerly, 120.0 * modifier, 1, graph.columns,
-			terrain, temperature, precipitation, modifier, rng
+			terrain, precipitation, modifier, rng
 		)
 	if not easterly.is_empty():
 		_pass_wind(
 			easterly, 120.0 * modifier, -1, graph.columns,
-			terrain, temperature, precipitation, modifier, rng
+			terrain, precipitation, modifier, rng
 		)
 
 	var northerly := int(winds.northerly)
@@ -150,7 +148,7 @@ static func _generate_precipitation(
 			north_sources.append(column)
 		_pass_wind(
 			north_sources, north_max, graph.columns, graph.rows,
-			terrain, temperature, precipitation, modifier, rng
+			terrain, precipitation, modifier, rng
 		)
 	if southerly > 0:
 		var south_modifier := _edge_latitude_modifier(
@@ -163,7 +161,7 @@ static func _generate_precipitation(
 			south_sources.append(last_row_start + column)
 		_pass_wind(
 			south_sources, south_max, -graph.columns, graph.rows,
-			terrain, temperature, precipitation, modifier, rng
+			terrain, precipitation, modifier, rng
 		)
 	return precipitation
 
@@ -204,7 +202,6 @@ static func _pass_wind(
 		next_offset: int,
 		steps: int,
 		terrain: TerrainHeightLayer,
-		temperature: PackedFloat32Array,
 		precipitation: PackedFloat32Array,
 		modifier: float,
 		rng: DeterministicRng
@@ -232,8 +229,6 @@ static func _pass_wind(
 			var current := first + step * next_offset
 			if current < 0 or current >= terrain.cell_count():
 				break
-			if temperature[current] < -5.0:
-				continue
 			var has_next := step + 1 < steps
 			var next_cell := current + next_offset if has_next else -1
 			if not terrain.is_land(current):

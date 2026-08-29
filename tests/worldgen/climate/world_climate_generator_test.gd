@@ -95,6 +95,8 @@ func _test_fixed_world_output() -> void:
 		"Climate generation must not modify terrain_height"
 	)
 	var positive_precipitation_cells := 0
+	var cold_cells := 0
+	var cold_cells_with_precipitation := 0
 	for cell_id in graph.cell_count():
 		_expect(
 			is_finite(climate.temperature[cell_id]),
@@ -110,9 +112,18 @@ func _test_fixed_world_output() -> void:
 		)
 		if climate.precipitation[cell_id] > 0.0:
 			positive_precipitation_cells += 1
+		if climate.temperature[cell_id] < -5.0:
+			cold_cells += 1
+			if climate.precipitation[cell_id] > 0.0:
+				cold_cells_with_precipitation += 1
 	_expect(
 		positive_precipitation_cells > 0,
 		"fixed-seed Climate should transport moisture into at least one Cell"
+	)
+	_expect(cold_cells > 0, "fixed-seed Climate should include cold Cells")
+	_expect(
+		cold_cells_with_precipitation > 0,
+		"cold Cells should still receive total precipitation"
 	)
 
 
