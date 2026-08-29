@@ -7,19 +7,25 @@ extends Node2D
 @export var target_cell_count: int = 20000
 @export_range(0.000001, 1.0) var jitter: float = 0.9
 @export_enum("continents", "pangea", "archipelago", "mediterranean", "old_world", "shattered") var template_id := "continents"
+@export_range(-90.0, 90.0) var latitude_north: float = 70.0
+@export_range(-90.0, 90.0) var latitude_south: float = -20.0
 
 var graph: SpatialGraph
 var composition: WorldCompositionLayer
 var terrain: TerrainHeightLayer
+var climate: WorldClimateLayer
+var climate_settings: WorldClimateSettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
+var _climate_generation_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
 var _statistics := {}
 var _terrain_statistics := {}
+var _climate_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -28,6 +34,8 @@ enum ViewMode {
 	RAW_COMPOSITION,
 	TERRAIN_HEIGHT,
 	LAND_WATER,
+	TEMPERATURE,
+	PRECIPITATION,
 }
 
 
@@ -50,6 +58,10 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.TERRAIN_HEIGHT
 			KEY_L:
 				view_mode = ViewMode.LAND_WATER
+			KEY_C:
+				view_mode = ViewMode.TEMPERATURE
+			KEY_P:
+				view_mode = ViewMode.PRECIPITATION
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -66,8 +78,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _draw() -> void:
-	if graph == null or composition == null or terrain == null:
-		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World Composition generation failed")
+	if graph == null or composition == null or terrain == null or climate == null:
+		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
 	for cell_id in graph.cell_count():
 		var color := _cell_color(cell_id)
@@ -145,8 +157,12 @@ func _cell_color(cell_id: int) -> Color:
 			return Color(grayscale, grayscale, grayscale)
 		ViewMode.TERRAIN_HEIGHT:
 			return _terrain_height_color(terrain.terrain_height[cell_id])
-		_:
+		ViewMode.LAND_WATER:
 			return Color(0.64, 0.55, 0.34) if terrain.is_land(cell_id) else Color(0.08, 0.24, 0.46)
+		ViewMode.TEMPERATURE:
+			return _temperature_color(climate.temperature[cell_id])
+		_:
+			return _precipitation_color(climate.precipitation[cell_id])
 
 
 func _terrain_height_color(height: float) -> Color:
@@ -167,6 +183,32 @@ func _terrain_height_color(height: float) -> Color:
 	return Color(0.88, 0.90, 0.91)
 
 
+func _temperature_color(temperature: float) -> Color:
+	if temperature < -20.0:
+		return Color(0.08, 0.18, 0.65)
+	if temperature < 0.0:
+		return Color(0.08, 0.18, 0.65).lerp(Color(0.10, 0.78, 0.88), (temperature + 20.0) / 20.0)
+	if temperature < 15.0:
+		return Color(0.10, 0.78, 0.88).lerp(Color(0.30, 0.68, 0.24), temperature / 15.0)
+	if temperature < 25.0:
+		return Color(0.30, 0.68, 0.24).lerp(Color(0.95, 0.78, 0.16), (temperature - 15.0) / 10.0)
+	if temperature < 35.0:
+		return Color(0.95, 0.78, 0.16).lerp(Color(0.88, 0.16, 0.08), (temperature - 25.0) / 10.0)
+	return Color(0.66, 0.03, 0.04)
+
+
+func _precipitation_color(precipitation: float) -> Color:
+	var maximum := float(_climate_statistics.get("max_precipitation", 0.0))
+	var normalized := clampf(precipitation / maximum, 0.0, 1.0) if maximum > 0.0 else 0.0
+	if normalized < 0.25:
+		return Color(0.72, 0.50, 0.20).lerp(Color(0.55, 0.68, 0.25), normalized / 0.25)
+	if normalized < 0.55:
+		return Color(0.55, 0.68, 0.25).lerp(Color(0.10, 0.68, 0.58), (normalized - 0.25) / 0.30)
+	if normalized < 0.8:
+		return Color(0.10, 0.68, 0.58).lerp(Color(0.08, 0.48, 0.82), (normalized - 0.55) / 0.25)
+	return Color(0.08, 0.48, 0.82).lerp(Color(0.03, 0.14, 0.48), (normalized - 0.8) / 0.2)
+
+
 func _regenerate() -> void:
 	selected_cell_id = -1
 	var started := Time.get_ticks_msec()
@@ -182,6 +224,7 @@ func _regenerate_composition() -> void:
 	if graph == null:
 		composition = null
 		terrain = null
+		climate = null
 		return
 	var started := Time.get_ticks_msec()
 	composition = WorldCompositionGenerator.generate(
@@ -193,8 +236,15 @@ func _regenerate_composition() -> void:
 		composition.continental_value
 	)
 	_terrain_projection_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
+	climate = null if terrain == null else WorldClimateGenerator.generate(
+		graph, terrain, climate_settings
+	)
+	_climate_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
+	_climate_statistics = _calculate_climate_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -205,15 +255,17 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Terrain Height Foundation v1.2 Debug",
+		"Preliminary Climate v1.3 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
+		"Climate: %d ms" % _climate_generation_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
+		"C Temperature   P Precipitation",
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
@@ -222,8 +274,12 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		lines.append("Cell ID: %d" % selected_cell_id)
-		lines.append("Raw Composition Value: %d" % composition.continental_value[selected_cell_id])
 		lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
+		lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
+			selected_cell_id, graph, climate_settings
+		))
+		lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
+		lines.append("Precipitation: %.2f" % climate.precipitation[selected_cell_id])
 		lines.append("Land / Water: %s" % ("Land" if terrain.is_land(selected_cell_id) else "Water"))
 	var font := ThemeDB.fallback_font
 	for line_index in lines.size():
@@ -256,6 +312,14 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_land_water_statistics(lines)
 		ViewMode.LAND_WATER:
 			_append_land_water_statistics(lines)
+		ViewMode.TEMPERATURE:
+			lines.append("Min Temperature: %.2f °C" % _climate_statistics.min_temperature)
+			lines.append("Max Temperature: %.2f °C" % _climate_statistics.max_temperature)
+			lines.append("Mean Temperature: %.2f °C" % _climate_statistics.mean_temperature)
+		ViewMode.PRECIPITATION:
+			lines.append("Min Precipitation: %.2f" % _climate_statistics.min_precipitation)
+			lines.append("Max Precipitation: %.2f" % _climate_statistics.max_precipitation)
+			lines.append("Mean Precipitation: %.2f" % _climate_statistics.mean_precipitation)
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -294,14 +358,54 @@ func _calculate_terrain_statistics() -> Dictionary:
 	}
 
 
+func _calculate_climate_statistics() -> Dictionary:
+	if climate == null or climate.temperature.is_empty():
+		return {
+			"min_temperature": 0.0,
+			"max_temperature": 0.0,
+			"mean_temperature": 0.0,
+			"min_precipitation": 0.0,
+			"max_precipitation": 0.0,
+			"mean_precipitation": 0.0,
+		}
+	var min_temperature := INF
+	var max_temperature := -INF
+	var temperature_sum := 0.0
+	var min_precipitation := INF
+	var max_precipitation := 0.0
+	var precipitation_sum := 0.0
+	for cell_id in climate.cell_count():
+		var temperature := climate.temperature[cell_id]
+		var precipitation := climate.precipitation[cell_id]
+		min_temperature = minf(min_temperature, temperature)
+		max_temperature = maxf(max_temperature, temperature)
+		temperature_sum += temperature
+		min_precipitation = minf(min_precipitation, precipitation)
+		max_precipitation = maxf(max_precipitation, precipitation)
+		precipitation_sum += precipitation
+	var count := float(climate.cell_count())
+	return {
+		"min_temperature": min_temperature,
+		"max_temperature": max_temperature,
+		"mean_temperature": temperature_sum / count,
+		"min_precipitation": min_precipitation,
+		"max_precipitation": max_precipitation,
+		"mean_precipitation": precipitation_sum / count,
+	}
+
+
 func _view_mode_name() -> String:
 	match view_mode:
 		ViewMode.RAW_COMPOSITION:
 			return "Raw Composition"
 		ViewMode.TERRAIN_HEIGHT:
 			return "Terrain Height"
-		_:
+		ViewMode.LAND_WATER:
 			return "Land / Water"
+		ViewMode.TEMPERATURE:
+			return "Temperature"
+		_:
+			return "Precipitation"
 
 
 func _select_cell_at(world_position: Vector2) -> void:
