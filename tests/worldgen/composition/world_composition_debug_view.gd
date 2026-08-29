@@ -15,6 +15,7 @@ var composition: WorldCompositionLayer
 var terrain: TerrainHeightLayer
 var hydrology: HydrologyConditioningResult
 var formal_hydrology: WorldHydrologyLayer
+var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
 var hydrology_settings: WorldHydrologySettings
@@ -25,12 +26,14 @@ var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _hydrology_conditioning_ms := 0
 var _formal_hydrology_generation_ms := 0
-var _climate_generation_ms := 0
+var _preliminary_climate_generation_ms := 0
+var _final_climate_generation_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
 var _statistics := {}
 var _terrain_statistics := {}
 var _climate_statistics := {}
+var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 
 const _MARGIN := 24.0
@@ -46,6 +49,8 @@ enum ViewMode {
 	FLOW_ACCUMULATION,
 	RIVER_NETWORKS,
 	WATERSHEDS,
+	TEMPERATURE_DELTA,
+	PRECIPITATION_DELTA,
 }
 
 
@@ -69,9 +74,11 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_L:
 				view_mode = ViewMode.LAND_WATER
 			KEY_C:
-				view_mode = ViewMode.TEMPERATURE
+				view_mode = ViewMode.TEMPERATURE_DELTA \
+						if event.shift_pressed else ViewMode.TEMPERATURE
 			KEY_P:
-				view_mode = ViewMode.PRECIPITATION
+				view_mode = ViewMode.PRECIPITATION_DELTA \
+						if event.shift_pressed else ViewMode.PRECIPITATION
 			KEY_D:
 				view_mode = ViewMode.HYDROLOGY_CONDITIONING
 			KEY_F:
@@ -101,6 +108,7 @@ func _draw() -> void:
 			or terrain == null \
 			or hydrology == null \
 			or formal_hydrology == null \
+			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
@@ -192,8 +200,12 @@ func _cell_color(cell_id: int) -> Color:
 			return _flow_accumulation_color(cell_id)
 		ViewMode.RIVER_NETWORKS:
 			return _river_color(cell_id)
-		_:
+		ViewMode.WATERSHEDS:
 			return _watershed_color(cell_id)
+		ViewMode.TEMPERATURE_DELTA:
+			return _temperature_delta_color(cell_id)
+		_:
+			return _precipitation_delta_color(cell_id)
 
 
 func _hydrology_action_color(cell_id: int) -> Color:
@@ -234,6 +246,45 @@ func _watershed_color(cell_id: int) -> Color:
 	var watershed_id := formal_hydrology.watershed_id[cell_id]
 	var hue := fmod(float(watershed_id) * 0.61803398875, 1.0)
 	return Color.from_hsv(hue, 0.56, 0.68)
+
+
+func _temperature_delta_color(cell_id: int) -> Color:
+	var delta := climate.temperature[cell_id] - preliminary_climate.temperature[cell_id]
+	var maximum_absolute := float(_climate_delta_statistics.get("max_abs_temperature", 0.0))
+	return _diverging_color(
+		delta,
+		maximum_absolute,
+		Color(0.08, 0.30, 0.78),
+		Color(0.56, 0.56, 0.53),
+		Color(0.86, 0.16, 0.12)
+	)
+
+
+func _precipitation_delta_color(cell_id: int) -> Color:
+	var delta := climate.precipitation[cell_id] - preliminary_climate.precipitation[cell_id]
+	var maximum_absolute := float(_climate_delta_statistics.get("max_abs_precipitation", 0.0))
+	return _diverging_color(
+		delta,
+		maximum_absolute,
+		Color(0.88, 0.38, 0.08),
+		Color(0.56, 0.56, 0.53),
+		Color(0.06, 0.48, 0.88)
+	)
+
+
+func _diverging_color(
+		value: float,
+		maximum_absolute: float,
+		negative_color: Color,
+		neutral_color: Color,
+		positive_color: Color
+) -> Color:
+	if maximum_absolute <= 0.0:
+		return neutral_color
+	var normalized := clampf(value / maximum_absolute, -1.0, 1.0)
+	if normalized < 0.0:
+		return negative_color.lerp(neutral_color, normalized + 1.0)
+	return neutral_color.lerp(positive_color, normalized)
 
 
 func _terrain_height_color(height: float) -> Color:
@@ -297,6 +348,7 @@ func _regenerate_composition() -> void:
 		terrain = null
 		hydrology = null
 		formal_hydrology = null
+		preliminary_climate = null
 		climate = null
 		return
 	var started := Time.get_ticks_msec()
@@ -311,10 +363,10 @@ func _regenerate_composition() -> void:
 	_terrain_projection_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
-	climate = null if projected_terrain == null else WorldClimateGenerator.generate(
+	preliminary_climate = null if projected_terrain == null else WorldClimateGenerator.generate(
 		graph, projected_terrain, climate_settings
 	)
-	_climate_generation_ms = Time.get_ticks_msec() - started
+	_preliminary_climate_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	hydrology = null if projected_terrain == null else HydrologyConditioner.condition(
 		graph, projected_terrain
@@ -325,6 +377,11 @@ func _regenerate_composition() -> void:
 		terrain.terrain_height = hydrology.terrain_height.duplicate()
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
+	climate = null if terrain == null else WorldClimateGenerator.generate(
+		graph, terrain, climate_settings
+	)
+	_final_climate_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
 	hydrology_settings = WorldHydrologySettings.new()
 	formal_hydrology = null if terrain == null else WorldHydrologyGenerator.generate(
 		graph, terrain, climate, hydrology.closed_basin_id, hydrology_settings
@@ -333,6 +390,7 @@ func _regenerate_composition() -> void:
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
+	_climate_delta_statistics = _calculate_climate_delta_statistics()
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	selected_cell_id = -1
 	queue_redraw()
@@ -344,19 +402,21 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Formal Hydrology v1.5 Debug",
+		"Final Climate v1.6 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
-		"Climate: %d ms" % _climate_generation_ms,
+		"Preliminary Climate: %d ms" % _preliminary_climate_generation_ms,
 		"Conditioning: %d ms" % _hydrology_conditioning_ms,
+		"Final Climate: %d ms" % _final_climate_generation_ms,
 		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
-		"C Temperature   P Precipitation",
+		"C Final Temp   P Final Precip",
+		"Shift+C Temp Δ   Shift+P Precip Δ",
 		"D Hydrology Conditioning",
 		"F Flow Accum   N River Network",
 		"W Watersheds",
@@ -368,26 +428,44 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		lines.append("Cell ID: %d" % selected_cell_id)
-		if view_mode == ViewMode.HYDROLOGY_CONDITIONING:
+		if view_mode == ViewMode.TEMPERATURE_DELTA:
+			lines.append("Conditioned Height: %.3f" % terrain.terrain_height[selected_cell_id])
+			lines.append("Preliminary Temp: %.3f °C" % preliminary_climate.temperature[selected_cell_id])
+			lines.append("Final Temp: %.3f °C" % climate.temperature[selected_cell_id])
+			lines.append(
+				"Temperature Delta: %+.3f °C"
+				% (climate.temperature[selected_cell_id] - preliminary_climate.temperature[selected_cell_id])
+			)
+		elif view_mode == ViewMode.PRECIPITATION_DELTA:
+			lines.append("Conditioned Height: %.3f" % terrain.terrain_height[selected_cell_id])
+			lines.append("Preliminary Precip: %.3f" % preliminary_climate.precipitation[selected_cell_id])
+			lines.append("Final Precip: %.3f" % climate.precipitation[selected_cell_id])
+			lines.append(
+				"Precipitation Delta: %+.3f"
+				% (climate.precipitation[selected_cell_id] - preliminary_climate.precipitation[selected_cell_id])
+			)
+		elif view_mode == ViewMode.HYDROLOGY_CONDITIONING:
 			lines.append("Original Height: %.3f" % hydrology.original_height[selected_cell_id])
 			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
 			lines.append("Height Delta: %+.3f" % hydrology.height_delta[selected_cell_id])
 			lines.append("Action: %s" % hydrology.action_name(selected_cell_id))
-		else:
-			lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
-		lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
-			selected_cell_id, graph, climate_settings
-		))
-		lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
-		lines.append("Precipitation: %.2f" % climate.precipitation[selected_cell_id])
-		lines.append("Land / Water: %s" % ("Land" if terrain.is_land(selected_cell_id) else "Water"))
-		lines.append("Local Runoff: %.3f" % formal_hydrology.local_runoff[selected_cell_id])
-		lines.append("Flow To: %s" % _flow_to_text(selected_cell_id))
-		lines.append("Flow Accumulation: %.3f" % formal_hydrology.flow_accumulation[selected_cell_id])
-		lines.append("River Network ID: %d" % formal_hydrology.river_network_id[selected_cell_id])
-		lines.append("River Order: %d" % formal_hydrology.river_order[selected_cell_id])
-		lines.append("Watershed ID: %d" % formal_hydrology.watershed_id[selected_cell_id])
-		lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
+		if view_mode != ViewMode.TEMPERATURE_DELTA \
+				and view_mode != ViewMode.PRECIPITATION_DELTA:
+			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
+				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
+			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
+				selected_cell_id, graph, climate_settings
+			))
+			lines.append("Final Temperature: %.2f °C" % climate.temperature[selected_cell_id])
+			lines.append("Final Precipitation: %.2f" % climate.precipitation[selected_cell_id])
+			lines.append("Land / Water: %s" % ("Land" if terrain.is_land(selected_cell_id) else "Water"))
+			lines.append("Local Runoff: %.3f" % formal_hydrology.local_runoff[selected_cell_id])
+			lines.append("Flow To: %s" % _flow_to_text(selected_cell_id))
+			lines.append("Flow Accumulation: %.3f" % formal_hydrology.flow_accumulation[selected_cell_id])
+			lines.append("River Network ID: %d" % formal_hydrology.river_network_id[selected_cell_id])
+			lines.append("River Order: %d" % formal_hydrology.river_order[selected_cell_id])
+			lines.append("Watershed ID: %d" % formal_hydrology.watershed_id[selected_cell_id])
+			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
 	var font := ThemeDB.fallback_font
 	for line_index in lines.size():
 		draw_string(
@@ -420,13 +498,13 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 		ViewMode.LAND_WATER:
 			_append_land_water_statistics(lines)
 		ViewMode.TEMPERATURE:
-			lines.append("Min Temperature: %.2f °C" % _climate_statistics.min_temperature)
-			lines.append("Max Temperature: %.2f °C" % _climate_statistics.max_temperature)
-			lines.append("Mean Temperature: %.2f °C" % _climate_statistics.mean_temperature)
+			lines.append("Min Final Temperature: %.2f °C" % _climate_statistics.min_temperature)
+			lines.append("Max Final Temperature: %.2f °C" % _climate_statistics.max_temperature)
+			lines.append("Mean Final Temperature: %.2f °C" % _climate_statistics.mean_temperature)
 		ViewMode.PRECIPITATION:
-			lines.append("Min Precipitation: %.2f" % _climate_statistics.min_precipitation)
-			lines.append("Max Precipitation: %.2f" % _climate_statistics.max_precipitation)
-			lines.append("Mean Precipitation: %.2f" % _climate_statistics.mean_precipitation)
+			lines.append("Min Final Precipitation: %.2f" % _climate_statistics.min_precipitation)
+			lines.append("Max Final Precipitation: %.2f" % _climate_statistics.max_precipitation)
+			lines.append("Mean Final Precipitation: %.2f" % _climate_statistics.mean_precipitation)
 			lines.append("P25: %.2f" % _climate_statistics.precipitation_p25)
 			lines.append("P50 / Median: %.2f" % _climate_statistics.precipitation_p50)
 			lines.append("P75: %.2f" % _climate_statistics.precipitation_p75)
@@ -461,6 +539,14 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 		ViewMode.WATERSHEDS:
 			lines.append("Watershed Count: %d" % formal_hydrology.watershed_count)
 			lines.append("Closed Basin Count: %d" % formal_hydrology.closed_basin_inflows.size())
+		ViewMode.TEMPERATURE_DELTA:
+			lines.append("Min Delta: %+.4f °C" % _climate_delta_statistics.min_temperature_delta)
+			lines.append("Max Delta: %+.4f °C" % _climate_delta_statistics.max_temperature_delta)
+			lines.append("Mean Absolute Delta: %.4f °C" % _climate_delta_statistics.mean_abs_temperature_delta)
+		ViewMode.PRECIPITATION_DELTA:
+			lines.append("Min Delta: %+.4f" % _climate_delta_statistics.min_precipitation_delta)
+			lines.append("Max Delta: %+.4f" % _climate_delta_statistics.max_precipitation_delta)
+			lines.append("Mean Absolute Delta: %.4f" % _climate_delta_statistics.mean_abs_precipitation_delta)
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -545,6 +631,50 @@ func _calculate_climate_statistics() -> Dictionary:
 	}
 
 
+func _calculate_climate_delta_statistics() -> Dictionary:
+	if preliminary_climate == null or climate == null or climate.temperature.is_empty():
+		return {
+			"min_temperature_delta": 0.0,
+			"max_temperature_delta": 0.0,
+			"mean_abs_temperature_delta": 0.0,
+			"max_abs_temperature": 0.0,
+			"min_precipitation_delta": 0.0,
+			"max_precipitation_delta": 0.0,
+			"mean_abs_precipitation_delta": 0.0,
+			"max_abs_precipitation": 0.0,
+		}
+	var min_temperature_delta := INF
+	var max_temperature_delta := -INF
+	var temperature_absolute_sum := 0.0
+	var min_precipitation_delta := INF
+	var max_precipitation_delta := -INF
+	var precipitation_absolute_sum := 0.0
+	for cell_id in climate.cell_count():
+		var temperature_delta := (
+			climate.temperature[cell_id] - preliminary_climate.temperature[cell_id]
+		)
+		var precipitation_delta := (
+			climate.precipitation[cell_id] - preliminary_climate.precipitation[cell_id]
+		)
+		min_temperature_delta = minf(min_temperature_delta, temperature_delta)
+		max_temperature_delta = maxf(max_temperature_delta, temperature_delta)
+		temperature_absolute_sum += absf(temperature_delta)
+		min_precipitation_delta = minf(min_precipitation_delta, precipitation_delta)
+		max_precipitation_delta = maxf(max_precipitation_delta, precipitation_delta)
+		precipitation_absolute_sum += absf(precipitation_delta)
+	var count := float(climate.cell_count())
+	return {
+		"min_temperature_delta": min_temperature_delta,
+		"max_temperature_delta": max_temperature_delta,
+		"mean_abs_temperature_delta": temperature_absolute_sum / count,
+		"max_abs_temperature": maxf(absf(min_temperature_delta), absf(max_temperature_delta)),
+		"min_precipitation_delta": min_precipitation_delta,
+		"max_precipitation_delta": max_precipitation_delta,
+		"mean_abs_precipitation_delta": precipitation_absolute_sum / count,
+		"max_abs_precipitation": maxf(absf(min_precipitation_delta), absf(max_precipitation_delta)),
+	}
+
+
 func _calculate_formal_hydrology_statistics() -> Dictionary:
 	if formal_hydrology == null or formal_hydrology.flow_accumulation.is_empty():
 		return {
@@ -626,17 +756,21 @@ func _view_mode_name() -> String:
 		ViewMode.LAND_WATER:
 			return "Land / Water"
 		ViewMode.TEMPERATURE:
-			return "Temperature"
+			return "Final Temperature"
 		ViewMode.PRECIPITATION:
-			return "Precipitation"
+			return "Final Precipitation"
 		ViewMode.HYDROLOGY_CONDITIONING:
 			return "Hydrology Conditioning"
 		ViewMode.FLOW_ACCUMULATION:
 			return "Flow Accumulation"
 		ViewMode.RIVER_NETWORKS:
 			return "River Network"
-		_:
+		ViewMode.WATERSHEDS:
 			return "Watersheds"
+		ViewMode.TEMPERATURE_DELTA:
+			return "Temperature Delta"
+		_:
+			return "Precipitation Delta"
 
 
 func _select_cell_at(world_position: Vector2) -> void:
