@@ -14,6 +14,10 @@ func _run_all() -> void:
 	_test_material_lookup_and_weight_tables()
 	_test_province_regions_are_continuous()
 	_test_material_patches_are_continuous()
+	_test_flat_landmass_does_not_force_orogenic_quota()
+	_test_mountainous_landmass_increases_orogenic_share()
+	_test_coastal_landmass_increases_passive_margin_share()
+	_test_zero_suitability_is_never_forced()
 	_finish()
 
 
@@ -145,6 +149,67 @@ func _test_material_patches_are_continuous() -> void:
 	)
 
 
+func _test_flat_landmass_does_not_force_orogenic_quota() -> void:
+	var count := 8000
+	var graph := _line_graph(count, 31415)
+	var terrain := _flat_terrain(count)
+	var geology := GeologyGenerator.generate(graph, terrain)
+	_expect(geology != null, "flat landmass should generate Geology")
+	if geology == null:
+		return
+	_expect(
+		_province_ratio(geology, terrain, GeologyCatalog.Province.OROGENIC_BELT) < 0.20,
+		"flat low-relief terrain should not receive the former 25% Orogenic quota"
+	)
+
+
+func _test_mountainous_landmass_increases_orogenic_share() -> void:
+	var count := 8000
+	var graph := _line_graph(count, 31415)
+	var flat_terrain := _flat_terrain(count)
+	var mountain_terrain := _mountainous_terrain(count)
+	_expect(
+		_province_type_weight(
+			graph, mountain_terrain, GeologyCatalog.Province.OROGENIC_BELT
+		) > _province_type_weight(graph, flat_terrain, GeologyCatalog.Province.OROGENIC_BELT),
+		"high-relief mountain terrain should increase the Orogenic selection weight"
+	)
+
+
+func _test_coastal_landmass_increases_passive_margin_share() -> void:
+	var inland_count := 8000
+	var coastal_count := 8200
+	var inland_graph := _line_graph(inland_count, 27182)
+	var coastal_graph := _line_graph(coastal_count, 27182)
+	var inland_terrain := _flat_terrain(inland_count)
+	var coastal_terrain := _coastal_flat_terrain(coastal_count, 100)
+	_expect(
+		_province_type_weight(
+			coastal_graph, coastal_terrain, GeologyCatalog.Province.PASSIVE_MARGIN
+		) > _province_type_weight(
+			inland_graph, inland_terrain, GeologyCatalog.Province.PASSIVE_MARGIN
+		),
+		"a long low coast should increase the Passive Margin selection weight"
+	)
+
+
+func _test_zero_suitability_is_never_forced() -> void:
+	var no_orogenic := PackedFloat32Array([0.0, 1.0, 0.0, 1.0, 1.0, 0.5])
+	var no_volcanic := PackedFloat32Array([0.0, 1.0, 1.0, 1.0, 1.0, 0.0])
+	for sample_index in 100:
+		var deterministic_value := (float(sample_index) + 0.5) / 100.0
+		_expect(
+			GeologyGenerator.select_province_type(no_orogenic, deterministic_value) \
+					!= GeologyCatalog.Province.OROGENIC_BELT,
+			"zero Orogenic suitability must never be overridden by a fixed quota"
+		)
+		_expect(
+			GeologyGenerator.select_province_type(no_volcanic, deterministic_value) \
+					!= GeologyCatalog.Province.VOLCANIC_PROVINCE,
+			"zero Volcanic suitability must never be overridden by a fixed quota"
+		)
+
+
 func _line_graph(cell_count: int, world_seed: int) -> SpatialGraph:
 	var graph := SpatialGraph.new()
 	graph.config = SpatialConfig.new(world_seed, float(cell_count), 1.0, cell_count, 0.9)
@@ -193,6 +258,62 @@ func _all_land_terrain(cell_count: int) -> TerrainHeightLayer:
 	return terrain
 
 
+func _flat_terrain(cell_count: int) -> TerrainHeightLayer:
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height.resize(cell_count)
+	terrain.terrain_height.fill(10.0)
+	return terrain
+
+
+func _mountainous_terrain(cell_count: int) -> TerrainHeightLayer:
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height.resize(cell_count)
+	for cell_id in cell_count:
+		terrain.terrain_height[cell_id] = 90.0 if cell_id % 2 == 0 else 10.0
+	return terrain
+
+
+func _coastal_flat_terrain(cell_count: int, ocean_width: int) -> TerrainHeightLayer:
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height.resize(cell_count)
+	for cell_id in cell_count:
+		terrain.terrain_height[cell_id] = -10.0 \
+				if cell_id < ocean_width or cell_id >= cell_count - ocean_width else 10.0
+	return terrain
+
+
+func _province_ratio(
+		geology: GeologyLayer,
+		terrain: TerrainHeightLayer,
+		province_id: int
+) -> float:
+	var land_count := 0
+	var province_count := 0
+	for cell_id in geology.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0:
+			continue
+		land_count += 1
+		if geology.province_id[cell_id] == province_id:
+			province_count += 1
+	return float(province_count) / float(land_count)
+
+
+func _province_type_weight(
+		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
+		province_id: int
+) -> float:
+	var land_cells := PackedInt32Array()
+	for cell_id in graph.cell_count():
+		if terrain.terrain_height[cell_id] >= 0.0:
+			land_cells.append(cell_id)
+	var cell_suitability := GeologyGenerator._province_suitability(graph, terrain)
+	var representative := GeologyGenerator._landmass_suitability(
+		land_cells, cell_suitability
+	)
+	return GeologyGenerator.PROVINCE_BASE_PRIOR[province_id] * representative[province_id]
+
+
 func _count_transitions(values: PackedInt32Array) -> int:
 	var transitions := 0
 	for cell_id in range(1, values.size()):
@@ -220,7 +341,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Geology / Subsurface Foundation: all 6 test groups passed")
+		print("Geology / Subsurface Foundation: all 10 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

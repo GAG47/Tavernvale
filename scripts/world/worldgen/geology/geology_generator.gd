@@ -5,6 +5,7 @@ const PROVINCE_TARGET_CELLS_PER_SEED := 800
 const MATERIAL_TARGET_CELLS_PER_SEED := 180
 const MAX_PROVINCE_SEEDS_PER_COMPONENT := 32
 const MAX_MATERIAL_SEEDS_PER_COMPONENT := 96
+const PROVINCE_BASE_PRIOR := [0.0, 0.30, 0.25, 0.25, 0.15, 0.05]
 
 const _MASK := 0x7fffffff
 const _GEOLOGY_SALT := 0x47454f4c # "GEOL"
@@ -218,8 +219,12 @@ static func _assign_province_component(
 		mini(MAX_PROVINCE_SEEDS_PER_COMPONENT, cells.size())
 	)
 	var seeds: Array = []
+	var landmass_suitability := _landmass_suitability(cells, suitability)
 	for seed_index in seed_count:
-		var province := _province_for_seed(cells, seed_index, seed_count, suitability)
+		var province := select_province_type(
+			landmass_suitability,
+			_unit_noise(seed, component_id * 1009 + seed_index, 0x50524f56)
+		)
 		var cell_id := _choose_region_seed(
 			graph, cells, seeds, province, suitability, seed, component_id * 101 + seed_index
 		)
@@ -235,40 +240,51 @@ static func _assign_province_component(
 	)
 
 
-static func _province_for_seed(
+static func _landmass_suitability(
 		cells: PackedInt32Array,
-		seed_index: int,
-		seed_count: int,
 		suitability: Array
-) -> int:
-	if seed_count == 1:
-		var best_province := GeologyCatalog.Province.CRATON
-		var best_score := -INF
-		for province in range(
+) -> PackedFloat32Array:
+	var representative := PackedFloat32Array()
+	representative.resize(GeologyCatalog.PROVINCE_COUNT)
+	var top_count := clampi(ceili(float(cells.size()) * 0.10), 1, 64)
+	for province in range(
 			GeologyCatalog.Province.CRATON,
 			GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
-		):
-			var score := 0.0
-			for cell_id in cells:
-				score += suitability[province][cell_id]
-			score /= float(cells.size())
-			if province == GeologyCatalog.Province.VOLCANIC_PROVINCE:
-				score *= 0.55
-			if score > best_score:
-				best_score = score
-				best_province = province
-		return best_province
-	match seed_index % 20:
-		0, 5, 8, 12, 15, 17:
-			return GeologyCatalog.Province.CRATON
-		1, 6, 9, 13, 18:
-			return GeologyCatalog.Province.OROGENIC_BELT
-		2, 7, 10, 14, 19:
-			return GeologyCatalog.Province.SEDIMENTARY_BASIN
-		3, 11, 16:
-			return GeologyCatalog.Province.PASSIVE_MARGIN
-		_:
-			return GeologyCatalog.Province.VOLCANIC_PROVINCE
+	):
+		var candidates := PackedFloat32Array()
+		candidates.resize(cells.size())
+		for cell_index in cells.size():
+			candidates[cell_index] = suitability[province][cells[cell_index]]
+		candidates.sort()
+		var sum := 0.0
+		for candidate_index in range(candidates.size() - top_count, candidates.size()):
+			sum += candidates[candidate_index]
+		representative[province] = sum / float(top_count)
+	return representative
+
+
+static func select_province_type(
+		landmass_suitability: PackedFloat32Array,
+		deterministic_value: float
+) -> int:
+	var total_weight := 0.0
+	for province in range(
+		GeologyCatalog.Province.CRATON,
+		GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
+	):
+		total_weight += PROVINCE_BASE_PRIOR[province] * landmass_suitability[province]
+	if total_weight <= 0.0:
+		return GeologyCatalog.Province.CRATON
+	var target := clampf(deterministic_value, 0.0, 0.999999) * total_weight
+	var cumulative := 0.0
+	for province in range(
+		GeologyCatalog.Province.CRATON,
+		GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
+	):
+		cumulative += PROVINCE_BASE_PRIOR[province] * landmass_suitability[province]
+		if target < cumulative:
+			return province
+	return GeologyCatalog.Province.VOLCANIC_PROVINCE
 
 
 static func _choose_region_seed(
