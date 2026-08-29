@@ -15,8 +15,11 @@ func _run_all() -> void:
 	_test_province_regions_are_continuous()
 	_test_material_patches_are_continuous()
 	_test_flat_landmass_does_not_force_orogenic_quota()
-	_test_mountainous_landmass_increases_orogenic_share()
-	_test_coastal_landmass_increases_passive_margin_share()
+	_test_local_mountain_seed_increases_orogenic_weight()
+	_test_local_lowland_seed_increases_sedimentary_weight()
+	_test_coastal_seed_increases_passive_margin_weight()
+	_test_interior_flat_seed_increases_craton_weight()
+	_test_same_landmass_local_weights_are_distinct()
 	_test_zero_suitability_is_never_forced()
 	_finish()
 
@@ -163,33 +166,62 @@ func _test_flat_landmass_does_not_force_orogenic_quota() -> void:
 	)
 
 
-func _test_mountainous_landmass_increases_orogenic_share() -> void:
-	var count := 8000
-	var graph := _line_graph(count, 31415)
-	var flat_terrain := _flat_terrain(count)
-	var mountain_terrain := _mountainous_terrain(count)
+func _test_local_mountain_seed_increases_orogenic_weight() -> void:
+	var graph := _line_graph(121, 31415)
+	var terrain := _local_mountain_terrain(121, 30)
+	var mountain_weights := _province_type_weights_at(graph, terrain, 30)
+	var flat_weights := _province_type_weights_at(graph, terrain, 90)
 	_expect(
-		_province_type_weight(
-			graph, mountain_terrain, GeologyCatalog.Province.OROGENIC_BELT
-		) > _province_type_weight(graph, flat_terrain, GeologyCatalog.Province.OROGENIC_BELT),
-		"high-relief mountain terrain should increase the Orogenic selection weight"
+		mountain_weights[GeologyCatalog.Province.OROGENIC_BELT] \
+				> flat_weights[GeologyCatalog.Province.OROGENIC_BELT] * 2.0,
+		"a high-relief local seed should have much more Orogenic weight than flat terrain"
 	)
 
 
-func _test_coastal_landmass_increases_passive_margin_share() -> void:
-	var inland_count := 8000
-	var coastal_count := 8200
-	var inland_graph := _line_graph(inland_count, 27182)
-	var coastal_graph := _line_graph(coastal_count, 27182)
-	var inland_terrain := _flat_terrain(inland_count)
-	var coastal_terrain := _coastal_flat_terrain(coastal_count, 100)
+func _test_local_lowland_seed_increases_sedimentary_weight() -> void:
+	var graph := _line_graph(121, 16180)
+	var terrain := _local_lowland_terrain(121, 40)
+	var lowland_weights := _province_type_weights_at(graph, terrain, 40)
+	var level_weights := _province_type_weights_at(graph, terrain, 90)
 	_expect(
-		_province_type_weight(
-			coastal_graph, coastal_terrain, GeologyCatalog.Province.PASSIVE_MARGIN
-		) > _province_type_weight(
-			inland_graph, inland_terrain, GeologyCatalog.Province.PASSIVE_MARGIN
-		),
-		"a long low coast should increase the Passive Margin selection weight"
+		lowland_weights[GeologyCatalog.Province.SEDIMENTARY_BASIN] \
+				> level_weights[GeologyCatalog.Province.SEDIMENTARY_BASIN],
+		"a locally low, smooth seed should have more Sedimentary Basin weight"
+	)
+
+
+func _test_coastal_seed_increases_passive_margin_weight() -> void:
+	var graph := _line_graph(121, 27182)
+	var terrain := _coastal_flat_terrain(121, 10)
+	var coastal_weights := _province_type_weights_at(graph, terrain, 10)
+	var interior_weights := _province_type_weights_at(graph, terrain, 90)
+	_expect(
+		coastal_weights[GeologyCatalog.Province.PASSIVE_MARGIN] \
+				> interior_weights[GeologyCatalog.Province.PASSIVE_MARGIN] * 2.0,
+		"a low, smooth coastal seed should have much more Passive Margin weight"
+	)
+
+
+func _test_interior_flat_seed_increases_craton_weight() -> void:
+	var graph := _line_graph(121, 27182)
+	var terrain := _coastal_flat_terrain(121, 10)
+	var coastal_weights := _province_type_weights_at(graph, terrain, 10)
+	var interior_weights := _province_type_weights_at(graph, terrain, 90)
+	_expect(
+		interior_weights[GeologyCatalog.Province.CRATON] \
+				> coastal_weights[GeologyCatalog.Province.CRATON],
+		"a flat interior seed should have more Craton weight than a coastal seed"
+	)
+
+
+func _test_same_landmass_local_weights_are_distinct() -> void:
+	var graph := _line_graph(121, 31415)
+	var terrain := _local_mountain_terrain(121, 30)
+	var mountain_weights := _province_type_weights_at(graph, terrain, 30)
+	var flat_weights := _province_type_weights_at(graph, terrain, 90)
+	_expect(
+		mountain_weights != flat_weights,
+		"different local terrain in one landmass must not share one type-weight distribution"
 	)
 
 
@@ -265,11 +297,21 @@ func _flat_terrain(cell_count: int) -> TerrainHeightLayer:
 	return terrain
 
 
-func _mountainous_terrain(cell_count: int) -> TerrainHeightLayer:
+func _local_mountain_terrain(cell_count: int, mountain_center: int) -> TerrainHeightLayer:
 	var terrain := TerrainHeightLayer.new()
 	terrain.terrain_height.resize(cell_count)
-	for cell_id in cell_count:
+	terrain.terrain_height.fill(20.0)
+	for cell_id in range(mountain_center - 2, mountain_center + 3):
 		terrain.terrain_height[cell_id] = 90.0 if cell_id % 2 == 0 else 10.0
+	return terrain
+
+
+func _local_lowland_terrain(cell_count: int, lowland_center: int) -> TerrainHeightLayer:
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height.resize(cell_count)
+	terrain.terrain_height.fill(40.0)
+	for cell_id in range(lowland_center - 2, lowland_center + 3):
+		terrain.terrain_height[cell_id] = 10.0
 	return terrain
 
 
@@ -298,20 +340,23 @@ func _province_ratio(
 	return float(province_count) / float(land_count)
 
 
-func _province_type_weight(
+func _province_type_weights_at(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
-		province_id: int
-) -> float:
+		seed_cell_id: int
+) -> PackedFloat32Array:
 	var land_cells := PackedInt32Array()
 	for cell_id in graph.cell_count():
 		if terrain.terrain_height[cell_id] >= 0.0:
 			land_cells.append(cell_id)
 	var cell_suitability := GeologyGenerator._province_suitability(graph, terrain)
-	var representative := GeologyGenerator._landmass_suitability(
+	var landmass_context := GeologyGenerator._landmass_suitability(
 		land_cells, cell_suitability
 	)
-	return GeologyGenerator.PROVINCE_BASE_PRIOR[province_id] * representative[province_id]
+	var local_suitability := GeologyGenerator._local_province_suitability(
+		graph, terrain, seed_cell_id, GeologyGenerator._coast_steps(graph, terrain)
+	)
+	return GeologyGenerator.province_type_weights(local_suitability, landmass_context)
 
 
 func _count_transitions(values: PackedInt32Array) -> int:
@@ -341,7 +386,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Geology / Subsurface Foundation: all 10 test groups passed")
+		print("Geology / Subsurface Foundation: all 13 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

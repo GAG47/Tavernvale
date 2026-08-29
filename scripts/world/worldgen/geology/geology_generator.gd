@@ -28,14 +28,17 @@ static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> Geolog
 
 	var seed := _geology_seed(graph.config.seed)
 	var suitability := _province_suitability(graph, terrain)
+	var coast_steps := _coast_steps(graph, terrain)
 	var land_components := _components_by_land(graph, terrain)
 	for component_id in land_components.components.size():
 		_assign_province_component(
 			graph,
+			terrain,
 			land_components.components[component_id],
 			component_id,
 			land_components.component_by_cell,
 			suitability,
+			coast_steps,
 			seed,
 			geology.province_id
 		)
@@ -206,10 +209,12 @@ static func _components_by_land(
 
 static func _assign_province_component(
 		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
 		cells: PackedInt32Array,
 		component_id: int,
 		component_by_cell: PackedInt32Array,
 		suitability: Array,
+		coast_steps: PackedInt32Array,
 		seed: int,
 		province_id: PackedInt32Array
 ) -> void:
@@ -221,12 +226,16 @@ static func _assign_province_component(
 	var seeds: Array = []
 	var landmass_suitability := _landmass_suitability(cells, suitability)
 	for seed_index in seed_count:
-		var province := select_province_type(
-			landmass_suitability,
-			_unit_noise(seed, component_id * 1009 + seed_index, 0x50524f56)
-		)
 		var cell_id := _choose_region_seed(
-			graph, cells, seeds, province, suitability, seed, component_id * 101 + seed_index
+			graph, cells, seeds, seed, component_id * 101 + seed_index
+		)
+		var local_suitability := _local_province_suitability(
+			graph, terrain, cell_id, coast_steps
+		)
+		var province := select_province_type(
+			local_suitability,
+			_unit_noise(seed, component_id * 1009 + seed_index, 0x50524f56),
+			landmass_suitability
 		)
 		seeds.append({"cell_id": cell_id, "value": province})
 	_expand_regions(
@@ -263,16 +272,110 @@ static func _landmass_suitability(
 	return representative
 
 
+static func _local_province_suitability(
+		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
+		seed_cell_id: int,
+		coast_steps: PackedInt32Array
+) -> PackedFloat32Array:
+	var features := _local_terrain_features(graph, terrain, seed_cell_id, coast_steps)
+	var normalized_height: float = features.local_mean_height
+	var relief: float = features.local_relief
+	var smoothness := 1.0 - relief
+	var relative_lowland: float = features.relative_lowland
+	var coast_proximity: float = features.coast_proximity
+	var interior := 1.0 - coast_proximity
+	var values := PackedFloat32Array()
+	values.resize(GeologyCatalog.PROVINCE_COUNT)
+	values[GeologyCatalog.Province.CRATON] = clampf(
+		0.15 + 0.35 * interior + 0.30 * smoothness + 0.20 * (1.0 - normalized_height),
+		0.0,
+		1.0
+	)
+	values[GeologyCatalog.Province.OROGENIC_BELT] = clampf(
+		0.02 + 0.45 * normalized_height + 0.50 * relief + 0.03 * interior,
+		0.0,
+		1.0
+	)
+	values[GeologyCatalog.Province.SEDIMENTARY_BASIN] = clampf(
+		0.05 + 0.25 * interior + 0.25 * smoothness \
+		+ 0.35 * relative_lowland + 0.10 * (1.0 - normalized_height),
+		0.0,
+		1.0
+	)
+	values[GeologyCatalog.Province.PASSIVE_MARGIN] = clampf(
+		0.03 + 0.55 * coast_proximity + 0.25 * smoothness \
+		+ 0.17 * (1.0 - normalized_height),
+		0.0,
+		1.0
+	)
+	values[GeologyCatalog.Province.VOLCANIC_PROVINCE] = clampf(
+		0.02 + 0.55 * values[GeologyCatalog.Province.OROGENIC_BELT] \
+		+ 0.20 * coast_proximity + 0.18 * normalized_height + 0.05 * relief,
+		0.0,
+		1.0
+	)
+	return values
+
+
+static func _local_terrain_features(
+		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
+		seed_cell_id: int,
+		coast_steps: PackedInt32Array
+) -> Dictionary:
+	var queue := PackedInt32Array([seed_cell_id])
+	var ring_by_cell := {seed_cell_id: 0}
+	var local_minimum := terrain.terrain_height[seed_cell_id]
+	var local_maximum := local_minimum
+	var local_sum := 0.0
+	var local_count := 0
+	var context_sum := 0.0
+	var context_count := 0
+	var queue_index := 0
+	while queue_index < queue.size():
+		var cell_id := queue[queue_index]
+		queue_index += 1
+		var ring: int = ring_by_cell[cell_id]
+		var height := terrain.terrain_height[cell_id]
+		context_sum += height
+		context_count += 1
+		if ring <= 2:
+			local_minimum = minf(local_minimum, height)
+			local_maximum = maxf(local_maximum, height)
+			local_sum += height
+			local_count += 1
+		if ring >= 4:
+			continue
+		for neighbor_id in graph.cell_neighbors[cell_id]:
+			if terrain.terrain_height[neighbor_id] < 0.0 or ring_by_cell.has(neighbor_id):
+				continue
+			ring_by_cell[neighbor_id] = ring + 1
+			queue.append(neighbor_id)
+	var local_mean := local_sum / float(local_count)
+	var context_mean := context_sum / float(context_count)
+	var coast_step := coast_steps[seed_cell_id]
+	var interior := 1.0 if coast_step < 0 else clampf(float(coast_step) / 8.0, 0.0, 1.0)
+	return {
+		"local_mean_height": clampf(local_mean / 100.0, 0.0, 1.0),
+		"local_relief": clampf((local_maximum - local_minimum) / 30.0, 0.0, 1.0),
+		"relative_lowland": clampf(0.5 + (context_mean - local_mean) / 30.0, 0.0, 1.0),
+		"coast_proximity": 1.0 - interior,
+	}
+
+
 static func select_province_type(
-		landmass_suitability: PackedFloat32Array,
-		deterministic_value: float
+		local_suitability: PackedFloat32Array,
+		deterministic_value: float,
+		landmass_context: PackedFloat32Array = PackedFloat32Array()
 ) -> int:
+	var weights := province_type_weights(local_suitability, landmass_context)
 	var total_weight := 0.0
 	for province in range(
 		GeologyCatalog.Province.CRATON,
 		GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
 	):
-		total_weight += PROVINCE_BASE_PRIOR[province] * landmass_suitability[province]
+		total_weight += weights[province]
 	if total_weight <= 0.0:
 		return GeologyCatalog.Province.CRATON
 	var target := clampf(deterministic_value, 0.0, 0.999999) * total_weight
@@ -281,18 +384,35 @@ static func select_province_type(
 		GeologyCatalog.Province.CRATON,
 		GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
 	):
-		cumulative += PROVINCE_BASE_PRIOR[province] * landmass_suitability[province]
+		cumulative += weights[province]
 		if target < cumulative:
 			return province
 	return GeologyCatalog.Province.VOLCANIC_PROVINCE
+
+
+static func province_type_weights(
+		local_suitability: PackedFloat32Array,
+		landmass_context: PackedFloat32Array = PackedFloat32Array()
+) -> PackedFloat32Array:
+	var weights := PackedFloat32Array()
+	weights.resize(GeologyCatalog.PROVINCE_COUNT)
+	var has_context := landmass_context.size() == GeologyCatalog.PROVINCE_COUNT
+	for province in range(
+		GeologyCatalog.Province.CRATON,
+		GeologyCatalog.Province.VOLCANIC_PROVINCE + 1
+	):
+		var context_modifier := 1.0
+		if has_context:
+			context_modifier = lerpf(0.90, 1.10, clampf(landmass_context[province], 0.0, 1.0))
+		weights[province] = PROVINCE_BASE_PRIOR[province] \
+				* local_suitability[province] * context_modifier
+	return weights
 
 
 static func _choose_region_seed(
 		graph: SpatialGraph,
 		cells: PackedInt32Array,
 		existing_seeds: Array,
-		province: int,
-		suitability: Array,
 		seed: int,
 		salt: int
 ) -> int:
@@ -316,8 +436,7 @@ static func _choose_region_seed(
 			continue
 		var separation := 0.0 if existing_seeds.is_empty() \
 				else clampf(minimum_distance * sqrt(float(existing_seeds.size() + 1)) / diagonal, 0.0, 1.0)
-		var score: float = suitability[province][cell_id] + separation * 0.65 \
-				+ _unit_noise(seed, cell_id, salt) * 0.08
+		var score := separation * 0.65 + _unit_noise(seed, cell_id, salt) * 0.08
 		if score > best_score or (is_equal_approx(score, best_score) and cell_id < best_cell):
 			best_score = score
 			best_cell = cell_id
