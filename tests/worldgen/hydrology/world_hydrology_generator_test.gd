@@ -72,7 +72,10 @@ func _test_flow_accumulation_confluence() -> void:
 	_expect(is_equal_approx(layer.local_runoff[2], 6.0), "C local runoff should be 3 x area 2")
 	_expect(is_equal_approx(layer.flow_accumulation[2], 12.0), "C should accumulate A + B + C")
 	_expect(is_equal_approx(layer.flow_accumulation[3], 20.0), "D should receive the full confluence")
-	_expect(layer.river_id[2] >= 0, "a threshold-qualified confluence should be River")
+	_expect(
+		layer.river_network_id[2] >= 0,
+		"a threshold-qualified confluence should be in a River Network"
+	)
 
 
 func _test_river_strahler_hierarchy() -> void:
@@ -114,8 +117,11 @@ func _test_river_strahler_hierarchy() -> void:
 	_expect(layer.river_order[4] == 2, "1 + 2 should remain Strahler Order 2")
 	_expect(layer.river_order[7] == 2, "the second 1 + 1 branch should be Order 2")
 	_expect(layer.river_order[8] == 3, "2 + 2 should produce Strahler Order 3")
-	_expect(layer.rivers.size() == 1, "connected tributaries should form one River Network")
-	_expect(layer.rivers[0].order == 3, "River metadata should expose maximum Strahler Order")
+	_expect(layer.river_networks.size() == 1, "connected tributaries should form one River Network")
+	_expect(
+		layer.river_networks[0].order == 3,
+		"River Network metadata should expose maximum Strahler Order"
+	)
 
 
 func _test_two_watersheds() -> void:
@@ -183,12 +189,16 @@ func _test_lengths_values_and_loop_validation() -> void:
 	_expect(layer != null, "validation test should generate Formal Hydrology")
 	if layer == null:
 		return
+	_expect(
+		is_equal_approx(layer.settings.river_runoff_threshold, 5000.0),
+		"default river runoff threshold should be 5000"
+	)
 	for values in [
 		layer.local_runoff,
 		layer.flow_to,
 		layer.flow_accumulation,
 		layer.watershed_id,
-		layer.river_id,
+		layer.river_network_id,
 		layer.river_order,
 	]:
 		_expect(values.size() == graph.cell_count(), "every formal PackedArray should match Cell Count")

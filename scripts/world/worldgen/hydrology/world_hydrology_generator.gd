@@ -35,7 +35,7 @@ static func generate(
 	layer.river_order = _calculate_strahler_order(
 		river_mask, layer.flow_to, topology.topological_order
 	)
-	var network := _build_river_network(
+	var networks := _build_river_networks(
 		graph,
 		river_mask,
 		layer.flow_to,
@@ -43,8 +43,8 @@ static func generate(
 		layer.flow_accumulation,
 		layer.river_order
 	)
-	layer.river_id = network.river_id
-	layer.rivers = network.rivers
+	layer.river_network_id = networks.river_network_id
+	layer.river_networks = networks.river_networks
 	var watersheds := _calculate_watersheds(
 		graph, terrain.terrain_height, closed_basin_id, layer.flow_to
 	)
@@ -279,7 +279,7 @@ static func _calculate_strahler_order(
 	return river_order
 
 
-static func _build_river_network(
+static func _build_river_networks(
 		graph: SpatialGraph,
 		river_mask: PackedByteArray,
 		flow_to: PackedInt32Array,
@@ -287,17 +287,17 @@ static func _build_river_network(
 		flow_accumulation: PackedFloat32Array,
 		river_order: PackedInt32Array
 ) -> Dictionary:
-	var river_id := PackedInt32Array()
-	river_id.resize(graph.cell_count())
-	river_id.fill(-1)
-	var rivers: Array = []
+	var river_network_id := PackedInt32Array()
+	river_network_id.resize(graph.cell_count())
+	river_network_id.fill(-1)
+	var river_networks: Array = []
 	for seed_id in graph.cell_count():
-		if river_mask[seed_id] == 0 or river_id[seed_id] >= 0:
+		if river_mask[seed_id] == 0 or river_network_id[seed_id] >= 0:
 			continue
-		var id := rivers.size()
+		var id := river_networks.size()
 		var cells := PackedInt32Array()
 		var queue := PackedInt32Array([seed_id])
-		river_id[seed_id] = id
+		river_network_id[seed_id] = id
 		var queue_index := 0
 		while queue_index < queue.size():
 			var cell_id := queue[queue_index]
@@ -305,12 +305,12 @@ static func _build_river_network(
 			cells.append(cell_id)
 			for neighbor_id in graph.cell_neighbors[cell_id]:
 				if river_mask[neighbor_id] != 0 \
-						and river_id[neighbor_id] < 0 \
+						and river_network_id[neighbor_id] < 0 \
 						and (flow_to[cell_id] == neighbor_id or flow_to[neighbor_id] == cell_id):
-					river_id[neighbor_id] = id
+					river_network_id[neighbor_id] = id
 					queue.append(neighbor_id)
-		var river := HydrologyRiver.new()
-		river.id = id
+		var river_network := HydrologyRiverNetwork.new()
+		river_network.id = id
 		for cell_id in cells:
 			var has_river_upstream := false
 			for upstream_id in upstream[cell_id]:
@@ -318,22 +318,25 @@ static func _build_river_network(
 					has_river_upstream = true
 					break
 			if not has_river_upstream \
-					and (river.source_cell < 0 \
-					or flow_accumulation[cell_id] > flow_accumulation[river.source_cell]):
-				river.source_cell = cell_id
+					and (river_network.source_cell < 0 \
+					or flow_accumulation[cell_id] > flow_accumulation[river_network.source_cell]):
+				river_network.source_cell = cell_id
 			var downstream_id := flow_to[cell_id]
 			if downstream_id < 0 or river_mask[downstream_id] == 0:
-				if river.mouth_cell < 0 \
-						or flow_accumulation[cell_id] > flow_accumulation[river.mouth_cell]:
-					river.mouth_cell = cell_id
-			river.order = maxi(river.order, river_order[cell_id])
-		if river.source_cell < 0:
-			river.source_cell = cells[0]
-		if river.mouth_cell < 0:
-			river.mouth_cell = cells[0]
-		river.discharge = flow_accumulation[river.mouth_cell]
-		rivers.append(river)
-	return {"river_id": river_id, "rivers": rivers}
+				if river_network.mouth_cell < 0 \
+						or flow_accumulation[cell_id] > flow_accumulation[river_network.mouth_cell]:
+					river_network.mouth_cell = cell_id
+			river_network.order = maxi(river_network.order, river_order[cell_id])
+		if river_network.source_cell < 0:
+			river_network.source_cell = cells[0]
+		if river_network.mouth_cell < 0:
+			river_network.mouth_cell = cells[0]
+		river_network.discharge = flow_accumulation[river_network.mouth_cell]
+		river_networks.append(river_network)
+	return {
+		"river_network_id": river_network_id,
+		"river_networks": river_networks,
+	}
 
 
 static func _calculate_watersheds(

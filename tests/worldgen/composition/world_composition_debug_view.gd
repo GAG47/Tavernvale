@@ -44,7 +44,7 @@ enum ViewMode {
 	PRECIPITATION,
 	HYDROLOGY_CONDITIONING,
 	FLOW_ACCUMULATION,
-	RIVERS,
+	RIVER_NETWORKS,
 	WATERSHEDS,
 }
 
@@ -77,7 +77,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_F:
 				view_mode = ViewMode.FLOW_ACCUMULATION
 			KEY_N:
-				view_mode = ViewMode.RIVERS
+				view_mode = ViewMode.RIVER_NETWORKS
 			KEY_W:
 				view_mode = ViewMode.WATERSHEDS
 			KEY_T:
@@ -190,7 +190,7 @@ func _cell_color(cell_id: int) -> Color:
 			return _hydrology_action_color(cell_id)
 		ViewMode.FLOW_ACCUMULATION:
 			return _flow_accumulation_color(cell_id)
-		ViewMode.RIVERS:
+		ViewMode.RIVER_NETWORKS:
 			return _river_color(cell_id)
 		_:
 			return _watershed_color(cell_id)
@@ -384,7 +384,7 @@ func _draw_information() -> void:
 		lines.append("Local Runoff: %.3f" % formal_hydrology.local_runoff[selected_cell_id])
 		lines.append("Flow To: %s" % _flow_to_text(selected_cell_id))
 		lines.append("Flow Accumulation: %.3f" % formal_hydrology.flow_accumulation[selected_cell_id])
-		lines.append("River ID: %d" % formal_hydrology.river_id[selected_cell_id])
+		lines.append("River Network ID: %d" % formal_hydrology.river_network_id[selected_cell_id])
 		lines.append("River Order: %d" % formal_hydrology.river_order[selected_cell_id])
 		lines.append("Watershed ID: %d" % formal_hydrology.watershed_id[selected_cell_id])
 		lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
@@ -453,8 +453,8 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("P75: %.3f" % _formal_hydrology_statistics.accumulation_p75)
 			lines.append("P90: %.3f" % _formal_hydrology_statistics.accumulation_p90)
 			lines.append("Max: %.3f" % _formal_hydrology_statistics.max_accumulation)
-		ViewMode.RIVERS:
-			lines.append("River Count: %d" % formal_hydrology.rivers.size())
+		ViewMode.RIVER_NETWORKS:
+			lines.append("River Network Count: %d" % formal_hydrology.river_networks.size())
 			lines.append("River Cell Count: %d" % _formal_hydrology_statistics.river_cell_count)
 			lines.append("Max Strahler Order: %d" % _formal_hydrology_statistics.max_river_order)
 			lines.append("Largest Discharge: %.3f" % _formal_hydrology_statistics.largest_discharge)
@@ -568,12 +568,12 @@ func _calculate_formal_hydrology_statistics() -> Dictionary:
 		minimum = minf(minimum, accumulation)
 		maximum = maxf(maximum, accumulation)
 		sum += accumulation
-		if formal_hydrology.river_id[cell_id] >= 0:
+		if formal_hydrology.river_network_id[cell_id] >= 0:
 			river_cell_count += 1
 			max_river_order = maxi(max_river_order, formal_hydrology.river_order[cell_id])
 	var largest_discharge := 0.0
-	for river in formal_hydrology.rivers:
-		largest_discharge = maxf(largest_discharge, river.discharge)
+	for river_network in formal_hydrology.river_networks:
+		largest_discharge = maxf(largest_discharge, river_network.discharge)
 	var sorted_accumulation := formal_hydrology.flow_accumulation.duplicate()
 	sorted_accumulation.sort()
 	return {
@@ -633,7 +633,7 @@ func _view_mode_name() -> String:
 			return "Hydrology Conditioning"
 		ViewMode.FLOW_ACCUMULATION:
 			return "Flow Accumulation"
-		ViewMode.RIVERS:
+		ViewMode.RIVER_NETWORKS:
 			return "River Network"
 		_:
 			return "Watersheds"

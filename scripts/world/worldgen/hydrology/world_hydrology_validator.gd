@@ -26,7 +26,7 @@ static func validate(
 			or layer.flow_to.size() != count \
 			or layer.flow_accumulation.size() != count \
 			or layer.watershed_id.size() != count \
-			or layer.river_id.size() != count \
+			or layer.river_network_id.size() != count \
 			or layer.river_order.size() != count:
 		errors.append("all Formal Hydrology PackedArrays must contain one value per Cell")
 		return errors
@@ -63,11 +63,11 @@ static func validate(
 		elif terrain.terrain_height[cell_id] >= 0.0 \
 				and layer.watershed_id[cell_id] >= layer.watershed_count:
 			errors.append("Land Cell %d references an invalid Watershed" % cell_id)
-		if layer.river_id[cell_id] >= 0:
-			if layer.river_id[cell_id] >= layer.rivers.size() \
+		if layer.river_network_id[cell_id] >= 0:
+			if layer.river_network_id[cell_id] >= layer.river_networks.size() \
 					or terrain.terrain_height[cell_id] < 0.0 \
 					or layer.river_order[cell_id] < 1:
-				errors.append("River Cell %d must be Land with positive Strahler Order" % cell_id)
+				errors.append("River Network Cell %d must be Land with positive Strahler Order" % cell_id)
 		elif layer.river_order[cell_id] != -1:
 			errors.append("non-River Cell %d must use river_order -1" % cell_id)
 	var queue := PackedInt32Array()
@@ -87,15 +87,15 @@ static func validate(
 				queue.append(downstream_id)
 	if processed != count:
 		errors.append("flow_to contains a loop")
-	for river_index in layer.rivers.size():
-		var river: HydrologyRiver = layer.rivers[river_index]
-		if river.id != river_index \
-				or river.source_cell < 0 \
-				or river.mouth_cell < 0 \
-				or not is_finite(river.discharge) \
-				or river.discharge < 0.0 \
-				or river.order < 1:
-			errors.append("River %d metadata is invalid" % river_index)
+	for network_index in layer.river_networks.size():
+		var river_network: HydrologyRiverNetwork = layer.river_networks[network_index]
+		if river_network.id != network_index \
+				or river_network.source_cell < 0 \
+				or river_network.mouth_cell < 0 \
+				or not is_finite(river_network.discharge) \
+				or river_network.discharge < 0.0 \
+				or river_network.order < 1:
+			errors.append("River Network %d metadata is invalid" % network_index)
 	for basin in layer.closed_basin_inflows:
 		if basin.closed_basin_id < 0 \
 				or not is_finite(basin.catchment_area) \

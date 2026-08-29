@@ -4,10 +4,10 @@ extends RefCounted
 ## Relative v1.5 water units. No real-world unit is assigned yet.
 
 var runoff_modifier: float = 1.0
-var river_runoff_threshold: float = 50000.0
+var river_runoff_threshold: float = 5000.0
 
 
-func _init(runoff_scale: float = 1.0, river_threshold: float = 50000.0) -> void:
+func _init(runoff_scale: float = 1.0, river_threshold: float = 5000.0) -> void:
 	runoff_modifier = runoff_scale
 	river_runoff_threshold = river_threshold
 
