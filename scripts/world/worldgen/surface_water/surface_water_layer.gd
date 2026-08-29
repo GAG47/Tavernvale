@@ -8,6 +8,7 @@ var lakes: Array = [] # SurfaceWaterLake entries.
 
 ## Debug generation counters; these are not required in a persisted world snapshot.
 var rejected_small_lake_count: int = 0
+var zero_capacity_basin_count: int = 0
 var no_lake_basin_count: int = 0
 
 

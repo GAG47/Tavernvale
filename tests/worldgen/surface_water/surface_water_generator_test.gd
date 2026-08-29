@@ -15,6 +15,7 @@ func _run_all() -> void:
 	_test_permeability_loss()
 	_test_terrain_hypsometry()
 	_test_spill_cap()
+	_test_zero_capacity_basin_is_skipped()
 	_test_minimum_lake_area()
 	_test_terrain_is_immutable()
 	_test_determinism()
@@ -95,6 +96,21 @@ func _test_spill_cap() -> void:
 		return
 	_expect(layer.lakes[0].water_level <= 10.0, "Lake level must not exceed the Basin spill height")
 	_expect(is_equal_approx(layer.lakes[0].water_level, 10.0), "over-supplied Lake should stop at spill height")
+
+
+func _test_zero_capacity_basin_is_skipped() -> void:
+	var result := _make_zero_capacity_case()
+	var layer: SurfaceWaterLayer = result.layer
+	_expect(layer != null, "Zero-Capacity Basin must not fail the Surface Water stage")
+	if layer == null:
+		return
+	_expect(layer.lakes.is_empty(), "Zero-Capacity Basin must not produce a Lake")
+	_expect(layer.zero_capacity_basin_count == 1, "Zero-Capacity Basin should have its own count")
+	_expect(layer.rejected_small_lake_count == 0, "Zero-Capacity Basin is not a rejected small Lake")
+	_expect(layer.no_lake_basin_count == 1, "Zero-Capacity Basin should remain a No-Lake Basin")
+	for cell_id in layer.cell_count():
+		_expect(layer.lake_id[cell_id] == -1, "Zero-Capacity Basin Cells must keep lake_id -1")
+		_expect(layer.surface_water_depth[cell_id] == 0.0, "Zero-Capacity Basin depth must remain zero")
 
 
 func _test_minimum_lake_area() -> void:
@@ -218,6 +234,40 @@ func _make_case(
 	}
 
 
+func _make_zero_capacity_case() -> Dictionary:
+	var graph := SpatialGraph.new()
+	graph.config = SpatialConfig.new(1, 3.0, 1.0, 3, 0.9)
+	graph.cell_centers = PackedVector2Array([
+		Vector2(0.0, 0.5), Vector2(1.0, 0.5), Vector2(2.0, 0.5)
+	])
+	graph.cell_neighbors = [
+		PackedInt32Array([1]),
+		PackedInt32Array([0, 2]),
+		PackedInt32Array([1]),
+	]
+	graph.cell_areas = PackedFloat64Array([1.0, 1.0, 1.0])
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height = PackedFloat32Array([10.0, 10.0005, -10.0])
+	var climate := WorldClimateLayer.new()
+	climate.temperature = PackedFloat32Array([0.0, 0.0, 0.0])
+	climate.precipitation.resize(3)
+	var geology := GeologyLayer.new()
+	geology.permeability = PackedFloat32Array([0.0, 0.0, 0.0])
+	var closed_basin_id := PackedInt32Array([0, -1, -1])
+	var hydrology := WorldHydrologyLayer.new()
+	hydrology.local_runoff.resize(3)
+	var inflow := ClosedBasinInflow.new()
+	inflow.closed_basin_id = 0
+	inflow.total_inflow = 1000.0
+	hydrology.closed_basin_inflows.append(inflow)
+	var settings := _unit_loss_settings(0.5)
+	return {
+		"layer": SurfaceWaterGenerator.generate(
+			graph, terrain, climate, hydrology, closed_basin_id, geology, settings
+		),
+	}
+
+
 func _stepped_basin_graph() -> SpatialGraph:
 	var graph := SpatialGraph.new()
 	graph.config = SpatialConfig.new(1, 6.0, 1.0, 6, 0.9)
@@ -247,7 +297,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Surface Water / Lakes: all 12 test groups passed")
+		print("Surface Water / Lakes: all 13 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

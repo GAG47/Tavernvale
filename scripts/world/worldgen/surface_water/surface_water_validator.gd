@@ -87,9 +87,34 @@ static func validate(
 		var geometry := SurfaceWaterGenerator.reconstruct_basin_geometry(
 			graph, terrain.terrain_height, closed_basin_id, lake.basin_id, cells
 		)
-		if geometry.is_empty() or lake.water_level > geometry.spill_height:
-			errors.append("Lake %d water level exceeds its Closed Basin spill height" % lake_index)
+		if geometry.is_empty() \
+				or geometry.zero_capacity \
+				or lake.water_level > geometry.spill_height:
+			errors.append("Lake %d has invalid or non-floodable Closed Basin geometry" % lake_index)
+	var basin_cells := {}
+	for cell_id in count:
+		var basin_id := closed_basin_id[cell_id]
+		if basin_id < 0:
+			continue
+		if not basin_cells.has(basin_id):
+			basin_cells[basin_id] = PackedInt32Array()
+		var cells: PackedInt32Array = basin_cells[basin_id]
+		cells.append(cell_id)
+		basin_cells[basin_id] = cells
+	var zero_capacity_count := 0
+	for basin_id in basin_cells:
+		var cells: PackedInt32Array = basin_cells[basin_id]
+		var geometry := SurfaceWaterGenerator.reconstruct_basin_geometry(
+			graph, terrain.terrain_height, closed_basin_id, basin_id, cells
+		)
+		if geometry.is_empty():
+			errors.append("Closed Basin %d geometry is invalid" % basin_id)
+		elif geometry.zero_capacity:
+			zero_capacity_count += 1
+			if basin_has_lake.has(basin_id):
+				errors.append("Zero-Capacity Basin %d must not produce a Lake" % basin_id)
 	if layer.rejected_small_lake_count < 0 \
+			or layer.zero_capacity_basin_count != zero_capacity_count \
 			or layer.no_lake_basin_count < 0 \
 			or layer.no_lake_basin_count + layer.lakes.size() \
 					!= hydrology.closed_basin_inflows.size():

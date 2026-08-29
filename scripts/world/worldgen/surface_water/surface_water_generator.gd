@@ -36,6 +36,9 @@ static func generate(
 		if geometry.is_empty():
 			push_error("Surface Water could not reconstruct Closed Basin %d geometry" % basin_id)
 			return null
+		if geometry.zero_capacity:
+			layer.zero_capacity_basin_count += 1
+			continue
 		var climate_and_geology := _area_weighted_basin_conditions(
 			graph, cells, climate.temperature, geology.permeability
 		)
@@ -125,12 +128,16 @@ static func reconstruct_basin_geometry(
 			if closed_basin_id[neighbor_id] == basin_id:
 				continue
 			spill_height = minf(spill_height, maxf(heights[cell_id], heights[neighbor_id]))
-	if not is_finite(spill_height) or spill_height <= heights[lowest_cell]:
+	if not is_finite(spill_height):
+		return {}
+	var capacity_height := spill_height - heights[lowest_cell]
+	if capacity_height < -WATER_LEVEL_EPSILON:
 		return {}
 	return {
 		"cells": cells,
 		"lowest_cell": lowest_cell,
 		"spill_height": spill_height,
+		"zero_capacity": absf(capacity_height) <= WATER_LEVEL_EPSILON,
 	}
 
 

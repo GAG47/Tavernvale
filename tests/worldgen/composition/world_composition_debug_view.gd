@@ -747,6 +747,7 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Largest Lake Area: %.3f" % _surface_water_statistics.largest_lake_area)
 			lines.append("Mean Lake Area: %.3f" % _surface_water_statistics.mean_lake_area)
 			lines.append("Max Surface Water Depth: %.3f" % _surface_water_statistics.max_depth)
+			lines.append("Zero-Capacity Basin Count: %d" % surface_water.zero_capacity_basin_count)
 			lines.append("Rejected Small Lake Count: %d" % surface_water.rejected_small_lake_count)
 			lines.append("No-Lake Basin Count: %d" % surface_water.no_lake_basin_count)
 		ViewMode.TEMPERATURE_DELTA:
