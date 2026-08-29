@@ -1,7 +1,7 @@
 class_name EcologySettings
 extends RefCounted
 
-var slope_reference: float = 0.05
+var slope_reference: float = 0.5
 var closed_basin_surface_escape_multiplier: float = 0.35
 
 var precip_reference: float = 20.0
