@@ -3,16 +3,19 @@ extends RefCounted
 
 const MIN_HEIGHT := -100.0
 const MAX_HEIGHT := 100.0
+const MIN_MATERIAL_RESISTANCE := 0.75
+const MAX_MATERIAL_RESISTANCE := 1.50
 
 
 static func condition(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
 		preliminary_flow: HydrologyFlowResult,
+		geology: GeologyLayer,
 		settings: HydrologyConditioningSettings = null
 ) -> HydrologyConditioningResult:
 	var actual_settings := settings if settings != null else HydrologyConditioningSettings.new()
-	if not _inputs_are_valid(graph, terrain, preliminary_flow, actual_settings):
+	if not _inputs_are_valid(graph, terrain, preliminary_flow, geology, actual_settings):
 		return null
 	var result := _create_result(terrain)
 	result.initial_sink_count = _count_initial_sinks(graph, result.terrain_height)
@@ -45,6 +48,7 @@ static func condition(
 				graph,
 				result.terrain_height,
 				naturally_drainable,
+				geology.erodibility,
 				actual_settings
 			)
 			if not breach_path.is_empty():
@@ -98,17 +102,19 @@ static func _inputs_are_valid(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
 		preliminary_flow: HydrologyFlowResult,
+		geology: GeologyLayer,
 		settings: HydrologyConditioningSettings
 ) -> bool:
-	if graph == null or terrain == null or preliminary_flow == null:
-		push_error("HydrologyConditioner requires Spatial, terrain, and Preliminary Flow")
+	if graph == null or terrain == null or preliminary_flow == null or geology == null:
+		push_error("HydrologyConditioner requires Spatial, terrain, Preliminary Flow, and Geology")
 		return false
 	var count := graph.cell_count()
 	if count == 0 \
 			or terrain.cell_count() != count \
 			or preliminary_flow.local_runoff.size() != count \
 			or preliminary_flow.flow_to.size() != count \
-			or preliminary_flow.flow_accumulation.size() != count:
+			or preliminary_flow.flow_accumulation.size() != count \
+			or geology.erodibility.size() != count:
 		push_error("HydrologyConditioner input sizes must match and be non-empty")
 		return false
 	if graph.cell_neighbors.size() != count or graph.cell_is_border.size() != count:
@@ -129,6 +135,10 @@ static func _inputs_are_valid(
 				or preliminary_flow.flow_accumulation[cell_id] < preliminary_flow.local_runoff[cell_id]:
 			push_error("HydrologyConditioner Preliminary Flow values must be finite and non-negative")
 			return false
+	var geology_errors := GeologyValidator.validate(graph, terrain, geology)
+	if not geology_errors.is_empty():
+		push_error("HydrologyConditioner received invalid Geology: " + "; ".join(geology_errors))
+		return false
 	return true
 
 
@@ -350,6 +360,7 @@ static func _least_cost_breach(
 		graph: SpatialGraph,
 		heights: PackedFloat32Array,
 		naturally_drainable: PackedByteArray,
+		erodibility: PackedFloat32Array,
 		settings: HydrologyConditioningSettings
 ) -> Array:
 	var member := PackedByteArray()
@@ -393,14 +404,18 @@ static func _least_cost_breach(
 				next_height = minf(heights[neighbor_id], channel_height - settings.flow_epsilon)
 				if next_height < 0.0:
 					continue
-				next_cost += heights[neighbor_id] - next_height
+				next_cost += material_adjusted_cut_cost(
+					heights[neighbor_id] - next_height, erodibility[neighbor_id]
+				)
 			elif joins_strict_drainage:
 				next_height = heights[neighbor_id]
 			else:
 				next_height = minf(heights[neighbor_id], channel_height - settings.flow_epsilon)
 				if next_height < 0.0:
 					continue
-				next_cost += heights[neighbor_id] - next_height
+				next_cost += material_adjusted_cut_cost(
+					heights[neighbor_id] - next_height, erodibility[neighbor_id]
+				)
 			if next_cost > settings.max_breach_cost:
 				continue
 			var next_key := Vector2i(neighbor_id, next_distance)
@@ -416,6 +431,18 @@ static func _least_cost_breach(
 			serial += 1
 			_heap_push(heap, [next_cost, serial, neighbor_id, next_distance, next_height])
 	return []
+
+
+static func material_resistance(erodibility: float) -> float:
+	return lerpf(
+		MAX_MATERIAL_RESISTANCE,
+		MIN_MATERIAL_RESISTANCE,
+		clampf(erodibility, 0.0, 1.0)
+	)
+
+
+static func material_adjusted_cut_cost(original_cut_cost: float, erodibility: float) -> float:
+	return original_cut_cost * material_resistance(erodibility)
 
 
 static func _reconstruct_breach(

@@ -5,19 +5,19 @@ extends RefCounted
 static func generate(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
-		preliminary_climate: WorldClimateLayer,
+		climate: WorldClimateLayer,
 		closed_basin_id: PackedInt32Array,
 		settings: WorldHydrologySettings = null
 ) -> WorldHydrologyLayer:
 	var actual_settings := settings if settings != null else WorldHydrologySettings.new()
 	if not _inputs_are_valid(
-		graph, terrain, preliminary_climate, closed_basin_id, actual_settings
+		graph, terrain, climate, closed_basin_id, actual_settings
 	):
 		return null
 	var layer := WorldHydrologyLayer.new()
 	layer.settings = actual_settings.duplicate_settings()
 	layer.local_runoff = HydrologyFlowCalculator.calculate_local_runoff(
-		graph, preliminary_climate.precipitation, actual_settings.runoff_modifier
+		graph, climate.precipitation, actual_settings.runoff_modifier
 	)
 	if layer.local_runoff.is_empty():
 		return null
@@ -58,14 +58,14 @@ static func generate(
 	layer.closed_basin_inflows = _calculate_closed_basin_inflows(
 		graph,
 		terrain.terrain_height,
-		preliminary_climate.temperature,
+		climate.temperature,
 		closed_basin_id,
 		layer.local_runoff,
 		layer.watershed_id,
 		watersheds.watershed_basin_id
 	)
 	var validation_errors := WorldHydrologyValidator.validate(
-		graph, terrain, preliminary_climate, closed_basin_id, layer
+		graph, terrain, climate, closed_basin_id, layer
 	)
 	if not validation_errors.is_empty():
 		push_error("Formal Hydrology validation failed: " + "; ".join(validation_errors))
@@ -81,7 +81,7 @@ static func _inputs_are_valid(
 		settings: WorldHydrologySettings
 ) -> bool:
 	if graph == null or terrain == null or climate == null:
-		push_error("Formal Hydrology requires Spatial, terrain, and preliminary climate inputs")
+		push_error("Formal Hydrology requires Spatial, terrain, and climate inputs")
 		return false
 	var count := graph.cell_count()
 	if count == 0 \

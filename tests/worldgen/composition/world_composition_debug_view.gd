@@ -12,6 +12,8 @@ extends Node2D
 
 var graph: SpatialGraph
 var composition: WorldCompositionLayer
+var projected_terrain: TerrainHeightLayer
+var geology: GeologyLayer
 var terrain: TerrainHeightLayer
 var hydrology: HydrologyConditioningResult
 var preliminary_flow: HydrologyFlowResult
@@ -26,6 +28,7 @@ var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
+var _geology_generation_ms := 0
 var _hydrology_conditioning_ms := 0
 var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
@@ -38,6 +41,7 @@ var _terrain_statistics := {}
 var _climate_statistics := {}
 var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
+var _geology_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -52,6 +56,10 @@ enum ViewMode {
 	FLOW_ACCUMULATION,
 	RIVER_NETWORKS,
 	WATERSHEDS,
+	GEOLOGIC_PROVINCE,
+	DOMINANT_MATERIAL,
+	PERMEABILITY,
+	ERODIBILITY,
 	TEMPERATURE_DELTA,
 	PRECIPITATION_DELTA,
 }
@@ -90,6 +98,14 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.RIVER_NETWORKS
 			KEY_W:
 				view_mode = ViewMode.WATERSHEDS
+			KEY_G:
+				view_mode = ViewMode.GEOLOGIC_PROVINCE
+			KEY_M:
+				view_mode = ViewMode.DOMINANT_MATERIAL
+			KEY_K:
+				view_mode = ViewMode.PERMEABILITY
+			KEY_E:
+				view_mode = ViewMode.ERODIBILITY
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -108,6 +124,8 @@ func _unhandled_input(event: InputEvent) -> void:
 func _draw() -> void:
 	if graph == null \
 			or composition == null \
+			or projected_terrain == null \
+			or geology == null \
 			or terrain == null \
 			or hydrology == null \
 			or preliminary_flow == null \
@@ -206,10 +224,56 @@ func _cell_color(cell_id: int) -> Color:
 			return _river_color(cell_id)
 		ViewMode.WATERSHEDS:
 			return _watershed_color(cell_id)
+		ViewMode.GEOLOGIC_PROVINCE:
+			return _province_color(geology.province_id[cell_id])
+		ViewMode.DOMINANT_MATERIAL:
+			return _material_color(geology.material_id[cell_id])
+		ViewMode.PERMEABILITY:
+			return Color(0.24, 0.14, 0.10).lerp(
+				Color(0.08, 0.78, 0.86), geology.permeability[cell_id]
+			)
+		ViewMode.ERODIBILITY:
+			return Color(0.16, 0.20, 0.26).lerp(
+				Color(0.96, 0.48, 0.08), geology.erodibility[cell_id]
+			)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		_:
 			return _precipitation_delta_color(cell_id)
+
+
+func _province_color(province_id: int) -> Color:
+	match province_id:
+		GeologyCatalog.Province.OCEANIC_CRUST:
+			return Color(0.05, 0.20, 0.48)
+		GeologyCatalog.Province.CRATON:
+			return Color(0.66, 0.48, 0.20)
+		GeologyCatalog.Province.OROGENIC_BELT:
+			return Color(0.78, 0.20, 0.16)
+		GeologyCatalog.Province.SEDIMENTARY_BASIN:
+			return Color(0.88, 0.70, 0.26)
+		GeologyCatalog.Province.PASSIVE_MARGIN:
+			return Color(0.12, 0.66, 0.54)
+		_:
+			return Color(0.72, 0.16, 0.68)
+
+
+func _material_color(material_id: int) -> Color:
+	match material_id:
+		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
+			return Color(0.58, 0.60, 0.64)
+		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
+			return Color(0.48, 0.30, 0.60)
+		GeologyCatalog.MaterialType.SANDSTONE:
+			return Color(0.82, 0.62, 0.30)
+		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
+			return Color(0.34, 0.24, 0.18)
+		GeologyCatalog.MaterialType.CARBONATE_ROCK:
+			return Color(0.70, 0.84, 0.82)
+		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+			return Color(0.34, 0.12, 0.12)
+		_:
+			return Color(0.18, 0.42, 0.62)
 
 
 func _hydrology_action_color(cell_id: int) -> Color:
@@ -349,6 +413,8 @@ func _regenerate() -> void:
 func _regenerate_composition() -> void:
 	if graph == null:
 		composition = null
+		projected_terrain = null
+		geology = null
 		terrain = null
 		hydrology = null
 		preliminary_flow = null
@@ -362,14 +428,17 @@ func _regenerate_composition() -> void:
 	)
 	_composition_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
-	var projected_terrain: TerrainHeightLayer = null if composition == null else TerrainHeightProjector.project(
+	projected_terrain = null if composition == null else TerrainHeightProjector.project(
 		composition.continental_value
 	)
 	_terrain_projection_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
+	geology = null if projected_terrain == null else GeologyGenerator.generate(graph, projected_terrain)
+	_geology_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
 	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
 	hydrology_conditioning_settings = HydrologyConditioningSettings.new()
-	preliminary_climate = null if projected_terrain == null else WorldClimateGenerator.generate(
+	preliminary_climate = null if geology == null else WorldClimateGenerator.generate(
 		graph, projected_terrain, climate_settings
 	)
 	_preliminary_climate_generation_ms = Time.get_ticks_msec() - started
@@ -381,7 +450,7 @@ func _regenerate_composition() -> void:
 	_preliminary_flow_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	hydrology = null if preliminary_flow == null else HydrologyConditioner.condition(
-		graph, projected_terrain, preliminary_flow, hydrology_conditioning_settings
+		graph, projected_terrain, preliminary_flow, geology, hydrology_conditioning_settings
 	)
 	terrain = null
 	if hydrology != null:
@@ -403,6 +472,7 @@ func _regenerate_composition() -> void:
 	_climate_statistics = _calculate_climate_statistics()
 	_climate_delta_statistics = _calculate_climate_delta_statistics()
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
+	_geology_statistics = _calculate_geology_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -413,13 +483,13 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Preliminary Flow v1.6.1 Debug",
+		"Geology / Subsurface v1.7 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
-		"Terrain projection: %d ms" % _terrain_projection_ms,
+		"Terrain: %d ms | Geology: %d ms" % [_terrain_projection_ms, _geology_generation_ms],
 		"Prelim Climate: %d ms | Flow: %d ms"
 		% [_preliminary_climate_generation_ms, _preliminary_flow_generation_ms],
 		"Conditioning: %d ms" % _hydrology_conditioning_ms,
@@ -432,6 +502,8 @@ func _draw_information() -> void:
 		"D Hydrology Conditioning",
 		"F Flow Accum   N River Network",
 		"W Watersheds",
+		"G Province   M Material",
+		"K Permeability   E Erodibility",
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
@@ -461,8 +533,21 @@ func _draw_information() -> void:
 			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
 			lines.append("Height Delta: %+.3f" % hydrology.height_delta[selected_cell_id])
 			lines.append("Action: %s" % hydrology.action_name(selected_cell_id))
+			lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[selected_cell_id]))
+			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
+			lines.append(
+				"Material Resistance: %.3f"
+				% HydrologyConditioner.material_resistance(geology.erodibility[selected_cell_id])
+			)
+		elif _is_geology_view():
+			lines.append("Projected Height: %.3f" % projected_terrain.terrain_height[selected_cell_id])
+			lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[selected_cell_id]))
+			lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[selected_cell_id]))
+			lines.append("Permeability: %.2f" % geology.permeability[selected_cell_id])
+			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
-				and view_mode != ViewMode.PRECIPITATION_DELTA:
+				and view_mode != ViewMode.PRECIPITATION_DELTA \
+				and not _is_geology_view():
 			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
 				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
@@ -560,6 +645,36 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 		ViewMode.WATERSHEDS:
 			lines.append("Watershed Count: %d" % formal_hydrology.watershed_count)
 			lines.append("Closed Basin Count: %d" % formal_hydrology.closed_basin_inflows.size())
+		ViewMode.GEOLOGIC_PROVINCE:
+			for province_id in GeologyCatalog.PROVINCE_COUNT:
+				var count: int = _geology_statistics.province_counts[province_id]
+				lines.append(
+					"%s: %d (%.2f%%)"
+					% [
+						GeologyCatalog.province_name(province_id),
+						count,
+						float(count) / float(graph.cell_count()) * 100.0,
+					]
+				)
+		ViewMode.DOMINANT_MATERIAL:
+			for material_id in GeologyCatalog.MATERIAL_COUNT:
+				var count: int = _geology_statistics.material_counts[material_id]
+				lines.append(
+					"%s: %d (%.2f%%)"
+					% [
+						GeologyCatalog.material_name(material_id),
+						count,
+						float(count) / float(graph.cell_count()) * 100.0,
+					]
+				)
+		ViewMode.PERMEABILITY:
+			lines.append("Min Permeability: %.2f" % _geology_statistics.min_permeability)
+			lines.append("Max Permeability: %.2f" % _geology_statistics.max_permeability)
+			lines.append("Mean Permeability: %.3f" % _geology_statistics.mean_permeability)
+		ViewMode.ERODIBILITY:
+			lines.append("Min Erodibility: %.2f" % _geology_statistics.min_erodibility)
+			lines.append("Max Erodibility: %.2f" % _geology_statistics.max_erodibility)
+			lines.append("Mean Erodibility: %.3f" % _geology_statistics.mean_erodibility)
 		ViewMode.TEMPERATURE_DELTA:
 			lines.append("Min Delta: %+.4f °C" % _climate_delta_statistics.min_temperature_delta)
 			lines.append("Max Delta: %+.4f °C" % _climate_delta_statistics.max_temperature_delta)
@@ -740,6 +855,38 @@ func _calculate_formal_hydrology_statistics() -> Dictionary:
 	}
 
 
+func _calculate_geology_statistics() -> Dictionary:
+	var province_counts := PackedInt32Array()
+	province_counts.resize(GeologyCatalog.PROVINCE_COUNT)
+	var material_counts := PackedInt32Array()
+	material_counts.resize(GeologyCatalog.MATERIAL_COUNT)
+	var min_permeability := INF
+	var max_permeability := -INF
+	var permeability_sum := 0.0
+	var min_erodibility := INF
+	var max_erodibility := -INF
+	var erodibility_sum := 0.0
+	for cell_id in geology.cell_count():
+		province_counts[geology.province_id[cell_id]] += 1
+		material_counts[geology.material_id[cell_id]] += 1
+		min_permeability = minf(min_permeability, geology.permeability[cell_id])
+		max_permeability = maxf(max_permeability, geology.permeability[cell_id])
+		permeability_sum += geology.permeability[cell_id]
+		min_erodibility = minf(min_erodibility, geology.erodibility[cell_id])
+		max_erodibility = maxf(max_erodibility, geology.erodibility[cell_id])
+		erodibility_sum += geology.erodibility[cell_id]
+	return {
+		"province_counts": province_counts,
+		"material_counts": material_counts,
+		"min_permeability": min_permeability,
+		"max_permeability": max_permeability,
+		"mean_permeability": permeability_sum / float(geology.cell_count()),
+		"min_erodibility": min_erodibility,
+		"max_erodibility": max_erodibility,
+		"mean_erodibility": erodibility_sum / float(geology.cell_count()),
+	}
+
+
 func _flow_to_text(cell_id: int) -> String:
 	var downstream_id := formal_hydrology.flow_to[cell_id]
 	match downstream_id:
@@ -788,10 +935,25 @@ func _view_mode_name() -> String:
 			return "River Network"
 		ViewMode.WATERSHEDS:
 			return "Watersheds"
+		ViewMode.GEOLOGIC_PROVINCE:
+			return "Geologic Province"
+		ViewMode.DOMINANT_MATERIAL:
+			return "Dominant Material"
+		ViewMode.PERMEABILITY:
+			return "Permeability"
+		ViewMode.ERODIBILITY:
+			return "Erodibility"
 		ViewMode.TEMPERATURE_DELTA:
 			return "Temperature Delta"
 		_:
 			return "Precipitation Delta"
+
+
+func _is_geology_view() -> bool:
+	return view_mode == ViewMode.GEOLOGIC_PROVINCE \
+			or view_mode == ViewMode.DOMINANT_MATERIAL \
+			or view_mode == ViewMode.PERMEABILITY \
+			or view_mode == ViewMode.ERODIBILITY
 
 
 func _select_cell_at(world_position: Vector2) -> void:

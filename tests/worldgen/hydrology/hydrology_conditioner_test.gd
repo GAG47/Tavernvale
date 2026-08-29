@@ -14,6 +14,9 @@ func _run_all() -> void:
 	_test_same_blocked_valley_with_low_inflow_is_not_breached()
 	_test_deep_basin_is_closed()
 	_test_flat_gets_strict_drainage()
+	_test_erodibility_selects_lower_cost_path()
+	_test_low_inflow_still_blocks_soft_rock()
+	_test_high_resistance_can_exceed_cost_limit()
 	_test_topology_range_and_final_drainage()
 	_finish()
 
@@ -21,7 +24,9 @@ func _run_all() -> void:
 func _test_normal_slope_is_unchanged() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([30.0, 20.0, 10.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 1.0))
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 1.0), _geology(graph, terrain)
+	)
 	_expect(result != null, "normal slope should produce a conditioning result")
 	if result == null:
 		return
@@ -35,7 +40,9 @@ func _test_normal_slope_is_unchanged() -> void:
 func _test_single_cell_pit_is_filled() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([9.5, 10.0, 5.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 0.1))
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 0.1), _geology(graph, terrain)
+	)
 	_expect(result != null, "single pit should produce a conditioning result")
 	if result == null:
 		return
@@ -50,7 +57,9 @@ func _test_single_cell_pit_is_filled() -> void:
 func _test_blocked_valley_is_breached() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 6000.0))
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 6000.0), _geology(graph, terrain)
+	)
 	_expect(result != null, "blocked valley should produce a conditioning result")
 	if result == null:
 		return
@@ -75,7 +84,10 @@ func _test_same_blocked_valley_with_low_inflow_is_not_breached() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
 	var result := HydrologyConditioner.condition(
-		graph, terrain, _preliminary_flow(graph, terrain, 4999.0)
+		graph,
+		terrain,
+		_preliminary_flow(graph, terrain, 4999.0),
+		_geology(graph, terrain, GeologyCatalog.MaterialType.SHALE_MUDSTONE)
 	)
 	_expect(result != null, "low-inflow blocked valley should produce a conditioning result")
 	if result == null:
@@ -104,7 +116,9 @@ func _test_deep_basin_is_closed() -> void:
 		PackedByteArray([0, 0, 0, 0, 0, 1])
 	)
 	var terrain := _terrain([5.0, 4.0, 3.0, 100.0, 10.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 6000.0))
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 6000.0), _geology(graph, terrain)
+	)
 	_expect(result != null, "deep basin should produce a conditioning result")
 	if result == null:
 		return
@@ -123,7 +137,9 @@ func _test_deep_basin_is_closed() -> void:
 func _test_flat_gets_strict_drainage() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([10.0, 10.0, 5.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 1.0))
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 1.0), _geology(graph, terrain)
+	)
 	_expect(result != null, "flat should produce a conditioning result")
 	if result == null:
 		return
@@ -137,6 +153,88 @@ func _test_flat_gets_strict_drainage() -> void:
 	)
 
 
+func _test_erodibility_selects_lower_cost_path() -> void:
+	var graph := _graph(
+		[
+			PackedInt32Array([1, 2]),
+			PackedInt32Array([0, 3]),
+			PackedInt32Array([0, 4]),
+			PackedInt32Array([1, 5]),
+			PackedInt32Array([2, 5]),
+			PackedInt32Array([3, 4]),
+		],
+		PackedByteArray([0, 0, 0, 0, 0, 0])
+	)
+	var terrain := _terrain([5.0, 10.0, 10.0, 4.0, 4.0, -10.0])
+	var geology := _geology(
+		graph,
+		terrain,
+		GeologyCatalog.MaterialType.SANDSTONE,
+		{
+			1: GeologyCatalog.MaterialType.SHALE_MUDSTONE,
+			2: GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
+		}
+	)
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 6000.0), geology
+	)
+	_expect(result != null, "two-path material test should produce a result")
+	if result == null:
+		return
+	_expect(
+		result.conditioning_action[1] == HydrologyConditioningResult.Action.CARVE,
+		"the higher-erodibility path should be selected"
+	)
+	_expect(
+		result.conditioning_action[2] != HydrologyConditioningResult.Action.CARVE,
+		"the lower-erodibility alternative should not be selected"
+	)
+	_expect(
+		HydrologyConditioner.material_adjusted_cut_cost(5.0, 0.75) \
+				< HydrologyConditioner.material_adjusted_cut_cost(5.0, 0.15),
+		"the same terrain cut should cost less in more erodible material"
+	)
+
+
+func _test_low_inflow_still_blocks_soft_rock() -> void:
+	var graph := _line_graph(4)
+	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
+	var geology := _geology(
+		graph, terrain, GeologyCatalog.MaterialType.SHALE_MUDSTONE
+	)
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 4999.0), geology
+	)
+	_expect(result != null, "soft-rock low-inflow case should produce a result")
+	if result == null:
+		return
+	_expect(result.breached_depression_count == 0, "soft rock must not bypass the inflow gate")
+	_expect(
+		result.conditioning_action[1] != HydrologyConditioningResult.Action.CARVE,
+		"soft blocking material must remain uncarved when inflow is insufficient"
+	)
+
+
+func _test_high_resistance_can_exceed_cost_limit() -> void:
+	var graph := _line_graph(4)
+	var terrain := _terrain([5.0, 14.0, 4.0, -10.0])
+	var geology := _geology(
+		graph, terrain, GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+	)
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 6000.0), geology
+	)
+	_expect(result != null, "hard-rock high-inflow case should produce a result")
+	if result == null:
+		return
+	_expect(result.breached_depression_count == 0, "adjusted cost above the limit must reject Breach")
+	_expect(result.closed_basin_count == 1, "the rejected hard-rock Depression should remain closed")
+	_expect(
+		result.rejected_breach_by_low_inflow_count == 0,
+		"high inflow must reach the material-adjusted cost check"
+	)
+
+
 func _test_topology_range_and_final_drainage() -> void:
 	var cases := [
 		[_line_graph(4), _terrain([30.0, 20.0, 10.0, -100.0])],
@@ -147,7 +245,10 @@ func _test_topology_range_and_final_drainage() -> void:
 		var graph: SpatialGraph = cases[case_index][0]
 		var terrain: TerrainHeightLayer = cases[case_index][1]
 		var result := HydrologyConditioner.condition(
-			graph, terrain, _preliminary_flow(graph, terrain, 6000.0)
+			graph,
+			terrain,
+			_preliminary_flow(graph, terrain, 6000.0),
+			_geology(graph, terrain)
 		)
 		if result == null:
 			_expect(false, "case %d should produce a result" % case_index)
@@ -247,6 +348,31 @@ func _preliminary_flow(
 	return PreliminaryFlowGenerator.generate(graph, terrain, climate, WorldHydrologySettings.new())
 
 
+func _geology(
+		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
+		default_land_material: int = GeologyCatalog.MaterialType.SANDSTONE,
+		material_overrides: Dictionary = {}
+) -> GeologyLayer:
+	var geology := GeologyLayer.new()
+	geology.province_id.resize(graph.cell_count())
+	geology.material_id.resize(graph.cell_count())
+	geology.permeability.resize(graph.cell_count())
+	geology.erodibility.resize(graph.cell_count())
+	for cell_id in graph.cell_count():
+		var is_water := terrain.terrain_height[cell_id] < 0.0
+		geology.province_id[cell_id] = GeologyCatalog.Province.OCEANIC_CRUST \
+				if is_water else GeologyCatalog.Province.CRATON
+		var material: int = material_overrides.get(
+			cell_id,
+			GeologyCatalog.MaterialType.VOLCANIC_ROCK if is_water else default_land_material
+		)
+		geology.material_id[cell_id] = material
+		geology.permeability[cell_id] = GeologyCatalog.permeability_for(material)
+		geology.erodibility[cell_id] = GeologyCatalog.erodibility_for(material)
+	return geology
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -254,7 +380,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Hydrology Conditioning: all 7 test groups passed")
+		print("Hydrology Conditioning: all 10 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
