@@ -18,11 +18,13 @@ var terrain: TerrainHeightLayer
 var hydrology: HydrologyConditioningResult
 var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
+var surface_water: SurfaceWaterLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
 var hydrology_conditioning_settings: HydrologyConditioningSettings
 var hydrology_settings: WorldHydrologySettings
+var surface_water_settings: SurfaceWaterSettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
@@ -32,6 +34,7 @@ var _geology_generation_ms := 0
 var _hydrology_conditioning_ms := 0
 var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
+var _surface_water_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -42,6 +45,7 @@ var _climate_statistics := {}
 var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
+var _surface_water_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -62,6 +66,8 @@ enum ViewMode {
 	ERODIBILITY,
 	TEMPERATURE_DELTA,
 	PRECIPITATION_DELTA,
+	LAKE_EXTENT,
+	LAKE_DEPTH,
 }
 
 
@@ -106,6 +112,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.PERMEABILITY
 			KEY_E:
 				view_mode = ViewMode.ERODIBILITY
+			KEY_O:
+				view_mode = ViewMode.LAKE_DEPTH if event.shift_pressed else ViewMode.LAKE_EXTENT
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -130,6 +138,7 @@ func _draw() -> void:
 			or hydrology == null \
 			or preliminary_flow == null \
 			or formal_hydrology == null \
+			or surface_water == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -236,10 +245,35 @@ func _cell_color(cell_id: int) -> Color:
 			return Color(0.16, 0.20, 0.26).lerp(
 				Color(0.96, 0.48, 0.08), geology.erodibility[cell_id]
 			)
+		ViewMode.LAKE_EXTENT:
+			return _lake_extent_color(cell_id)
+		ViewMode.LAKE_DEPTH:
+			return _lake_depth_color(cell_id)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		_:
 			return _precipitation_delta_color(cell_id)
+
+
+func _lake_extent_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.04, 0.14, 0.30)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.08, 0.48, 0.88)
+	if hydrology.closed_basin_id[cell_id] >= 0:
+		return Color(0.30, 0.22, 0.34)
+	return Color(0.20, 0.22, 0.23)
+
+
+func _lake_depth_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.04, 0.14, 0.30)
+	var depth := surface_water.surface_water_depth[cell_id]
+	if depth <= 0.0:
+		return Color(0.20, 0.22, 0.23)
+	var maximum := float(_surface_water_statistics.get("max_depth", 0.0))
+	var normalized := clampf(depth / maximum, 0.0, 1.0) if maximum > 0.0 else 0.0
+	return Color(0.42, 0.82, 0.96).lerp(Color(0.02, 0.16, 0.52), sqrt(normalized))
 
 
 func _province_color(province_id: int) -> Color:
@@ -419,6 +453,7 @@ func _regenerate_composition() -> void:
 		hydrology = null
 		preliminary_flow = null
 		formal_hydrology = null
+		surface_water = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -467,12 +502,25 @@ func _regenerate_composition() -> void:
 		graph, terrain, climate, hydrology.closed_basin_id, hydrology_settings
 	)
 	_formal_hydrology_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	surface_water_settings = SurfaceWaterSettings.new()
+	surface_water = null if formal_hydrology == null else SurfaceWaterGenerator.generate(
+		graph,
+		terrain,
+		climate,
+		formal_hydrology,
+		hydrology.closed_basin_id,
+		geology,
+		surface_water_settings
+	)
+	_surface_water_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
 	_climate_delta_statistics = _calculate_climate_delta_statistics()
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	_geology_statistics = _calculate_geology_statistics()
+	_surface_water_statistics = _calculate_surface_water_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -483,7 +531,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Geology / Subsurface v1.7 Debug",
+		"Surface Water / Lakes v1.8 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -495,6 +543,7 @@ func _draw_information() -> void:
 		"Conditioning: %d ms" % _hydrology_conditioning_ms,
 		"Final Climate: %d ms" % _final_climate_generation_ms,
 		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
+		"Surface Water: %d ms" % _surface_water_generation_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
 		"C Final Temp   P Final Precip",
@@ -504,6 +553,7 @@ func _draw_information() -> void:
 		"W Watersheds",
 		"G Province   M Material",
 		"K Permeability   E Erodibility",
+		"O Lake Extent   Shift+O Lake Depth",
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
@@ -539,6 +589,19 @@ func _draw_information() -> void:
 				"Material Resistance: %.3f"
 				% HydrologyConditioner.material_resistance(geology.erodibility[selected_cell_id])
 			)
+		elif _is_surface_water_view():
+			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
+			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
+			lines.append("Lake ID: %d" % surface_water.lake_id[selected_cell_id])
+			lines.append(
+				"Surface Water Depth: %.3f"
+				% surface_water.surface_water_depth[selected_cell_id]
+			)
+			var lake_id := surface_water.lake_id[selected_cell_id]
+			if lake_id >= 0:
+				var lake: SurfaceWaterLake = surface_water.lakes[lake_id]
+				lines.append("Lake Water Level: %.3f" % lake.water_level)
+				lines.append("Lake Area: %.3f" % lake.area)
 		elif _is_geology_view():
 			lines.append("Projected Height: %.3f" % projected_terrain.terrain_height[selected_cell_id])
 			lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[selected_cell_id]))
@@ -547,7 +610,8 @@ func _draw_information() -> void:
 			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
-				and not _is_geology_view():
+				and not _is_geology_view() \
+				and not _is_surface_water_view():
 			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
 				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
@@ -675,6 +739,16 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Min Erodibility: %.2f" % _geology_statistics.min_erodibility)
 			lines.append("Max Erodibility: %.2f" % _geology_statistics.max_erodibility)
 			lines.append("Mean Erodibility: %.3f" % _geology_statistics.mean_erodibility)
+		ViewMode.LAKE_EXTENT, ViewMode.LAKE_DEPTH:
+			lines.append("Closed Basin Count: %d" % formal_hydrology.closed_basin_inflows.size())
+			lines.append("Lake Count: %d" % surface_water.lakes.size())
+			lines.append("Lake Cells: %d" % _surface_water_statistics.lake_cell_count)
+			lines.append("Lake Area Total: %.3f" % _surface_water_statistics.total_lake_area)
+			lines.append("Largest Lake Area: %.3f" % _surface_water_statistics.largest_lake_area)
+			lines.append("Mean Lake Area: %.3f" % _surface_water_statistics.mean_lake_area)
+			lines.append("Max Surface Water Depth: %.3f" % _surface_water_statistics.max_depth)
+			lines.append("Rejected Small Lake Count: %d" % surface_water.rejected_small_lake_count)
+			lines.append("No-Lake Basin Count: %d" % surface_water.no_lake_basin_count)
 		ViewMode.TEMPERATURE_DELTA:
 			lines.append("Min Delta: %+.4f °C" % _climate_delta_statistics.min_temperature_delta)
 			lines.append("Max Delta: %+.4f °C" % _climate_delta_statistics.max_temperature_delta)
@@ -887,6 +961,28 @@ func _calculate_geology_statistics() -> Dictionary:
 	}
 
 
+func _calculate_surface_water_statistics() -> Dictionary:
+	var lake_cell_count := 0
+	var total_lake_area := 0.0
+	var largest_lake_area := 0.0
+	var maximum_depth := 0.0
+	for cell_id in surface_water.cell_count():
+		if surface_water.lake_id[cell_id] >= 0:
+			lake_cell_count += 1
+		maximum_depth = maxf(maximum_depth, surface_water.surface_water_depth[cell_id])
+	for lake in surface_water.lakes:
+		total_lake_area += lake.area
+		largest_lake_area = maxf(largest_lake_area, lake.area)
+	return {
+		"lake_cell_count": lake_cell_count,
+		"total_lake_area": total_lake_area,
+		"largest_lake_area": largest_lake_area,
+		"mean_lake_area": total_lake_area / float(surface_water.lakes.size()) \
+				if not surface_water.lakes.is_empty() else 0.0,
+		"max_depth": maximum_depth,
+	}
+
+
 func _flow_to_text(cell_id: int) -> String:
 	var downstream_id := formal_hydrology.flow_to[cell_id]
 	match downstream_id:
@@ -943,6 +1039,10 @@ func _view_mode_name() -> String:
 			return "Permeability"
 		ViewMode.ERODIBILITY:
 			return "Erodibility"
+		ViewMode.LAKE_EXTENT:
+			return "Lake Extent"
+		ViewMode.LAKE_DEPTH:
+			return "Lake Depth"
 		ViewMode.TEMPERATURE_DELTA:
 			return "Temperature Delta"
 		_:
@@ -954,6 +1054,10 @@ func _is_geology_view() -> bool:
 			or view_mode == ViewMode.DOMINANT_MATERIAL \
 			or view_mode == ViewMode.PERMEABILITY \
 			or view_mode == ViewMode.ERODIBILITY
+
+
+func _is_surface_water_view() -> bool:
+	return view_mode == ViewMode.LAKE_EXTENT or view_mode == ViewMode.LAKE_DEPTH
 
 
 func _select_cell_at(world_position: Vector2) -> void:
