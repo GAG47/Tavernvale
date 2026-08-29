@@ -10,16 +10,24 @@ extends Node2D
 
 var graph: SpatialGraph
 var composition: WorldCompositionLayer
+var terrain: TerrainHeightLayer
 var selected_cell_id := -1
-var show_continuous_value := true
+var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
+var _terrain_projection_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
 var _statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
+
+enum ViewMode {
+	RAW_COMPOSITION,
+	TERRAIN_HEIGHT,
+	LAND_WATER,
+}
 
 
 func _ready() -> void:
@@ -36,9 +44,11 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_V:
-				show_continuous_value = true
+				view_mode = ViewMode.RAW_COMPOSITION
+			KEY_H:
+				view_mode = ViewMode.TERRAIN_HEIGHT
 			KEY_L:
-				show_continuous_value = false
+				view_mode = ViewMode.LAND_WATER
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -55,11 +65,11 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _draw() -> void:
-	if graph == null or composition == null:
+	if graph == null or composition == null or terrain == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World Composition generation failed")
 		return
 	for cell_id in graph.cell_count():
-		var color := _value_color(composition.continental_value[cell_id])
+		var color := _cell_color(cell_id)
 		_draw_cell_triangle_fan(cell_id, color)
 	if selected_cell_id >= 0:
 		draw_polyline(
@@ -127,11 +137,33 @@ func _mask_outside_logical_world() -> void:
 	draw_rect(map_rect, Color(0.72, 0.76, 0.82), false, 2.0)
 
 
-func _value_color(value: int) -> Color:
-	if show_continuous_value:
-		var grayscale := float(value) / 100.0
-		return Color(grayscale, grayscale, grayscale)
-	return Color(0.64, 0.55, 0.34) if value >= CompositionOperations.COMPOSITION_LAND_REFERENCE else Color(0.08, 0.24, 0.46)
+func _cell_color(cell_id: int) -> Color:
+	match view_mode:
+		ViewMode.RAW_COMPOSITION:
+			var grayscale := float(composition.continental_value[cell_id]) / 100.0
+			return Color(grayscale, grayscale, grayscale)
+		ViewMode.TERRAIN_HEIGHT:
+			return _terrain_height_color(terrain.terrain_height[cell_id])
+		_:
+			return Color(0.64, 0.55, 0.34) if terrain.is_land(cell_id) else Color(0.08, 0.24, 0.46)
+
+
+func _terrain_height_color(height: float) -> Color:
+	if height < -60.0:
+		return Color(0.025, 0.10, 0.30)
+	if height < -20.0:
+		return Color(0.04, 0.25, 0.58)
+	if height < 0.0:
+		return Color(0.18, 0.55, 0.82)
+	if height < 20.0:
+		return Color(0.25, 0.55, 0.22)
+	if height < 40.0:
+		return Color(0.55, 0.66, 0.24)
+	if height < 60.0:
+		return Color(0.72, 0.58, 0.27)
+	if height < 80.0:
+		return Color(0.48, 0.31, 0.18)
+	return Color(0.88, 0.90, 0.91)
 
 
 func _regenerate() -> void:
@@ -148,12 +180,18 @@ func _regenerate() -> void:
 func _regenerate_composition() -> void:
 	if graph == null:
 		composition = null
+		terrain = null
 		return
 	var started := Time.get_ticks_msec()
 	composition = WorldCompositionGenerator.generate(
 		graph, WorldCompositionConfig.new(seed, StringName(template_id))
 	)
 	_composition_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	terrain = null if composition == null else TerrainHeightProjector.project(
+		composition.continental_value
+	)
+	_terrain_projection_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	selected_cell_id = -1
 	queue_redraw()
@@ -163,16 +201,18 @@ func _draw_information() -> void:
 	var viewport_width := get_viewport_rect().size.x
 	var panel := Rect2(viewport_width - _INFO_WIDTH, 0.0, _INFO_WIDTH, get_viewport_rect().size.y)
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
-	var mode := "V: continuous grayscale" if show_continuous_value else "L: >=20 reference outline"
+	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"World Composition v1.1.3 Debug",
+		"Terrain Height Foundation v1.2 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
+		"Terrain projection: %d ms" % _terrain_projection_ms,
 		"Mode: " + mode,
-		"V Value   L Reference   T Template   R Seed+1",
+		"V Raw   H Terrain   L Land/Water",
+		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
 		"Min %d | Max %d | Mean %.2f" % [_statistics.min, _statistics.max, _statistics.mean],
@@ -185,7 +225,9 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		lines.append("Cell ID: %d" % selected_cell_id)
-		lines.append("continental_value: %d" % composition.continental_value[selected_cell_id])
+		lines.append("Raw Composition Value: %d" % composition.continental_value[selected_cell_id])
+		lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
+		lines.append("Land / Water: %s" % ("Land" if terrain.is_land(selected_cell_id) else "Water"))
 	var font := ThemeDB.fallback_font
 	for line_index in lines.size():
 		draw_string(
@@ -196,6 +238,16 @@ func _draw_information() -> void:
 			_INFO_WIDTH - 32.0,
 			14
 		)
+
+
+func _view_mode_name() -> String:
+	match view_mode:
+		ViewMode.RAW_COMPOSITION:
+			return "Raw Composition"
+		ViewMode.TERRAIN_HEIGHT:
+			return "Terrain Height"
+		_:
+			return "Land / Water"
 
 
 func _select_cell_at(world_position: Vector2) -> void:
