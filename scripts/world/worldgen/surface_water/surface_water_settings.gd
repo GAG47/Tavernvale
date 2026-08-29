@@ -38,14 +38,21 @@ func _init(
 
 
 func evaporation_rate(temperature: float) -> float:
+	return lerpf(
+		minimum_evaporation_rate,
+		maximum_evaporation_rate,
+		evaporation_factor(temperature)
+	)
+
+
+func evaporation_factor(temperature: float) -> float:
 	var normalized := clampf(
 		(temperature - evaporation_temperature_min)
 				/ (evaporation_temperature_max - evaporation_temperature_min),
 		0.0,
 		1.0
 	)
-	var smooth := normalized * normalized * (3.0 - 2.0 * normalized)
-	return lerpf(minimum_evaporation_rate, maximum_evaporation_rate, smooth)
+	return normalized * normalized * (3.0 - 2.0 * normalized)
 
 
 func infiltration_rate(permeability: float) -> float:

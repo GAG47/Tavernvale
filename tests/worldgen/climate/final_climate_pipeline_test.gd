@@ -17,6 +17,7 @@ func _run_all() -> void:
 	_test_final_climate_uses_conditioned_terrain_and_same_generator()
 	_test_final_hydrology_uses_final_climate()
 	_test_surface_water_uses_final_pipeline_outputs()
+	_test_ecology_uses_final_pipeline_outputs()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -61,6 +62,7 @@ func _build_fixed_pipeline() -> Dictionary:
 	if final_hydrology == null:
 		return {}
 	var final_flow_to_before_surface := final_hydrology.flow_to.duplicate()
+	var surface_water_settings := SurfaceWaterSettings.new()
 	var surface_water := SurfaceWaterGenerator.generate(
 		graph,
 		conditioned,
@@ -68,9 +70,22 @@ func _build_fixed_pipeline() -> Dictionary:
 		final_hydrology,
 		conditioning.closed_basin_id,
 		geology,
-		SurfaceWaterSettings.new()
+		surface_water_settings
 	)
 	if surface_water == null:
+		return {}
+	var ecology := EcologyGenerator.generate(
+		graph,
+		conditioned,
+		final_climate,
+		final_hydrology,
+		conditioning.closed_basin_id,
+		geology,
+		surface_water,
+		EcologySettings.new(),
+		surface_water_settings
+	)
+	if ecology == null:
 		return {}
 	return {
 		"graph": graph,
@@ -86,6 +101,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		"final_hydrology": final_hydrology,
 		"final_flow_to_before_surface": final_flow_to_before_surface,
 		"surface_water": surface_water,
+		"ecology": ecology,
 	}
 
 
@@ -245,6 +261,30 @@ func _test_surface_water_uses_final_pipeline_outputs() -> void:
 	)
 
 
+func _test_ecology_uses_final_pipeline_outputs() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var terrain: TerrainHeightLayer = _pipeline.conditioned
+	var climate: WorldClimateLayer = _pipeline.final_climate
+	var surface_water: SurfaceWaterLayer = _pipeline.surface_water
+	var ecology: EcologyLayer = _pipeline.ecology
+	_expect(ecology.cell_count() == graph.cell_count(), "Ecology Cell Count should match")
+	_expect(
+		EcologyValidator.validate(graph, terrain, climate, surface_water, ecology).is_empty(),
+		"Ecology should validate after Surface Water"
+	)
+	for cell_id in graph.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0:
+			_expect(
+				ecology.biome_id[cell_id] == EcologyCatalog.Biome.MARINE,
+				"Final ocean Cells should reach Ecology as Marine"
+			)
+		elif surface_water.lake_id[cell_id] >= 0:
+			_expect(
+				ecology.biome_id[cell_id] == EcologyCatalog.Biome.LAKE,
+				"Surface Water Lakes should reach Ecology as Lake"
+			)
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -296,7 +336,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 5 test groups passed")
+		print("Final Climate Pipeline: all 6 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

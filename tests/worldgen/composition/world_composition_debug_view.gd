@@ -19,12 +19,14 @@ var hydrology: HydrologyConditioningResult
 var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
 var surface_water: SurfaceWaterLayer
+var ecology: EcologyLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
 var hydrology_conditioning_settings: HydrologyConditioningSettings
 var hydrology_settings: WorldHydrologySettings
 var surface_water_settings: SurfaceWaterSettings
+var ecology_settings: EcologySettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
@@ -35,6 +37,7 @@ var _hydrology_conditioning_ms := 0
 var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
 var _surface_water_generation_ms := 0
+var _ecology_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -46,6 +49,7 @@ var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
 var _surface_water_statistics := {}
+var _ecology_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -68,6 +72,10 @@ enum ViewMode {
 	PRECIPITATION_DELTA,
 	LAKE_EXTENT,
 	LAKE_DEPTH,
+	DRAINAGE,
+	ECOLOGICAL_MOISTURE,
+	VEGETATION_POTENTIAL,
+	BIOME,
 }
 
 
@@ -85,7 +93,8 @@ func _unhandled_input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		match event.keycode:
 			KEY_V:
-				view_mode = ViewMode.RAW_COMPOSITION
+				view_mode = ViewMode.VEGETATION_POTENTIAL \
+						if event.shift_pressed else ViewMode.RAW_COMPOSITION
 			KEY_H:
 				view_mode = ViewMode.TERRAIN_HEIGHT
 			KEY_L:
@@ -97,7 +106,8 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.PRECIPITATION_DELTA \
 						if event.shift_pressed else ViewMode.PRECIPITATION
 			KEY_D:
-				view_mode = ViewMode.HYDROLOGY_CONDITIONING
+				view_mode = ViewMode.DRAINAGE \
+						if event.shift_pressed else ViewMode.HYDROLOGY_CONDITIONING
 			KEY_F:
 				view_mode = ViewMode.FLOW_ACCUMULATION
 			KEY_N:
@@ -107,7 +117,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			KEY_G:
 				view_mode = ViewMode.GEOLOGIC_PROVINCE
 			KEY_M:
-				view_mode = ViewMode.DOMINANT_MATERIAL
+				view_mode = ViewMode.ECOLOGICAL_MOISTURE \
+						if event.shift_pressed else ViewMode.DOMINANT_MATERIAL
+			KEY_B:
+				view_mode = ViewMode.BIOME
 			KEY_K:
 				view_mode = ViewMode.PERMEABILITY
 			KEY_E:
@@ -139,6 +152,7 @@ func _draw() -> void:
 			or preliminary_flow == null \
 			or formal_hydrology == null \
 			or surface_water == null \
+			or ecology == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -249,6 +263,14 @@ func _cell_color(cell_id: int) -> Color:
 			return _lake_extent_color(cell_id)
 		ViewMode.LAKE_DEPTH:
 			return _lake_depth_color(cell_id)
+		ViewMode.DRAINAGE:
+			return _drainage_color(cell_id)
+		ViewMode.ECOLOGICAL_MOISTURE:
+			return _ecological_moisture_color(cell_id)
+		ViewMode.VEGETATION_POTENTIAL:
+			return _vegetation_potential_color(cell_id)
+		ViewMode.BIOME:
+			return _biome_color(ecology.biome_id[cell_id])
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		_:
@@ -274,6 +296,78 @@ func _lake_depth_color(cell_id: int) -> Color:
 	var maximum := float(_surface_water_statistics.get("max_depth", 0.0))
 	var normalized := clampf(depth / maximum, 0.0, 1.0) if maximum > 0.0 else 0.0
 	return Color(0.42, 0.82, 0.96).lerp(Color(0.02, 0.16, 0.52), sqrt(normalized))
+
+
+func _drainage_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.03, 0.13, 0.28)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.06, 0.34, 0.58)
+	return Color(0.05, 0.25, 0.30).lerp(
+		Color(0.94, 0.76, 0.28), ecology.drainage_index[cell_id]
+	)
+
+
+func _ecological_moisture_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.03, 0.12, 0.30)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.04, 0.40, 0.72)
+	var moisture := ecology.ecological_moisture[cell_id]
+	if moisture < 0.30:
+		return Color(0.48, 0.26, 0.10).lerp(Color(0.84, 0.68, 0.24), moisture / 0.30)
+	if moisture < 0.70:
+		return Color(0.84, 0.68, 0.24).lerp(
+			Color(0.10, 0.62, 0.30), (moisture - 0.30) / 0.40
+		)
+	return Color(0.10, 0.62, 0.30).lerp(
+		Color(0.04, 0.34, 0.78), (moisture - 0.70) / 0.30
+	)
+
+
+func _vegetation_potential_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.03, 0.12, 0.28)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.04, 0.36, 0.66)
+	var potential := ecology.vegetation_potential[cell_id]
+	if potential < 0.35:
+		return Color(0.34, 0.29, 0.23).lerp(Color(0.68, 0.60, 0.30), potential / 0.35)
+	return Color(0.68, 0.60, 0.30).lerp(
+		Color(0.04, 0.44, 0.16), (potential - 0.35) / 0.65
+	)
+
+
+func _biome_color(biome_id: int) -> Color:
+	match biome_id:
+		EcologyCatalog.Biome.MARINE:
+			return Color(0.03, 0.16, 0.42)
+		EcologyCatalog.Biome.LAKE:
+			return Color(0.05, 0.45, 0.82)
+		EcologyCatalog.Biome.GLACIER:
+			return Color(0.84, 0.94, 0.98)
+		EcologyCatalog.Biome.TUNDRA:
+			return Color(0.58, 0.62, 0.58)
+		EcologyCatalog.Biome.COLD_DESERT:
+			return Color(0.62, 0.54, 0.42)
+		EcologyCatalog.Biome.HOT_DESERT:
+			return Color(0.90, 0.66, 0.24)
+		EcologyCatalog.Biome.GRASSLAND:
+			return Color(0.56, 0.72, 0.24)
+		EcologyCatalog.Biome.SAVANNA:
+			return Color(0.76, 0.64, 0.20)
+		EcologyCatalog.Biome.TAIGA:
+			return Color(0.16, 0.40, 0.30)
+		EcologyCatalog.Biome.TEMPERATE_FOREST:
+			return Color(0.12, 0.52, 0.22)
+		EcologyCatalog.Biome.TEMPERATE_RAINFOREST:
+			return Color(0.05, 0.42, 0.32)
+		EcologyCatalog.Biome.TROPICAL_SEASONAL_FOREST:
+			return Color(0.22, 0.62, 0.18)
+		EcologyCatalog.Biome.TROPICAL_RAINFOREST:
+			return Color(0.02, 0.34, 0.12)
+		_:
+			return Color(0.16, 0.46, 0.52)
 
 
 func _province_color(province_id: int) -> Color:
@@ -454,6 +548,7 @@ func _regenerate_composition() -> void:
 		preliminary_flow = null
 		formal_hydrology = null
 		surface_water = null
+		ecology = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -514,6 +609,20 @@ func _regenerate_composition() -> void:
 		surface_water_settings
 	)
 	_surface_water_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	ecology_settings = EcologySettings.new()
+	ecology = null if surface_water == null else EcologyGenerator.generate(
+		graph,
+		terrain,
+		climate,
+		formal_hydrology,
+		hydrology.closed_basin_id,
+		geology,
+		surface_water,
+		ecology_settings,
+		surface_water_settings
+	)
+	_ecology_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -521,6 +630,7 @@ func _regenerate_composition() -> void:
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	_geology_statistics = _calculate_geology_statistics()
 	_surface_water_statistics = _calculate_surface_water_statistics()
+	_ecology_statistics = _calculate_ecology_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -531,7 +641,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Surface Water / Lakes v1.8 Debug",
+		"Ecology / Surface Environment v1.9 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -544,18 +654,17 @@ func _draw_information() -> void:
 		"Final Climate: %d ms" % _final_climate_generation_ms,
 		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
 		"Surface Water: %d ms" % _surface_water_generation_ms,
+		"Ecology: %d ms" % _ecology_generation_ms,
 		"Mode: " + mode,
-		"V Raw   H Terrain   L Land/Water",
-		"C Final Temp   P Final Precip",
-		"Shift+C Temp Δ   Shift+P Precip Δ",
-		"D Hydrology Conditioning",
-		"F Flow Accum   N River Network",
-		"W Watersheds",
-		"G Province   M Material",
+		"V Raw / Shift+V Vegetation",
+		"H Terrain   L Land/Water",
+		"C Temp   P Precip   Shift = Delta",
+		"D Conditioning / Shift+D Drainage",
+		"F Accum   N River   W Watershed",
+		"G Province   M Material / Shift+M Moisture",
 		"K Permeability   E Erodibility",
-		"O Lake Extent   Shift+O Lake Depth",
-		"T Template   R Seed+1",
-		"Click a Cell to inspect",
+		"O Lake / Shift+O Depth   B Biome",
+		"T Template   R Seed+1   Click inspect",
 		"",
 	])
 	_append_mode_statistics(lines)
@@ -577,6 +686,47 @@ func _draw_information() -> void:
 			lines.append(
 				"Precipitation Delta: %+.3f"
 				% (climate.precipitation[selected_cell_id] - preliminary_climate.precipitation[selected_cell_id])
+			)
+		elif _is_ecology_view():
+			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
+			lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
+			lines.append("Precipitation: %.2f" % climate.precipitation[selected_cell_id])
+			lines.append("Permeability: %.3f" % geology.permeability[selected_cell_id])
+			lines.append(
+				"Flow Accumulation: %.3f"
+				% formal_hydrology.flow_accumulation[selected_cell_id]
+			)
+			lines.append("Lake ID: %d" % surface_water.lake_id[selected_cell_id])
+			if view_mode == ViewMode.DRAINAGE:
+				lines.append("Drainage Index: %.4f" % ecology.drainage_index[selected_cell_id])
+			elif view_mode == ViewMode.ECOLOGICAL_MOISTURE:
+				lines.append("Drainage Index: %.4f" % ecology.drainage_index[selected_cell_id])
+				lines.append(
+					"Ecological Moisture: %.4f"
+					% ecology.ecological_moisture[selected_cell_id]
+				)
+			elif view_mode == ViewMode.VEGETATION_POTENTIAL:
+				lines.append(
+					"Ecological Moisture: %.4f"
+					% ecology.ecological_moisture[selected_cell_id]
+				)
+				lines.append(
+					"Vegetation Potential: %.4f"
+					% ecology.vegetation_potential[selected_cell_id]
+				)
+			else:
+				lines.append("Drainage Index: %.4f" % ecology.drainage_index[selected_cell_id])
+				lines.append(
+					"Ecological Moisture: %.4f"
+					% ecology.ecological_moisture[selected_cell_id]
+				)
+				lines.append(
+					"Vegetation Potential: %.4f"
+					% ecology.vegetation_potential[selected_cell_id]
+				)
+			lines.append(
+				"Biome: %s"
+				% EcologyCatalog.biome_name(ecology.biome_id[selected_cell_id])
 			)
 		elif view_mode == ViewMode.HYDROLOGY_CONDITIONING:
 			lines.append("Original Height: %.3f" % hydrology.original_height[selected_cell_id])
@@ -611,7 +761,8 @@ func _draw_information() -> void:
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
 				and not _is_geology_view() \
-				and not _is_surface_water_view():
+				and not _is_surface_water_view() \
+				and not _is_ecology_view():
 			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
 				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
@@ -628,14 +779,18 @@ func _draw_information() -> void:
 			lines.append("Watershed ID: %d" % formal_hydrology.watershed_id[selected_cell_id])
 			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
 	var font := ThemeDB.fallback_font
+	var line_height := minf(
+		21.0, (get_viewport_rect().size.y - 36.0) / maxf(float(lines.size()), 1.0)
+	)
+	var font_size := mini(14, maxi(10, floori(line_height - 2.0)))
 	for line_index in lines.size():
 		draw_string(
 			font,
-			Vector2(panel.position.x + 16.0, 28.0 + line_index * 21.0),
+			Vector2(panel.position.x + 16.0, 28.0 + line_index * line_height),
 			lines[line_index],
 			HORIZONTAL_ALIGNMENT_LEFT,
 			_INFO_WIDTH - 32.0,
-			14
+			font_size
 		)
 
 
@@ -750,6 +905,29 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Zero-Capacity Basin Count: %d" % surface_water.zero_capacity_basin_count)
 			lines.append("Rejected Small Lake Count: %d" % surface_water.rejected_small_lake_count)
 			lines.append("No-Lake Basin Count: %d" % surface_water.no_lake_basin_count)
+		ViewMode.DRAINAGE:
+			_append_continuous_ecology_statistics(lines, _ecology_statistics.drainage)
+		ViewMode.ECOLOGICAL_MOISTURE:
+			_append_continuous_ecology_statistics(lines, _ecology_statistics.moisture)
+		ViewMode.VEGETATION_POTENTIAL:
+			_append_continuous_ecology_statistics(lines, _ecology_statistics.vegetation)
+		ViewMode.BIOME:
+			var land_count: int = _ecology_statistics.land_count
+			for biome_id in EcologyCatalog.BIOME_COUNT:
+				var count: int = _ecology_statistics.biome_counts[biome_id]
+				var land_biome_count: int = _ecology_statistics.biome_land_counts[biome_id]
+				var land_ratio := (
+					float(land_biome_count) / float(land_count) * 100.0
+					if land_count > 0 else 0.0
+				)
+				lines.append(
+					"%s: %d / %.2f%% Land"
+					% [EcologyCatalog.biome_name(biome_id), count, land_ratio]
+				)
+			lines.append(
+				"Wetland Cell Count: %d"
+				% _ecology_statistics.biome_counts[EcologyCatalog.Biome.WETLAND]
+			)
 		ViewMode.TEMPERATURE_DELTA:
 			lines.append("Min Delta: %+.4f °C" % _climate_delta_statistics.min_temperature_delta)
 			lines.append("Max Delta: %+.4f °C" % _climate_delta_statistics.max_temperature_delta)
@@ -763,6 +941,15 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
 	lines.append("Land: %.2f%%" % (_terrain_statistics.land_ratio * 100.0))
 	lines.append("Water: %.2f%%" % (_terrain_statistics.water_ratio * 100.0))
+
+
+func _append_continuous_ecology_statistics(lines: PackedStringArray, statistics: Dictionary) -> void:
+	lines.append("Min: %.4f" % statistics.min)
+	lines.append("Max: %.4f" % statistics.max)
+	lines.append("Mean: %.4f" % statistics.mean)
+	lines.append("P25: %.4f" % statistics.p25)
+	lines.append("P50: %.4f" % statistics.p50)
+	lines.append("P75: %.4f" % statistics.p75)
 
 
 func _calculate_terrain_statistics() -> Dictionary:
@@ -984,6 +1171,58 @@ func _calculate_surface_water_statistics() -> Dictionary:
 	}
 
 
+func _calculate_ecology_statistics() -> Dictionary:
+	var drainage_values := PackedFloat32Array()
+	var moisture_values := PackedFloat32Array()
+	var vegetation_values := PackedFloat32Array()
+	var biome_counts := PackedInt32Array()
+	biome_counts.resize(EcologyCatalog.BIOME_COUNT)
+	var biome_land_counts := PackedInt32Array()
+	biome_land_counts.resize(EcologyCatalog.BIOME_COUNT)
+	var land_count := 0
+	for cell_id in ecology.cell_count():
+		var biome_id := ecology.biome_id[cell_id]
+		biome_counts[biome_id] += 1
+		var is_terrestrial := terrain.is_land(cell_id) and surface_water.lake_id[cell_id] < 0
+		if is_terrestrial:
+			land_count += 1
+			biome_land_counts[biome_id] += 1
+		if is_terrestrial:
+			drainage_values.append(ecology.drainage_index[cell_id])
+			moisture_values.append(ecology.ecological_moisture[cell_id])
+			vegetation_values.append(ecology.vegetation_potential[cell_id])
+	return {
+		"drainage": _continuous_statistics(drainage_values),
+		"moisture": _continuous_statistics(moisture_values),
+		"vegetation": _continuous_statistics(vegetation_values),
+		"biome_counts": biome_counts,
+		"biome_land_counts": biome_land_counts,
+		"land_count": land_count,
+	}
+
+
+func _continuous_statistics(values: PackedFloat32Array) -> Dictionary:
+	if values.is_empty():
+		return {"min": 0.0, "max": 0.0, "mean": 0.0, "p25": 0.0, "p50": 0.0, "p75": 0.0}
+	var minimum := INF
+	var maximum := -INF
+	var sum := 0.0
+	for value in values:
+		minimum = minf(minimum, value)
+		maximum = maxf(maximum, value)
+		sum += value
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	return {
+		"min": minimum,
+		"max": maximum,
+		"mean": sum / float(values.size()),
+		"p25": _percentile(sorted_values, 0.25),
+		"p50": _percentile(sorted_values, 0.50),
+		"p75": _percentile(sorted_values, 0.75),
+	}
+
+
 func _flow_to_text(cell_id: int) -> String:
 	var downstream_id := formal_hydrology.flow_to[cell_id]
 	match downstream_id:
@@ -1044,6 +1283,14 @@ func _view_mode_name() -> String:
 			return "Lake Extent"
 		ViewMode.LAKE_DEPTH:
 			return "Lake Depth"
+		ViewMode.DRAINAGE:
+			return "Drainage"
+		ViewMode.ECOLOGICAL_MOISTURE:
+			return "Ecological Moisture"
+		ViewMode.VEGETATION_POTENTIAL:
+			return "Vegetation Potential"
+		ViewMode.BIOME:
+			return "Biome"
 		ViewMode.TEMPERATURE_DELTA:
 			return "Temperature Delta"
 		_:
@@ -1059,6 +1306,13 @@ func _is_geology_view() -> bool:
 
 func _is_surface_water_view() -> bool:
 	return view_mode == ViewMode.LAKE_EXTENT or view_mode == ViewMode.LAKE_DEPTH
+
+
+func _is_ecology_view() -> bool:
+	return view_mode == ViewMode.DRAINAGE \
+			or view_mode == ViewMode.ECOLOGICAL_MOISTURE \
+			or view_mode == ViewMode.VEGETATION_POTENTIAL \
+			or view_mode == ViewMode.BIOME
 
 
 func _select_cell_at(world_position: Vector2) -> void:
