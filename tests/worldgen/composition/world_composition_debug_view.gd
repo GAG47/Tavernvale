@@ -257,6 +257,12 @@ func _regenerate_composition() -> void:
 	)
 	_terrain_projection_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
+	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
+	climate = null if projected_terrain == null else WorldClimateGenerator.generate(
+		graph, projected_terrain, climate_settings
+	)
+	_climate_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
 	hydrology = null if projected_terrain == null else HydrologyConditioner.condition(
 		graph, projected_terrain
 	)
@@ -265,12 +271,6 @@ func _regenerate_composition() -> void:
 		terrain = TerrainHeightLayer.new()
 		terrain.terrain_height = hydrology.terrain_height.duplicate()
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
-	started = Time.get_ticks_msec()
-	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
-	climate = null if terrain == null else WorldClimateGenerator.generate(
-		graph, terrain, climate_settings
-	)
-	_climate_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -291,8 +291,8 @@ func _draw_information() -> void:
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
-		"Hydrology: %d ms" % _hydrology_conditioning_ms,
 		"Climate: %d ms" % _climate_generation_ms,
+		"Hydrology: %d ms" % _hydrology_conditioning_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
 		"C Temperature   P Precipitation",
@@ -370,6 +370,13 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Modified Cell: %.2f%%" % (hydrology.modified_cell_ratio * 100.0))
 			lines.append("Max Raise: %.3f" % hydrology.max_raise)
 			lines.append("Max Cut: %.3f" % hydrology.max_cut)
+			lines.append("")
+			lines.append("Legend:")
+			lines.append("Yellow = Fill")
+			lines.append("Red / Pink = Carve")
+			lines.append("Purple = Closed Basin")
+			lines.append("Dark Gray = Unchanged Land")
+			lines.append("Dark Blue = Water")
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
