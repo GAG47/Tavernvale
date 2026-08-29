@@ -19,6 +19,7 @@ var _terrain_projection_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
 var _statistics := {}
+var _terrain_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -193,6 +194,7 @@ func _regenerate_composition() -> void:
 	)
 	_terrain_projection_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
+	_terrain_statistics = _calculate_terrain_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -215,13 +217,8 @@ func _draw_information() -> void:
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
-		"Min %d | Max %d | Mean %.2f" % [_statistics.min, _statistics.max, _statistics.mean],
-		">= 5: %.2f%%" % (_statistics.coverage_ge_5 * 100.0),
-		">=10: %.2f%%" % (_statistics.coverage_ge_10 * 100.0),
-		">=20: %.2f%% (composition reference)" % (_statistics.coverage_ge_20 * 100.0),
-		">=40: %.2f%%" % (_statistics.coverage_ge_40 * 100.0),
-		">=60: %.2f%%" % (_statistics.coverage_ge_60 * 100.0),
 	])
+	_append_mode_statistics(lines)
 	if selected_cell_id >= 0:
 		lines.append("")
 		lines.append("Cell ID: %d" % selected_cell_id)
@@ -238,6 +235,63 @@ func _draw_information() -> void:
 			_INFO_WIDTH - 32.0,
 			14
 		)
+
+
+func _append_mode_statistics(lines: PackedStringArray) -> void:
+	match view_mode:
+		ViewMode.RAW_COMPOSITION:
+			lines.append(
+				"Min %d | Max %d | Mean %.2f"
+				% [_statistics.min, _statistics.max, _statistics.mean]
+			)
+			lines.append(">= 5: %.2f%%" % (_statistics.coverage_ge_5 * 100.0))
+			lines.append(">=10: %.2f%%" % (_statistics.coverage_ge_10 * 100.0))
+			lines.append(">=20: %.2f%% (composition reference)" % (_statistics.coverage_ge_20 * 100.0))
+			lines.append(">=40: %.2f%%" % (_statistics.coverage_ge_40 * 100.0))
+			lines.append(">=60: %.2f%%" % (_statistics.coverage_ge_60 * 100.0))
+		ViewMode.TERRAIN_HEIGHT:
+			lines.append("Min Height: %.2f" % _terrain_statistics.min_height)
+			lines.append("Max Height: %.2f" % _terrain_statistics.max_height)
+			lines.append("Mean Height: %.2f" % _terrain_statistics.mean_height)
+			_append_land_water_statistics(lines)
+		ViewMode.LAND_WATER:
+			_append_land_water_statistics(lines)
+
+
+func _append_land_water_statistics(lines: PackedStringArray) -> void:
+	lines.append("Land: %.2f%%" % (_terrain_statistics.land_ratio * 100.0))
+	lines.append("Water: %.2f%%" % (_terrain_statistics.water_ratio * 100.0))
+
+
+func _calculate_terrain_statistics() -> Dictionary:
+	if terrain == null or terrain.terrain_height.is_empty():
+		return {
+			"min_height": 0.0,
+			"max_height": 0.0,
+			"mean_height": 0.0,
+			"land_ratio": 0.0,
+			"water_ratio": 0.0,
+		}
+	var minimum := 100.0
+	var maximum := -100.0
+	var sum := 0.0
+	var land_count := 0
+	for cell_id in terrain.cell_count():
+		var height := terrain.terrain_height[cell_id]
+		minimum = minf(minimum, height)
+		maximum = maxf(maximum, height)
+		sum += height
+		if terrain.is_land(cell_id):
+			land_count += 1
+	var count := float(terrain.cell_count())
+	var land_ratio := float(land_count) / count
+	return {
+		"min_height": minimum,
+		"max_height": maximum,
+		"mean_height": sum / count,
+		"land_ratio": land_ratio,
+		"water_ratio": 1.0 - land_ratio,
+	}
 
 
 func _view_mode_name() -> String:
