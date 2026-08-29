@@ -14,20 +14,24 @@ var graph: SpatialGraph
 var composition: WorldCompositionLayer
 var terrain: TerrainHeightLayer
 var hydrology: HydrologyConditioningResult
+var formal_hydrology: WorldHydrologyLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
+var hydrology_settings: WorldHydrologySettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _hydrology_conditioning_ms := 0
+var _formal_hydrology_generation_ms := 0
 var _climate_generation_ms := 0
 var _view_scale := 1.0
 var _view_offset := Vector2.ZERO
 var _statistics := {}
 var _terrain_statistics := {}
 var _climate_statistics := {}
+var _formal_hydrology_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -39,6 +43,9 @@ enum ViewMode {
 	TEMPERATURE,
 	PRECIPITATION,
 	HYDROLOGY_CONDITIONING,
+	FLOW_ACCUMULATION,
+	RIVERS,
+	WATERSHEDS,
 }
 
 
@@ -67,6 +74,12 @@ func _unhandled_input(event: InputEvent) -> void:
 				view_mode = ViewMode.PRECIPITATION
 			KEY_D:
 				view_mode = ViewMode.HYDROLOGY_CONDITIONING
+			KEY_F:
+				view_mode = ViewMode.FLOW_ACCUMULATION
+			KEY_N:
+				view_mode = ViewMode.RIVERS
+			KEY_W:
+				view_mode = ViewMode.WATERSHEDS
 			KEY_T:
 				var template_ids := CompositionTemplates.template_ids()
 				var current_index := template_ids.find(template_id)
@@ -83,7 +96,12 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func _draw() -> void:
-	if graph == null or composition == null or terrain == null or hydrology == null or climate == null:
+	if graph == null \
+			or composition == null \
+			or terrain == null \
+			or hydrology == null \
+			or formal_hydrology == null \
+			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
 	for cell_id in graph.cell_count():
@@ -168,8 +186,14 @@ func _cell_color(cell_id: int) -> Color:
 			return _temperature_color(climate.temperature[cell_id])
 		ViewMode.PRECIPITATION:
 			return _precipitation_color(climate.precipitation[cell_id])
-		_:
+		ViewMode.HYDROLOGY_CONDITIONING:
 			return _hydrology_action_color(cell_id)
+		ViewMode.FLOW_ACCUMULATION:
+			return _flow_accumulation_color(cell_id)
+		ViewMode.RIVERS:
+			return _river_color(cell_id)
+		_:
+			return _watershed_color(cell_id)
 
 
 func _hydrology_action_color(cell_id: int) -> Color:
@@ -182,6 +206,34 @@ func _hydrology_action_color(cell_id: int) -> Color:
 			return Color(0.94, 0.22, 0.36)
 		_:
 			return Color(0.18, 0.22, 0.25) if terrain.is_land(cell_id) else Color(0.06, 0.14, 0.22)
+
+
+func _flow_accumulation_color(cell_id: int) -> Color:
+	if not terrain.is_land(cell_id):
+		return Color(0.05, 0.16, 0.28)
+	var maximum := float(_formal_hydrology_statistics.get("max_accumulation", 0.0))
+	var value := formal_hydrology.flow_accumulation[cell_id]
+	var normalized := log(1.0 + value) / log(1.0 + maximum) if maximum > 0.0 else 0.0
+	return Color(0.18, 0.15, 0.10).lerp(Color(0.06, 0.72, 0.88), normalized)
+
+
+func _river_color(cell_id: int) -> Color:
+	if not terrain.is_land(cell_id):
+		return Color(0.05, 0.14, 0.24)
+	var order := formal_hydrology.river_order[cell_id]
+	if order < 1:
+		return Color(0.16, 0.18, 0.18)
+	var maximum_order := maxi(1, int(_formal_hydrology_statistics.get("max_river_order", 1)))
+	var strength := float(order) / float(maximum_order)
+	return Color(0.10, 0.42, 0.72).lerp(Color(0.58, 0.92, 1.0), strength)
+
+
+func _watershed_color(cell_id: int) -> Color:
+	if not terrain.is_land(cell_id):
+		return Color(0.05, 0.14, 0.24)
+	var watershed_id := formal_hydrology.watershed_id[cell_id]
+	var hue := fmod(float(watershed_id) * 0.61803398875, 1.0)
+	return Color.from_hsv(hue, 0.56, 0.68)
 
 
 func _terrain_height_color(height: float) -> Color:
@@ -244,6 +296,7 @@ func _regenerate_composition() -> void:
 		composition = null
 		terrain = null
 		hydrology = null
+		formal_hydrology = null
 		climate = null
 		return
 	var started := Time.get_ticks_msec()
@@ -271,9 +324,16 @@ func _regenerate_composition() -> void:
 		terrain = TerrainHeightLayer.new()
 		terrain.terrain_height = hydrology.terrain_height.duplicate()
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	hydrology_settings = WorldHydrologySettings.new()
+	formal_hydrology = null if terrain == null else WorldHydrologyGenerator.generate(
+		graph, terrain, climate, hydrology.closed_basin_id, hydrology_settings
+	)
+	_formal_hydrology_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
+	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -284,7 +344,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Hydrology Conditioning v1.4 Debug",
+		"Formal Hydrology v1.5 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -292,11 +352,14 @@ func _draw_information() -> void:
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
 		"Climate: %d ms" % _climate_generation_ms,
-		"Hydrology: %d ms" % _hydrology_conditioning_ms,
+		"Conditioning: %d ms" % _hydrology_conditioning_ms,
+		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
 		"Mode: " + mode,
 		"V Raw   H Terrain   L Land/Water",
 		"C Temperature   P Precipitation",
 		"D Hydrology Conditioning",
+		"F Flow Accum   N River Network",
+		"W Watersheds",
 		"T Template   R Seed+1",
 		"Click a Cell to inspect",
 		"",
@@ -310,7 +373,6 @@ func _draw_information() -> void:
 			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
 			lines.append("Height Delta: %+.3f" % hydrology.height_delta[selected_cell_id])
 			lines.append("Action: %s" % hydrology.action_name(selected_cell_id))
-			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
 		else:
 			lines.append("Terrain Height: %.2f" % terrain.terrain_height[selected_cell_id])
 		lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
@@ -319,6 +381,13 @@ func _draw_information() -> void:
 		lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
 		lines.append("Precipitation: %.2f" % climate.precipitation[selected_cell_id])
 		lines.append("Land / Water: %s" % ("Land" if terrain.is_land(selected_cell_id) else "Water"))
+		lines.append("Local Runoff: %.3f" % formal_hydrology.local_runoff[selected_cell_id])
+		lines.append("Flow To: %s" % _flow_to_text(selected_cell_id))
+		lines.append("Flow Accumulation: %.3f" % formal_hydrology.flow_accumulation[selected_cell_id])
+		lines.append("River ID: %d" % formal_hydrology.river_id[selected_cell_id])
+		lines.append("River Order: %d" % formal_hydrology.river_order[selected_cell_id])
+		lines.append("Watershed ID: %d" % formal_hydrology.watershed_id[selected_cell_id])
+		lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
 	var font := ThemeDB.fallback_font
 	for line_index in lines.size():
 		draw_string(
@@ -377,6 +446,21 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Purple = Closed Basin")
 			lines.append("Dark Gray = Unchanged Land")
 			lines.append("Dark Blue = Water")
+		ViewMode.FLOW_ACCUMULATION:
+			lines.append("Min: %.3f" % _formal_hydrology_statistics.min_accumulation)
+			lines.append("Mean: %.3f" % _formal_hydrology_statistics.mean_accumulation)
+			lines.append("Median: %.3f" % _formal_hydrology_statistics.median_accumulation)
+			lines.append("P75: %.3f" % _formal_hydrology_statistics.accumulation_p75)
+			lines.append("P90: %.3f" % _formal_hydrology_statistics.accumulation_p90)
+			lines.append("Max: %.3f" % _formal_hydrology_statistics.max_accumulation)
+		ViewMode.RIVERS:
+			lines.append("River Count: %d" % formal_hydrology.rivers.size())
+			lines.append("River Cell Count: %d" % _formal_hydrology_statistics.river_cell_count)
+			lines.append("Max Strahler Order: %d" % _formal_hydrology_statistics.max_river_order)
+			lines.append("Largest Discharge: %.3f" % _formal_hydrology_statistics.largest_discharge)
+		ViewMode.WATERSHEDS:
+			lines.append("Watershed Count: %d" % formal_hydrology.watershed_count)
+			lines.append("Closed Basin Count: %d" % formal_hydrology.closed_basin_inflows.size())
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -461,6 +545,63 @@ func _calculate_climate_statistics() -> Dictionary:
 	}
 
 
+func _calculate_formal_hydrology_statistics() -> Dictionary:
+	if formal_hydrology == null or formal_hydrology.flow_accumulation.is_empty():
+		return {
+			"min_accumulation": 0.0,
+			"mean_accumulation": 0.0,
+			"median_accumulation": 0.0,
+			"accumulation_p75": 0.0,
+			"accumulation_p90": 0.0,
+			"max_accumulation": 0.0,
+			"river_cell_count": 0,
+			"max_river_order": 0,
+			"largest_discharge": 0.0,
+		}
+	var minimum := INF
+	var maximum := 0.0
+	var sum := 0.0
+	var river_cell_count := 0
+	var max_river_order := 0
+	for cell_id in formal_hydrology.cell_count():
+		var accumulation := formal_hydrology.flow_accumulation[cell_id]
+		minimum = minf(minimum, accumulation)
+		maximum = maxf(maximum, accumulation)
+		sum += accumulation
+		if formal_hydrology.river_id[cell_id] >= 0:
+			river_cell_count += 1
+			max_river_order = maxi(max_river_order, formal_hydrology.river_order[cell_id])
+	var largest_discharge := 0.0
+	for river in formal_hydrology.rivers:
+		largest_discharge = maxf(largest_discharge, river.discharge)
+	var sorted_accumulation := formal_hydrology.flow_accumulation.duplicate()
+	sorted_accumulation.sort()
+	return {
+		"min_accumulation": minimum,
+		"mean_accumulation": sum / float(formal_hydrology.cell_count()),
+		"median_accumulation": _percentile(sorted_accumulation, 0.50),
+		"accumulation_p75": _percentile(sorted_accumulation, 0.75),
+		"accumulation_p90": _percentile(sorted_accumulation, 0.90),
+		"max_accumulation": maximum,
+		"river_cell_count": river_cell_count,
+		"max_river_order": max_river_order,
+		"largest_discharge": largest_discharge,
+	}
+
+
+func _flow_to_text(cell_id: int) -> String:
+	var downstream_id := formal_hydrology.flow_to[cell_id]
+	match downstream_id:
+		WorldHydrologyLayer.FLOW_TO_WATER:
+			return "Water"
+		WorldHydrologyLayer.FLOW_TO_BOUNDARY:
+			return "World Boundary"
+		WorldHydrologyLayer.FLOW_TO_CLOSED_BASIN:
+			return "Closed Basin"
+		_:
+			return str(downstream_id)
+
+
 func _percentile(sorted_values: PackedFloat32Array, percentile: float) -> float:
 	if sorted_values.is_empty():
 		return 0.0
@@ -488,8 +629,14 @@ func _view_mode_name() -> String:
 			return "Temperature"
 		ViewMode.PRECIPITATION:
 			return "Precipitation"
-		_:
+		ViewMode.HYDROLOGY_CONDITIONING:
 			return "Hydrology Conditioning"
+		ViewMode.FLOW_ACCUMULATION:
+			return "Flow Accumulation"
+		ViewMode.RIVERS:
+			return "River Network"
+		_:
+			return "Watersheds"
 
 
 func _select_cell_at(world_position: Vector2) -> void:
