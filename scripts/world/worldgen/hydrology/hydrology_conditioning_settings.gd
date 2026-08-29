@@ -8,6 +8,7 @@ var small_fill_max_cells: int = 4
 var small_fill_max_depth: float = 1.0
 var max_breach_distance: int = 12
 var max_breach_cost: float = 12.0
+var breach_min_inflow: float = 5000.0
 var fallback_fill_max_cells: int = 16
 var fallback_fill_max_depth: float = 2.0
 
@@ -24,6 +25,8 @@ func validate() -> PackedStringArray:
 		errors.append("max_breach_distance must be at least one")
 	if not is_finite(max_breach_cost) or max_breach_cost < 0.0:
 		errors.append("max_breach_cost must be finite and non-negative")
+	if not is_finite(breach_min_inflow) or breach_min_inflow < 0.0:
+		errors.append("breach_min_inflow must be finite and non-negative")
 	if fallback_fill_max_cells < 1:
 		errors.append("fallback_fill_max_cells must be at least one")
 	if not is_finite(fallback_fill_max_depth) or fallback_fill_max_depth < 0.0:

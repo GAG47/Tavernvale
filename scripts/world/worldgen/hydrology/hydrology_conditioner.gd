@@ -8,10 +8,11 @@ const MAX_HEIGHT := 100.0
 static func condition(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
+		preliminary_flow: HydrologyFlowResult,
 		settings: HydrologyConditioningSettings = null
 ) -> HydrologyConditioningResult:
 	var actual_settings := settings if settings != null else HydrologyConditioningSettings.new()
-	if not _inputs_are_valid(graph, terrain, actual_settings):
+	if not _inputs_are_valid(graph, terrain, preliminary_flow, actual_settings):
 		return null
 	var result := _create_result(terrain)
 	result.initial_sink_count = _count_initial_sinks(graph, result.terrain_height)
@@ -37,17 +38,22 @@ static func condition(
 				result.filled_depression_count += 1
 		if filled:
 			continue
-		var breach_path := _least_cost_breach(
-			depression,
-			graph,
-			result.terrain_height,
-			naturally_drainable,
-			actual_settings
-		)
-		if not breach_path.is_empty():
-			_apply_breach(breach_path, result)
-			result.breached_depression_count += 1
-			continue
+		var depression_inflow := _depression_inflow(depression, preliminary_flow)
+		if depression_inflow >= actual_settings.breach_min_inflow:
+			var breach_path := _least_cost_breach(
+				depression,
+				graph,
+				result.terrain_height,
+				naturally_drainable,
+				actual_settings
+			)
+			if not breach_path.is_empty():
+				_apply_breach(breach_path, result)
+				result.breached_depression_count += 1
+				result.breached_by_sufficient_inflow_count += 1
+				continue
+		else:
+			result.rejected_breach_by_low_inflow_count += 1
 		if depression.cells.size() <= actual_settings.fallback_fill_max_cells \
 				and depression.max_depth <= actual_settings.fallback_fill_max_depth:
 			filled = _fill_depression(
@@ -91,13 +97,18 @@ static func condition(
 static func _inputs_are_valid(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
+		preliminary_flow: HydrologyFlowResult,
 		settings: HydrologyConditioningSettings
 ) -> bool:
-	if graph == null or terrain == null:
-		push_error("HydrologyConditioner requires a SpatialGraph and TerrainHeightLayer")
+	if graph == null or terrain == null or preliminary_flow == null:
+		push_error("HydrologyConditioner requires Spatial, terrain, and Preliminary Flow")
 		return false
 	var count := graph.cell_count()
-	if count == 0 or terrain.cell_count() != count:
+	if count == 0 \
+			or terrain.cell_count() != count \
+			or preliminary_flow.local_runoff.size() != count \
+			or preliminary_flow.flow_to.size() != count \
+			or preliminary_flow.flow_accumulation.size() != count:
 		push_error("HydrologyConditioner input sizes must match and be non-empty")
 		return false
 	if graph.cell_neighbors.size() != count or graph.cell_is_border.size() != count:
@@ -107,11 +118,29 @@ static func _inputs_are_valid(
 	if not errors.is_empty():
 		push_error("Invalid HydrologyConditioningSettings: " + "; ".join(errors))
 		return false
-	for height in terrain.terrain_height:
+	for cell_id in count:
+		var height := terrain.terrain_height[cell_id]
 		if not is_finite(height) or height < MIN_HEIGHT or height > MAX_HEIGHT:
 			push_error("HydrologyConditioner terrain heights must be finite and inside [-100, 100]")
 			return false
+		if not is_finite(preliminary_flow.local_runoff[cell_id]) \
+				or preliminary_flow.local_runoff[cell_id] < 0.0 \
+				or not is_finite(preliminary_flow.flow_accumulation[cell_id]) \
+				or preliminary_flow.flow_accumulation[cell_id] < preliminary_flow.local_runoff[cell_id]:
+			push_error("HydrologyConditioner Preliminary Flow values must be finite and non-negative")
+			return false
 	return true
+
+
+static func _depression_inflow(
+		depression: Dictionary,
+		preliminary_flow: HydrologyFlowResult
+) -> float:
+	var inflow := 0.0
+	for cell_id in depression.cells:
+		if preliminary_flow.flow_to[cell_id] == HydrologyFlowResult.FLOW_TO_SINK:
+			inflow += preliminary_flow.flow_accumulation[cell_id]
+	return inflow
 
 
 static func _create_result(terrain: TerrainHeightLayer) -> HydrologyConditioningResult:

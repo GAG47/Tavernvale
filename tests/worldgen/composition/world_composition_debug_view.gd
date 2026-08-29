@@ -14,10 +14,12 @@ var graph: SpatialGraph
 var composition: WorldCompositionLayer
 var terrain: TerrainHeightLayer
 var hydrology: HydrologyConditioningResult
+var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
+var hydrology_conditioning_settings: HydrologyConditioningSettings
 var hydrology_settings: WorldHydrologySettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -25,6 +27,7 @@ var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _hydrology_conditioning_ms := 0
+var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
@@ -107,6 +110,7 @@ func _draw() -> void:
 			or composition == null \
 			or terrain == null \
 			or hydrology == null \
+			or preliminary_flow == null \
 			or formal_hydrology == null \
 			or preliminary_climate == null \
 			or climate == null:
@@ -347,6 +351,7 @@ func _regenerate_composition() -> void:
 		composition = null
 		terrain = null
 		hydrology = null
+		preliminary_flow = null
 		formal_hydrology = null
 		preliminary_climate = null
 		climate = null
@@ -363,13 +368,20 @@ func _regenerate_composition() -> void:
 	_terrain_projection_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	climate_settings = WorldClimateSettings.new(latitude_north, latitude_south)
+	hydrology_conditioning_settings = HydrologyConditioningSettings.new()
 	preliminary_climate = null if projected_terrain == null else WorldClimateGenerator.generate(
 		graph, projected_terrain, climate_settings
 	)
 	_preliminary_climate_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
-	hydrology = null if projected_terrain == null else HydrologyConditioner.condition(
-		graph, projected_terrain
+	hydrology_settings = WorldHydrologySettings.new()
+	preliminary_flow = null if preliminary_climate == null else PreliminaryFlowGenerator.generate(
+		graph, projected_terrain, preliminary_climate, hydrology_settings
+	)
+	_preliminary_flow_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	hydrology = null if preliminary_flow == null else HydrologyConditioner.condition(
+		graph, projected_terrain, preliminary_flow, hydrology_conditioning_settings
 	)
 	terrain = null
 	if hydrology != null:
@@ -382,7 +394,6 @@ func _regenerate_composition() -> void:
 	)
 	_final_climate_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
-	hydrology_settings = WorldHydrologySettings.new()
 	formal_hydrology = null if terrain == null else WorldHydrologyGenerator.generate(
 		graph, terrain, climate, hydrology.closed_basin_id, hydrology_settings
 	)
@@ -402,14 +413,15 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Final Climate v1.6 Debug",
+		"Preliminary Flow v1.6.1 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
 		"Cells: %d" % graph.cell_count(),
 		"Spatial: %d ms | Composition: %d ms" % [_spatial_generation_ms, _composition_generation_ms],
 		"Terrain projection: %d ms" % _terrain_projection_ms,
-		"Preliminary Climate: %d ms" % _preliminary_climate_generation_ms,
+		"Prelim Climate: %d ms | Flow: %d ms"
+		% [_preliminary_climate_generation_ms, _preliminary_flow_generation_ms],
 		"Conditioning: %d ms" % _hydrology_conditioning_ms,
 		"Final Climate: %d ms" % _final_climate_generation_ms,
 		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
@@ -513,6 +525,15 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Initial Sink Count: %d" % hydrology.initial_sink_count)
 			lines.append("Filled Depression Count: %d" % hydrology.filled_depression_count)
 			lines.append("Breached Depression Count: %d" % hydrology.breached_depression_count)
+			lines.append(
+				"Breached By Sufficient Inflow: %d"
+				% hydrology.breached_by_sufficient_inflow_count
+			)
+			lines.append(
+				"Rejected Breach By Low Inflow: %d"
+				% hydrology.rejected_breach_by_low_inflow_count
+			)
+			lines.append("Breach Min Inflow: %.1f" % hydrology_conditioning_settings.breach_min_inflow)
 			lines.append("Closed Basin Count: %d" % hydrology.closed_basin_count)
 			lines.append("Modified Cell: %.2f%%" % (hydrology.modified_cell_ratio * 100.0))
 			lines.append("Max Raise: %.3f" % hydrology.max_raise)

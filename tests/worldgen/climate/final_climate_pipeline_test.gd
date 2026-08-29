@@ -32,10 +32,16 @@ func _build_fixed_pipeline() -> Dictionary:
 		return {}
 	var projected := TerrainHeightProjector.project(composition.continental_value)
 	var settings := WorldClimateSettings.new()
+	var hydrology_settings := WorldHydrologySettings.new()
 	# Preliminary and Final Climate intentionally call the same generator implementation.
 	var preliminary := WorldClimateGenerator.generate(graph, projected, settings)
-	var conditioning := HydrologyConditioner.condition(graph, projected)
-	if preliminary == null or conditioning == null:
+	var preliminary_flow := PreliminaryFlowGenerator.generate(
+		graph, projected, preliminary, hydrology_settings
+	) if preliminary != null else null
+	var conditioning := HydrologyConditioner.condition(
+		graph, projected, preliminary_flow
+	) if preliminary_flow != null else null
+	if preliminary == null or preliminary_flow == null or conditioning == null:
 		return {}
 	var conditioned := TerrainHeightLayer.new()
 	conditioned.terrain_height = conditioning.terrain_height.duplicate()
@@ -48,7 +54,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		conditioned,
 		final_climate,
 		conditioning.closed_basin_id,
-		WorldHydrologySettings.new()
+		hydrology_settings
 	)
 	if final_hydrology == null:
 		return {}
@@ -56,6 +62,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		"graph": graph,
 		"projected": projected,
 		"preliminary": preliminary,
+		"preliminary_flow": preliminary_flow,
 		"conditioning": conditioning,
 		"conditioned": conditioned,
 		"terrain_before_final": terrain_before_final,

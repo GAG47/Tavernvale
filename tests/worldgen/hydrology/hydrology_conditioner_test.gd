@@ -11,6 +11,7 @@ func _run_all() -> void:
 	_test_normal_slope_is_unchanged()
 	_test_single_cell_pit_is_filled()
 	_test_blocked_valley_is_breached()
+	_test_same_blocked_valley_with_low_inflow_is_not_breached()
 	_test_deep_basin_is_closed()
 	_test_flat_gets_strict_drainage()
 	_test_topology_range_and_final_drainage()
@@ -20,7 +21,7 @@ func _run_all() -> void:
 func _test_normal_slope_is_unchanged() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([30.0, 20.0, 10.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain)
+	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 1.0))
 	_expect(result != null, "normal slope should produce a conditioning result")
 	if result == null:
 		return
@@ -34,7 +35,7 @@ func _test_normal_slope_is_unchanged() -> void:
 func _test_single_cell_pit_is_filled() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([9.5, 10.0, 5.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain)
+	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 0.1))
 	_expect(result != null, "single pit should produce a conditioning result")
 	if result == null:
 		return
@@ -49,7 +50,7 @@ func _test_single_cell_pit_is_filled() -> void:
 func _test_blocked_valley_is_breached() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain)
+	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 6000.0))
 	_expect(result != null, "blocked valley should produce a conditioning result")
 	if result == null:
 		return
@@ -63,7 +64,31 @@ func _test_blocked_valley_is_breached() -> void:
 		"breach path should be strictly descending"
 	)
 	_expect(result.breached_depression_count == 1, "blocked valley should count one breach")
+	_expect(
+		result.breached_by_sufficient_inflow_count == 1,
+		"high-inflow blocked valley should count one sufficient-inflow breach"
+	)
 	_expect(result.max_cut < 6.0, "breach should remain a limited terrain cut")
+
+
+func _test_same_blocked_valley_with_low_inflow_is_not_breached() -> void:
+	var graph := _line_graph(4)
+	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
+	var result := HydrologyConditioner.condition(
+		graph, terrain, _preliminary_flow(graph, terrain, 4999.0)
+	)
+	_expect(result != null, "low-inflow blocked valley should produce a conditioning result")
+	if result == null:
+		return
+	_expect(result.breached_depression_count == 0, "low inflow must reject the same valid breach")
+	_expect(
+		result.conditioning_action[1] != HydrologyConditioningResult.Action.CARVE,
+		"low inflow must not carve the blocking ridge"
+	)
+	_expect(
+		result.rejected_breach_by_low_inflow_count == 1,
+		"low-inflow blocked valley should count one rejected breach"
+	)
 
 
 func _test_deep_basin_is_closed() -> void:
@@ -79,7 +104,7 @@ func _test_deep_basin_is_closed() -> void:
 		PackedByteArray([0, 0, 0, 0, 0, 1])
 	)
 	var terrain := _terrain([5.0, 4.0, 3.0, 100.0, 10.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain)
+	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 6000.0))
 	_expect(result != null, "deep basin should produce a conditioning result")
 	if result == null:
 		return
@@ -89,12 +114,16 @@ func _test_deep_basin_is_closed() -> void:
 	_expect(result.closed_basin_id[2] == result.closed_basin_id[0], "basin low point should share the ID")
 	_expect(result.terrain_height[3] == 100.0, "expensive mountain wall must not be carved")
 	_expect(result.filled_depression_count == 0, "deep basin must not be broadly filled")
+	_expect(
+		result.rejected_breach_by_low_inflow_count == 0,
+		"high inflow with excessive cost should fail the existing cost rule, not the inflow gate"
+	)
 
 
 func _test_flat_gets_strict_drainage() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([10.0, 10.0, 5.0, -10.0])
-	var result := HydrologyConditioner.condition(graph, terrain)
+	var result := HydrologyConditioner.condition(graph, terrain, _preliminary_flow(graph, terrain, 1.0))
 	_expect(result != null, "flat should produce a conditioning result")
 	if result == null:
 		return
@@ -117,7 +146,9 @@ func _test_topology_range_and_final_drainage() -> void:
 	for case_index in cases.size():
 		var graph: SpatialGraph = cases[case_index][0]
 		var terrain: TerrainHeightLayer = cases[case_index][1]
-		var result := HydrologyConditioner.condition(graph, terrain)
+		var result := HydrologyConditioner.condition(
+			graph, terrain, _preliminary_flow(graph, terrain, 6000.0)
+		)
 		if result == null:
 			_expect(false, "case %d should produce a result" % case_index)
 			continue
@@ -187,6 +218,14 @@ func _graph(neighbors: Array, border: PackedByteArray) -> SpatialGraph:
 	for cell_id in neighbors.size():
 		graph.cell_centers[cell_id] = Vector2(cell_id, 0.5)
 	graph.cell_neighbors = neighbors
+	graph.cell_neighbor_distances.resize(neighbors.size())
+	graph.cell_areas.resize(neighbors.size())
+	graph.cell_areas.fill(1.0)
+	for cell_id in neighbors.size():
+		var distances := PackedFloat64Array()
+		distances.resize(neighbors[cell_id].size())
+		distances.fill(1.0)
+		graph.cell_neighbor_distances[cell_id] = distances
 	graph.cell_is_border = border
 	return graph
 
@@ -197,6 +236,17 @@ func _terrain(values: Array) -> TerrainHeightLayer:
 	return terrain
 
 
+func _preliminary_flow(
+		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
+		precipitation: float
+) -> HydrologyFlowResult:
+	var climate := WorldClimateLayer.new()
+	climate.precipitation.resize(graph.cell_count())
+	climate.precipitation.fill(precipitation)
+	return PreliminaryFlowGenerator.generate(graph, terrain, climate, WorldHydrologySettings.new())
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -204,7 +254,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Hydrology Conditioning: all 6 test groups passed")
+		print("Hydrology Conditioning: all 7 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
