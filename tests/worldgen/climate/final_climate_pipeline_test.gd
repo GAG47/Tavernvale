@@ -18,6 +18,7 @@ func _run_all() -> void:
 	_test_final_hydrology_uses_final_climate()
 	_test_surface_water_uses_final_pipeline_outputs()
 	_test_ecology_uses_final_pipeline_outputs()
+	_test_soil_uses_final_pipeline_outputs()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -87,6 +88,18 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if ecology == null:
 		return {}
+	var soil := SoilGenerator.generate(
+		graph,
+		conditioned,
+		final_climate,
+		final_hydrology,
+		geology,
+		surface_water,
+		ecology,
+		SoilSettings.new()
+	)
+	if soil == null:
+		return {}
 	return {
 		"graph": graph,
 		"projected": projected,
@@ -102,6 +115,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		"final_flow_to_before_surface": final_flow_to_before_surface,
 		"surface_water": surface_water,
 		"ecology": ecology,
+		"soil": soil,
 	}
 
 
@@ -285,6 +299,28 @@ func _test_ecology_uses_final_pipeline_outputs() -> void:
 			)
 
 
+func _test_soil_uses_final_pipeline_outputs() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var terrain: TerrainHeightLayer = _pipeline.conditioned
+	var surface_water: SurfaceWaterLayer = _pipeline.surface_water
+	var ecology: EcologyLayer = _pipeline.ecology
+	var soil: SoilLayer = _pipeline.soil
+	_expect(soil.cell_count() == graph.cell_count(), "Soil Cell Count should match")
+	_expect(
+		SoilValidator.validate(graph, terrain, surface_water, ecology, soil).is_empty(),
+		"Soil should validate after Ecology"
+	)
+	for cell_id in graph.cell_count():
+		var biome_id := ecology.biome_id[cell_id]
+		if biome_id == EcologyCatalog.Biome.MARINE \
+				or biome_id == EcologyCatalog.Biome.LAKE \
+				or biome_id == EcologyCatalog.Biome.GLACIER:
+			_expect(
+				soil.soil_texture_id[cell_id] == SoilCatalog.TextureType.NONE,
+				"Marine, Lake, and Glacier Cells should reach Soil as None"
+			)
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -336,7 +372,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 6 test groups passed")
+		print("Final Climate Pipeline: all 7 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

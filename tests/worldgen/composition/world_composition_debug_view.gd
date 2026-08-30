@@ -20,6 +20,7 @@ var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
 var surface_water: SurfaceWaterLayer
 var ecology: EcologyLayer
+var soil: SoilLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -27,6 +28,7 @@ var hydrology_conditioning_settings: HydrologyConditioningSettings
 var hydrology_settings: WorldHydrologySettings
 var surface_water_settings: SurfaceWaterSettings
 var ecology_settings: EcologySettings
+var soil_settings: SoilSettings
 var selected_cell_id := -1
 var view_mode := ViewMode.RAW_COMPOSITION
 var _spatial_generation_ms := 0
@@ -38,6 +40,7 @@ var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
 var _surface_water_generation_ms := 0
 var _ecology_generation_ms := 0
+var _soil_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -50,6 +53,7 @@ var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
 var _surface_water_statistics := {}
 var _ecology_statistics := {}
+var _soil_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -76,6 +80,10 @@ enum ViewMode {
 	ECOLOGICAL_MOISTURE,
 	VEGETATION_POTENTIAL,
 	BIOME,
+	SOIL_DEPTH,
+	SOIL_TEXTURE,
+	ORGANIC_MATTER,
+	SOIL_FERTILITY,
 }
 
 
@@ -121,6 +129,12 @@ func _unhandled_input(event: InputEvent) -> void:
 						if event.shift_pressed else ViewMode.DOMINANT_MATERIAL
 			KEY_B:
 				view_mode = ViewMode.BIOME
+			KEY_S:
+				view_mode = ViewMode.SOIL_TEXTURE \
+						if event.shift_pressed else ViewMode.SOIL_DEPTH
+			KEY_U:
+				view_mode = ViewMode.SOIL_FERTILITY \
+						if event.shift_pressed else ViewMode.ORGANIC_MATTER
 			KEY_K:
 				view_mode = ViewMode.PERMEABILITY
 			KEY_E:
@@ -153,6 +167,7 @@ func _draw() -> void:
 			or formal_hydrology == null \
 			or surface_water == null \
 			or ecology == null \
+			or soil == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -271,6 +286,14 @@ func _cell_color(cell_id: int) -> Color:
 			return _vegetation_potential_color(cell_id)
 		ViewMode.BIOME:
 			return _biome_color(ecology.biome_id[cell_id])
+		ViewMode.SOIL_DEPTH:
+			return _soil_depth_color(cell_id)
+		ViewMode.SOIL_TEXTURE:
+			return _soil_texture_color(cell_id)
+		ViewMode.ORGANIC_MATTER:
+			return _organic_matter_color(cell_id)
+		ViewMode.SOIL_FERTILITY:
+			return _soil_fertility_color(cell_id)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		_:
@@ -368,6 +391,62 @@ func _biome_color(biome_id: int) -> Color:
 			return Color(0.02, 0.34, 0.12)
 		_:
 			return Color(0.16, 0.46, 0.52)
+
+
+func _soil_depth_color(cell_id: int) -> Color:
+	var special_color := _soil_special_surface_color(cell_id)
+	if special_color.a > 0.0:
+		return special_color
+	return Color(0.24, 0.16, 0.10).lerp(
+		Color(0.72, 0.58, 0.30), soil.soil_depth[cell_id]
+	)
+
+
+func _soil_texture_color(cell_id: int) -> Color:
+	var special_color := _soil_special_surface_color(cell_id)
+	if special_color.a > 0.0:
+		return special_color
+	match soil.soil_texture_id[cell_id]:
+		SoilCatalog.TextureType.SANDY:
+			return Color(0.82, 0.68, 0.38)
+		SoilCatalog.TextureType.LOAMY:
+			return Color(0.50, 0.34, 0.18)
+		SoilCatalog.TextureType.SILTY:
+			return Color(0.54, 0.52, 0.38)
+		SoilCatalog.TextureType.CLAYEY:
+			return Color(0.58, 0.24, 0.18)
+		_:
+			return Color(0.12, 0.12, 0.14)
+
+
+func _organic_matter_color(cell_id: int) -> Color:
+	var special_color := _soil_special_surface_color(cell_id)
+	if special_color.a > 0.0:
+		return special_color
+	return Color(0.64, 0.52, 0.30).lerp(
+		Color(0.10, 0.24, 0.08), soil.organic_matter[cell_id]
+	)
+
+
+func _soil_fertility_color(cell_id: int) -> Color:
+	var special_color := _soil_special_surface_color(cell_id)
+	if special_color.a > 0.0:
+		return special_color
+	return Color(0.42, 0.22, 0.12).lerp(
+		Color(0.18, 0.72, 0.22), soil.soil_fertility[cell_id]
+	)
+
+
+func _soil_special_surface_color(cell_id: int) -> Color:
+	match ecology.biome_id[cell_id]:
+		EcologyCatalog.Biome.MARINE:
+			return Color(0.03, 0.15, 0.38)
+		EcologyCatalog.Biome.LAKE:
+			return Color(0.05, 0.42, 0.76)
+		EcologyCatalog.Biome.GLACIER:
+			return Color(0.86, 0.94, 0.98)
+		_:
+			return Color(0.0, 0.0, 0.0, 0.0)
 
 
 func _province_color(province_id: int) -> Color:
@@ -549,6 +628,7 @@ func _regenerate_composition() -> void:
 		formal_hydrology = null
 		surface_water = null
 		ecology = null
+		soil = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -623,6 +703,19 @@ func _regenerate_composition() -> void:
 		surface_water_settings
 	)
 	_ecology_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	soil_settings = SoilSettings.new()
+	soil = null if ecology == null else SoilGenerator.generate(
+		graph,
+		terrain,
+		climate,
+		formal_hydrology,
+		geology,
+		surface_water,
+		ecology,
+		soil_settings
+	)
+	_soil_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -631,6 +724,8 @@ func _regenerate_composition() -> void:
 	_geology_statistics = _calculate_geology_statistics()
 	_surface_water_statistics = _calculate_surface_water_statistics()
 	_ecology_statistics = _calculate_ecology_statistics()
+	_soil_statistics = _calculate_soil_statistics()
+	_print_soil_texture_diagnostics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -641,7 +736,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Ecology / Surface Environment v1.9 Debug",
+		"Soil Foundation v1.10 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -655,6 +750,7 @@ func _draw_information() -> void:
 		"Formal Hydrology: %d ms" % _formal_hydrology_generation_ms,
 		"Surface Water: %d ms" % _surface_water_generation_ms,
 		"Ecology: %d ms" % _ecology_generation_ms,
+		"Soil: %d ms" % _soil_generation_ms,
 		"Mode: " + mode,
 		"V Raw / Shift+V Vegetation",
 		"H Terrain   L Land/Water",
@@ -664,6 +760,8 @@ func _draw_information() -> void:
 		"G Province   M Material / Shift+M Moisture",
 		"K Permeability   E Erodibility",
 		"O Lake / Shift+O Depth   B Biome",
+		"S Soil Depth / Shift+S Texture",
+		"U Organic / Shift+U Fertility",
 		"T Template   R Seed+1   Click inspect",
 		"",
 	])
@@ -687,6 +785,23 @@ func _draw_information() -> void:
 				"Precipitation Delta: %+.3f"
 				% (climate.precipitation[selected_cell_id] - preliminary_climate.precipitation[selected_cell_id])
 			)
+		elif _is_soil_view():
+			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
+			lines.append(
+				"Material: %s"
+				% GeologyCatalog.material_name(geology.material_id[selected_cell_id])
+			)
+			lines.append(
+				"Biome: %s"
+				% EcologyCatalog.biome_name(ecology.biome_id[selected_cell_id])
+			)
+			lines.append("Soil Depth: %.4f" % soil.soil_depth[selected_cell_id])
+			lines.append(
+				"Soil Texture: %s"
+				% SoilCatalog.texture_name(soil.soil_texture_id[selected_cell_id])
+			)
+			lines.append("Organic Matter: %.4f" % soil.organic_matter[selected_cell_id])
+			lines.append("Soil Fertility: %.4f" % soil.soil_fertility[selected_cell_id])
 		elif _is_ecology_view():
 			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
@@ -762,7 +877,8 @@ func _draw_information() -> void:
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
 				and not _is_geology_view() \
 				and not _is_surface_water_view() \
-				and not _is_ecology_view():
+				and not _is_ecology_view() \
+				and not _is_soil_view():
 			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
 				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
@@ -952,6 +1068,24 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 				"Wetland Cell Count: %d"
 				% _ecology_statistics.biome_counts[EcologyCatalog.Biome.WETLAND]
 			)
+		ViewMode.SOIL_DEPTH:
+			_append_continuous_soil_statistics(lines, _soil_statistics.depth)
+		ViewMode.SOIL_TEXTURE:
+			var soil_land_count: int = _soil_statistics.land_count
+			for texture_id in range(SoilCatalog.TextureType.SANDY, SoilCatalog.TEXTURE_COUNT):
+				var texture_count: int = _soil_statistics.texture_counts[texture_id]
+				var texture_ratio := (
+					float(texture_count) / float(soil_land_count) * 100.0
+					if soil_land_count > 0 else 0.0
+				)
+				lines.append(
+					"%s: %d / %.2f%% Land"
+					% [SoilCatalog.texture_name(texture_id), texture_count, texture_ratio]
+				)
+		ViewMode.ORGANIC_MATTER:
+			_append_continuous_soil_statistics(lines, _soil_statistics.organic_matter)
+		ViewMode.SOIL_FERTILITY:
+			_append_continuous_soil_statistics(lines, _soil_statistics.fertility)
 		ViewMode.TEMPERATURE_DELTA:
 			lines.append("Min Delta: %+.4f °C" % _climate_delta_statistics.min_temperature_delta)
 			lines.append("Max Delta: %+.4f °C" % _climate_delta_statistics.max_temperature_delta)
@@ -990,6 +1124,22 @@ func _append_moisture_statistics(lines: PackedStringArray, statistics: Dictionar
 		var count: int = entry[1]
 		var land_ratio := float(count) / float(land_count) * 100.0 if land_count > 0 else 0.0
 		lines.append("Moisture >= %s: %d / %.2f%% Land" % [entry[0], count, land_ratio])
+
+
+func _append_continuous_soil_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if int(statistics.count) == 0:
+		lines.append("No soil-bearing Land Cells")
+		return
+	lines.append("Land Only:")
+	lines.append("Min: %.4f" % statistics.min)
+	lines.append("Mean: %.4f" % statistics.mean)
+	lines.append("P25: %.4f" % statistics.p25)
+	lines.append("P50 / Median: %.4f" % statistics.p50)
+	lines.append("P75: %.4f" % statistics.p75)
+	lines.append("P90: %.4f" % statistics.p90)
+	lines.append("Max: %.4f" % statistics.max)
 
 
 func _calculate_terrain_statistics() -> Dictionary:
@@ -1269,6 +1419,71 @@ func _calculate_ecology_statistics() -> Dictionary:
 	}
 
 
+func _calculate_soil_statistics() -> Dictionary:
+	var depth_values := PackedFloat32Array()
+	var organic_values := PackedFloat32Array()
+	var fertility_values := PackedFloat32Array()
+	var texture_counts := PackedInt32Array()
+	texture_counts.resize(SoilCatalog.TEXTURE_COUNT)
+	var material_texture_counts: Array[PackedInt32Array] = []
+	for material_id in GeologyCatalog.MATERIAL_COUNT:
+		var counts := PackedInt32Array()
+		counts.resize(SoilCatalog.TEXTURE_COUNT)
+		material_texture_counts.append(counts)
+	if soil != null:
+		for cell_id in soil.cell_count():
+			if _cell_has_surface_soil(cell_id):
+				depth_values.append(soil.soil_depth[cell_id])
+				organic_values.append(soil.organic_matter[cell_id])
+				fertility_values.append(soil.soil_fertility[cell_id])
+				var texture_id := soil.soil_texture_id[cell_id]
+				texture_counts[texture_id] += 1
+				material_texture_counts[geology.material_id[cell_id]][texture_id] += 1
+	return {
+		"depth": _soil_continuous_statistics(depth_values),
+		"organic_matter": _soil_continuous_statistics(organic_values),
+		"fertility": _soil_continuous_statistics(fertility_values),
+		"texture_counts": texture_counts,
+		"material_texture_counts": material_texture_counts,
+		"land_count": depth_values.size(),
+	}
+
+
+func _soil_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
+	var statistics := _continuous_statistics(values)
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	statistics["p90"] = _percentile(sorted_values, 0.90)
+	statistics["count"] = values.size()
+	return statistics
+
+
+func _cell_has_surface_soil(cell_id: int) -> bool:
+	var biome_id := ecology.biome_id[cell_id]
+	return biome_id != EcologyCatalog.Biome.MARINE \
+			and biome_id != EcologyCatalog.Biome.LAKE \
+			and biome_id != EcologyCatalog.Biome.GLACIER
+
+
+func _print_soil_texture_diagnostics() -> void:
+	if soil == null or _soil_statistics.is_empty():
+		return
+	print("Soil Material -> Texture diagnostic (%s, Seed %d):" % [template_id, seed])
+	var material_texture_counts: Array = _soil_statistics.material_texture_counts
+	for material_id in GeologyCatalog.MATERIAL_COUNT:
+		var counts: PackedInt32Array = material_texture_counts[material_id]
+		print(
+			"  %s: Sandy %d | Loamy %d | Silty %d | Clayey %d"
+			% [
+				GeologyCatalog.material_name(material_id),
+				counts[SoilCatalog.TextureType.SANDY],
+				counts[SoilCatalog.TextureType.LOAMY],
+				counts[SoilCatalog.TextureType.SILTY],
+				counts[SoilCatalog.TextureType.CLAYEY],
+			]
+		)
+
+
 func _moisture_statistics(values: PackedFloat32Array) -> Dictionary:
 	var statistics := _continuous_statistics(values)
 	var sorted_values := values.duplicate()
@@ -1382,6 +1597,14 @@ func _view_mode_name() -> String:
 			return "Vegetation Potential"
 		ViewMode.BIOME:
 			return "Biome"
+		ViewMode.SOIL_DEPTH:
+			return "Soil Depth"
+		ViewMode.SOIL_TEXTURE:
+			return "Soil Texture"
+		ViewMode.ORGANIC_MATTER:
+			return "Organic Matter"
+		ViewMode.SOIL_FERTILITY:
+			return "Soil Fertility"
 		ViewMode.TEMPERATURE_DELTA:
 			return "Temperature Delta"
 		_:
@@ -1404,6 +1627,13 @@ func _is_ecology_view() -> bool:
 			or view_mode == ViewMode.ECOLOGICAL_MOISTURE \
 			or view_mode == ViewMode.VEGETATION_POTENTIAL \
 			or view_mode == ViewMode.BIOME
+
+
+func _is_soil_view() -> bool:
+	return view_mode == ViewMode.SOIL_DEPTH \
+			or view_mode == ViewMode.SOIL_TEXTURE \
+			or view_mode == ViewMode.ORGANIC_MATTER \
+			or view_mode == ViewMode.SOIL_FERTILITY
 
 
 func _select_cell_at(world_position: Vector2) -> void:
