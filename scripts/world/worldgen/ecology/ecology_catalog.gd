@@ -100,7 +100,7 @@ static func moisture_band(moisture: float) -> int:
 		return MoistureBand.DRY
 	if moisture < 0.50:
 		return MoistureBand.MODERATE
-	if moisture < 0.70:
+	if moisture < 0.53:
 		return MoistureBand.HUMID
 	return MoistureBand.WET
 

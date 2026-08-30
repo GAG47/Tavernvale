@@ -214,9 +214,7 @@ static func _pass_wind(
 			# Preserve Azgaar's legacy behavior for a horizontal band starting at Cell 0.
 			if first == 0:
 				continue
-			max_precipitation = minf(
-				initial_max_precipitation * float(source.latitude_modifier), 255.0
-			)
+			max_precipitation = initial_max_precipitation * float(source.latitude_modifier)
 		else:
 			first = int(source)
 
