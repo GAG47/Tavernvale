@@ -10,10 +10,8 @@ var evaporation_moisture_weight: float = 0.25
 var max_river_bonus: float = 0.20
 var lake_shore_bonus: float = 0.15
 
-var wetland_moisture_threshold: float = 0.72
+var wetland_moisture_threshold: float = 0.53
 var wetland_drainage_threshold: float = 0.30
-var wetland_hydrology_threshold: float = 0.35
-var closed_basin_hydrology_support: float = 0.50
 
 var cold_suitability_minimum: float = -12.0
 var cold_suitability_maximum: float = 8.0
@@ -37,8 +35,6 @@ func validate() -> PackedStringArray:
 		["lake_shore_bonus", lake_shore_bonus],
 		["wetland_moisture_threshold", wetland_moisture_threshold],
 		["wetland_drainage_threshold", wetland_drainage_threshold],
-		["wetland_hydrology_threshold", wetland_hydrology_threshold],
-		["closed_basin_hydrology_support", closed_basin_hydrology_support],
 	]:
 		if not _is_unit_interval(entry[1]):
 			errors.append("%s must be inside [0, 1]" % entry[0])
@@ -66,8 +62,6 @@ func duplicate_settings() -> EcologySettings:
 	result.lake_shore_bonus = lake_shore_bonus
 	result.wetland_moisture_threshold = wetland_moisture_threshold
 	result.wetland_drainage_threshold = wetland_drainage_threshold
-	result.wetland_hydrology_threshold = wetland_hydrology_threshold
-	result.closed_basin_hydrology_support = closed_basin_hydrology_support
 	result.cold_suitability_minimum = cold_suitability_minimum
 	result.cold_suitability_maximum = cold_suitability_maximum
 	result.heat_suitability_minimum = heat_suitability_minimum

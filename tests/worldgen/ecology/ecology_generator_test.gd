@@ -17,7 +17,7 @@ func _run_all() -> void:
 	_test_lake_shore_bonus()
 	_test_vegetation_temperature_suitability()
 	_test_water_vegetation_is_zero()
-	_test_wetland_requires_low_drainage_and_hydrology()
+	_test_wetland_requires_high_moisture_and_low_drainage()
 	_test_biome_matrix()
 	_test_determinism()
 	_test_array_ranges_and_validator()
@@ -179,23 +179,35 @@ func _test_water_vegetation_is_zero() -> void:
 		_expect(layer.biome_id[1] == EcologyCatalog.Biome.LAKE, "Lake must classify as Lake")
 
 
-func _test_wetland_requires_low_drainage_and_hydrology() -> void:
+func _test_wetland_requires_high_moisture_and_low_drainage() -> void:
 	var result := _make_case(
 		PackedFloat32Array([5.0, 5.0]),
 		PackedFloat32Array([0.0, 0.0]),
-		PackedFloat32Array([1000.0, 1000.0]),
+		PackedFloat32Array([100.0, 100.0]),
 		PackedFloat32Array([0.0, 1.0]),
-		PackedFloat32Array([0.0, 0.0]),
-		PackedInt32Array([0, 0])
+		PackedFloat32Array([0.0, 0.0])
 	)
 	var layer: EcologyLayer = result.layer
 	_expect(layer != null, "Wetland comparison should generate")
 	if layer != null:
-		_expect(layer.biome_id[0] == EcologyCatalog.Biome.WETLAND, "supported low-Drainage wet land should be Wetland")
+		_expect(
+			layer.ecological_moisture[0] >= 0.53
+					and layer.biome_id[0] == EcologyCatalog.Biome.WETLAND,
+			"high-Moisture low-Drainage land should be Wetland without Hydrology support"
+		)
 		_expect(
 			layer.biome_id[1] != EcologyCatalog.Biome.WETLAND,
-			"high Drainage must prevent Wetland even when moisture and Hydrology are high"
+			"high Drainage must prevent Wetland even when moisture is high"
 		)
+	var settings := EcologySettings.new()
+	_expect(
+		not EcologyGenerator.is_wetland_candidate(0.529, 0.0, settings),
+		"Moisture below 0.53 must prevent Wetland"
+	)
+	_expect(
+		not EcologyGenerator.is_wetland_candidate(0.8, 0.301, settings),
+		"Drainage above 0.30 must prevent Wetland"
+	)
 
 
 func _test_biome_matrix() -> void:

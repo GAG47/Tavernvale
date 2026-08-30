@@ -76,14 +76,7 @@ static func generate(
 		if climate.temperature[cell_id] <= -10.0:
 			layer.biome_id[cell_id] = EcologyCatalog.Biome.GLACIER
 			continue
-		var hydrology_support := maxf(
-			river_strength, 1.0 if lake_shore[cell_id] != 0 else 0.0
-		)
-		if closed_basin_id[cell_id] >= 0:
-			hydrology_support = maxf(
-				hydrology_support, actual_settings.closed_basin_hydrology_support
-			)
-		if is_wetland_candidate(moisture, drainage, hydrology_support, actual_settings):
+		if is_wetland_candidate(moisture, drainage, actual_settings):
 			layer.biome_id[cell_id] = EcologyCatalog.Biome.WETLAND
 		else:
 			layer.biome_id[cell_id] = EcologyCatalog.matrix_biome(
@@ -177,11 +170,10 @@ static func vegetation_potential_for(
 
 
 static func is_wetland_candidate(
-		moisture: float, drainage: float, hydrology_support: float, settings: EcologySettings
+		moisture: float, drainage: float, settings: EcologySettings
 ) -> bool:
 	return moisture >= settings.wetland_moisture_threshold \
-			and drainage <= settings.wetland_drainage_threshold \
-			and hydrology_support >= settings.wetland_hydrology_threshold
+			and drainage <= settings.wetland_drainage_threshold
 
 
 static func _lake_shore_cells(
