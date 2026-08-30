@@ -4,7 +4,7 @@ extends RefCounted
 var slope_reference: float = 0.5
 var closed_basin_surface_escape_multiplier: float = 0.35
 
-var precip_reference: float = 20.0
+var precip_reference: float = 10.0
 var drainage_moisture_weight: float = 0.30
 var evaporation_moisture_weight: float = 0.25
 var max_river_bonus: float = 0.20

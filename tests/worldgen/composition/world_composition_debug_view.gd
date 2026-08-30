@@ -818,6 +818,7 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Max Final Temperature: %.2f °C" % _climate_statistics.max_temperature)
 			lines.append("Mean Final Temperature: %.2f °C" % _climate_statistics.mean_temperature)
 		ViewMode.PRECIPITATION:
+			lines.append("All Cells:")
 			lines.append("Min Final Precipitation: %.2f" % _climate_statistics.min_precipitation)
 			lines.append("Max Final Precipitation: %.2f" % _climate_statistics.max_precipitation)
 			lines.append("Mean Final Precipitation: %.2f" % _climate_statistics.mean_precipitation)
@@ -825,6 +826,29 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("P50 / Median: %.2f" % _climate_statistics.precipitation_p50)
 			lines.append("P75: %.2f" % _climate_statistics.precipitation_p75)
 			lines.append("P90: %.2f" % _climate_statistics.precipitation_p90)
+			lines.append("")
+			lines.append("Land Only:")
+			if _climate_statistics.land_precipitation_count > 0:
+				lines.append(
+					"Land Min Final Precipitation: %.2f"
+					% _climate_statistics.land_min_precipitation
+				)
+				lines.append(
+					"Land Max Final Precipitation: %.2f"
+					% _climate_statistics.land_max_precipitation
+				)
+				lines.append(
+					"Land Mean Final Precipitation: %.2f"
+					% _climate_statistics.land_mean_precipitation
+				)
+				lines.append("Land P25: %.2f" % _climate_statistics.land_precipitation_p25)
+				lines.append(
+					"Land P50 / Median: %.2f" % _climate_statistics.land_precipitation_p50
+				)
+				lines.append("Land P75: %.2f" % _climate_statistics.land_precipitation_p75)
+				lines.append("Land P90: %.2f" % _climate_statistics.land_precipitation_p90)
+			else:
+				lines.append("No land Cells (terrain_height >= 0.0)")
 		ViewMode.HYDROLOGY_CONDITIONING:
 			lines.append("Initial Sink Count: %d" % hydrology.initial_sink_count)
 			lines.append("Filled Depression Count: %d" % hydrology.filled_depression_count)
@@ -908,7 +932,7 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 		ViewMode.DRAINAGE:
 			_append_continuous_ecology_statistics(lines, _ecology_statistics.drainage)
 		ViewMode.ECOLOGICAL_MOISTURE:
-			_append_continuous_ecology_statistics(lines, _ecology_statistics.moisture)
+			_append_moisture_statistics(lines, _ecology_statistics.moisture)
 		ViewMode.VEGETATION_POTENTIAL:
 			_append_continuous_ecology_statistics(lines, _ecology_statistics.vegetation)
 		ViewMode.BIOME:
@@ -950,6 +974,22 @@ func _append_continuous_ecology_statistics(lines: PackedStringArray, statistics:
 	lines.append("P25: %.4f" % statistics.p25)
 	lines.append("P50: %.4f" % statistics.p50)
 	lines.append("P75: %.4f" % statistics.p75)
+
+
+func _append_moisture_statistics(lines: PackedStringArray, statistics: Dictionary) -> void:
+	_append_continuous_ecology_statistics(lines, statistics)
+	lines.append("P90: %.4f" % statistics.p90)
+	lines.append("P95: %.4f" % statistics.p95)
+	var land_count: int = statistics.land_count
+	for entry in [
+		["0.50", statistics.count_ge_050],
+		["0.60", statistics.count_ge_060],
+		["0.70", statistics.count_ge_070],
+		["0.72", statistics.count_ge_072],
+	]:
+		var count: int = entry[1]
+		var land_ratio := float(count) / float(land_count) * 100.0 if land_count > 0 else 0.0
+		lines.append("Moisture >= %s: %d / %.2f%% Land" % [entry[0], count, land_ratio])
 
 
 func _calculate_terrain_statistics() -> Dictionary:
@@ -996,6 +1036,14 @@ func _calculate_climate_statistics() -> Dictionary:
 			"precipitation_p50": 0.0,
 			"precipitation_p75": 0.0,
 			"precipitation_p90": 0.0,
+			"land_precipitation_count": 0,
+			"land_min_precipitation": 0.0,
+			"land_max_precipitation": 0.0,
+			"land_mean_precipitation": 0.0,
+			"land_precipitation_p25": 0.0,
+			"land_precipitation_p50": 0.0,
+			"land_precipitation_p75": 0.0,
+			"land_precipitation_p90": 0.0,
 		}
 	var min_temperature := INF
 	var max_temperature := -INF
@@ -1003,6 +1051,8 @@ func _calculate_climate_statistics() -> Dictionary:
 	var min_precipitation := INF
 	var max_precipitation := 0.0
 	var precipitation_sum := 0.0
+	var land_precipitation := PackedFloat32Array()
+	var land_precipitation_sum := 0.0
 	for cell_id in climate.cell_count():
 		var temperature := climate.temperature[cell_id]
 		var precipitation := climate.precipitation[cell_id]
@@ -1012,9 +1062,16 @@ func _calculate_climate_statistics() -> Dictionary:
 		min_precipitation = minf(min_precipitation, precipitation)
 		max_precipitation = maxf(max_precipitation, precipitation)
 		precipitation_sum += precipitation
+		if terrain != null \
+				and cell_id < terrain.terrain_height.size() \
+				and terrain.terrain_height[cell_id] >= 0.0:
+			land_precipitation.append(precipitation)
+			land_precipitation_sum += precipitation
 	var sorted_precipitation := climate.precipitation.duplicate()
 	sorted_precipitation.sort()
+	land_precipitation.sort()
 	var count := float(climate.cell_count())
+	var land_count := land_precipitation.size()
 	return {
 		"min_temperature": min_temperature,
 		"max_temperature": max_temperature,
@@ -1026,6 +1083,16 @@ func _calculate_climate_statistics() -> Dictionary:
 		"precipitation_p50": _percentile(sorted_precipitation, 0.50),
 		"precipitation_p75": _percentile(sorted_precipitation, 0.75),
 		"precipitation_p90": _percentile(sorted_precipitation, 0.90),
+		"land_precipitation_count": land_count,
+		"land_min_precipitation": land_precipitation[0] if land_count > 0 else 0.0,
+		"land_max_precipitation": land_precipitation[land_count - 1] if land_count > 0 else 0.0,
+		"land_mean_precipitation": (
+			land_precipitation_sum / float(land_count) if land_count > 0 else 0.0
+		),
+		"land_precipitation_p25": _percentile(land_precipitation, 0.25),
+		"land_precipitation_p50": _percentile(land_precipitation, 0.50),
+		"land_precipitation_p75": _percentile(land_precipitation, 0.75),
+		"land_precipitation_p90": _percentile(land_precipitation, 0.90),
 	}
 
 
@@ -1189,16 +1256,40 @@ func _calculate_ecology_statistics() -> Dictionary:
 			biome_land_counts[biome_id] += 1
 		if is_terrestrial:
 			drainage_values.append(ecology.drainage_index[cell_id])
-			moisture_values.append(ecology.ecological_moisture[cell_id])
 			vegetation_values.append(ecology.vegetation_potential[cell_id])
+		if terrain.terrain_height[cell_id] >= 0.0:
+			moisture_values.append(ecology.ecological_moisture[cell_id])
 	return {
 		"drainage": _continuous_statistics(drainage_values),
-		"moisture": _continuous_statistics(moisture_values),
+		"moisture": _moisture_statistics(moisture_values),
 		"vegetation": _continuous_statistics(vegetation_values),
 		"biome_counts": biome_counts,
 		"biome_land_counts": biome_land_counts,
 		"land_count": land_count,
 	}
+
+
+func _moisture_statistics(values: PackedFloat32Array) -> Dictionary:
+	var statistics := _continuous_statistics(values)
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	statistics["p90"] = _percentile(sorted_values, 0.90)
+	statistics["p95"] = _percentile(sorted_values, 0.95)
+	statistics["land_count"] = values.size()
+	statistics["count_ge_050"] = 0
+	statistics["count_ge_060"] = 0
+	statistics["count_ge_070"] = 0
+	statistics["count_ge_072"] = 0
+	for value in values:
+		if value >= 0.50:
+			statistics["count_ge_050"] += 1
+		if value >= 0.60:
+			statistics["count_ge_060"] += 1
+		if value >= 0.70:
+			statistics["count_ge_070"] += 1
+		if value >= 0.72:
+			statistics["count_ge_072"] += 1
+	return statistics
 
 
 func _continuous_statistics(values: PackedFloat32Array) -> Dictionary:
