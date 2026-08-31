@@ -1028,7 +1028,7 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 	lines.append("Temperature: %.2f °C" % climate.temperature[cell_id])
 	lines.append("Ecological Moisture: %.4f" % ecology.ecological_moisture[cell_id])
 	lines.append("Drainage: %.4f" % ecology.drainage_index[cell_id])
-	lines.append("Vegetation: %.4f" % ecology.vegetation_potential[cell_id])
+	lines.append("Vegetation Potential: %.4f" % ecology.vegetation_potential[cell_id])
 	lines.append("Soil Depth: %.4f" % soil.soil_depth[cell_id])
 	lines.append("Soil Fertility: %.4f" % soil.soil_fertility[cell_id])
 	lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[cell_id]))
@@ -1054,6 +1054,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 			1.0 - smoothstep(0.35, 0.75, slope_factor)
 		))
 	elif view_mode == ViewMode.TIMBER_POTENTIAL:
+		lines.append("Timber Vegetation Support: %.4f" % ResourcePotentialGenerator.timber_vegetation_support_for(
+			ecology.vegetation_potential[cell_id]
+		))
 		lines.append("Woody Biome Factor: %.3f" % ResourcePotentialGenerator.woody_biome_factor_for(
 			ecology.biome_id[cell_id]
 		))

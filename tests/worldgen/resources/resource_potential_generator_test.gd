@@ -73,6 +73,13 @@ func _test_biome_resources() -> void:
 	) > ResourcePotentialGenerator.timber_potential_for(
 		0.3, EcologyCatalog.Biome.TEMPERATE_FOREST, 0.5, 0.5
 	), "Vegetation should raise Timber Potential")
+	_expect(is_equal_approx(
+		ResourcePotentialGenerator.timber_vegetation_support_for(0.25), 0.5
+	), "Timber Vegetation Support should use the square-root mapping")
+	_expect(ResourcePotentialGenerator.timber_vegetation_support_for(-1.0) == 0.0,
+		"Timber Vegetation Support should clamp negative values")
+	_expect(ResourcePotentialGenerator.timber_vegetation_support_for(2.0) == 1.0,
+		"Timber Vegetation Support should clamp values above one")
 	_expect(ResourcePotentialGenerator.forage_potential_for(
 		0.8, EcologyCatalog.Biome.GRASSLAND, 0.5
 	) > ResourcePotentialGenerator.forage_potential_for(

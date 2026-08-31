@@ -131,7 +131,16 @@ static func timber_potential_for(
 		vegetation: float, biome_id: int, depth: float, fertility: float
 ) -> float:
 	var soil_support := 0.70 + 0.15 * depth + 0.15 * fertility
-	return clampf(vegetation * woody_biome_factor_for(biome_id) * soil_support, 0.0, 1.0)
+	return clampf(
+		timber_vegetation_support_for(vegetation)
+				* woody_biome_factor_for(biome_id) * soil_support,
+		0.0,
+		1.0
+	)
+
+
+static func timber_vegetation_support_for(vegetation: float) -> float:
+	return sqrt(clampf(vegetation, 0.0, 1.0))
 
 
 static func forage_potential_for(
