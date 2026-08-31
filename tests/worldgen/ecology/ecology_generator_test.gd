@@ -11,6 +11,11 @@ func _run_all() -> void:
 	_test_permeability_increases_drainage()
 	_test_slope_increases_drainage()
 	_test_closed_basin_reduces_surface_escape()
+	_test_supply_demand_balance_is_half_moisture()
+	_test_high_precipitation_overcomes_losses()
+	_test_drainage_reduces_base_moisture()
+	_test_evaporation_reduces_base_moisture()
+	_test_zero_precipitation_has_zero_base_moisture()
 	_test_precipitation_increases_moisture()
 	_test_temperature_evaporation_reduces_moisture()
 	_test_river_bonus_is_monotonic_and_capped()
@@ -18,10 +23,100 @@ func _run_all() -> void:
 	_test_vegetation_temperature_suitability()
 	_test_water_vegetation_is_zero()
 	_test_wetland_requires_high_moisture_and_low_drainage()
+	_test_moisture_band_boundaries()
 	_test_biome_matrix()
 	_test_determinism()
 	_test_array_ranges_and_validator()
 	_finish()
+
+
+func _test_supply_demand_balance_is_half_moisture() -> void:
+	var settings := EcologySettings.new()
+	var drainage := 0.5
+	var evaporation := 0.8
+	var drying_demand := settings.precip_reference * (
+		1.0 + settings.evaporation_moisture_weight * evaporation
+	)
+	var retained_fraction := 1.0 - settings.drainage_moisture_weight * drainage
+	var precipitation := drying_demand / retained_fraction
+	var moisture := EcologyGenerator.base_ecological_moisture_for(
+		precipitation, drainage, evaporation, settings
+	)
+	_expect(
+		is_equal_approx(moisture, 0.5),
+		"equal retained supply and drying demand must produce 0.5 Base Moisture"
+	)
+
+
+func _test_high_precipitation_overcomes_losses() -> void:
+	var settings := EcologySettings.new()
+	var above_half := EcologyGenerator.base_ecological_moisture_for(
+		20.0, 0.8, 1.0, settings
+	)
+	var above_seven_tenths := EcologyGenerator.base_ecological_moisture_for(
+		40.0, 0.8, 1.0, settings
+	)
+	var above_eight_tenths := EcologyGenerator.base_ecological_moisture_for(
+		70.0, 0.8, 1.0, settings
+	)
+	var approaching_one := EcologyGenerator.base_ecological_moisture_for(
+		10000.0, 0.8, 1.0, settings
+	)
+	_expect(
+		above_half > 0.5
+				and above_seven_tenths > 0.7
+				and above_eight_tenths > 0.8,
+		"high precipitation must overcome high Drainage and Evaporation"
+	)
+	_expect(
+		above_half < above_seven_tenths
+				and above_seven_tenths < above_eight_tenths
+				and above_eight_tenths < approaching_one
+				and approaching_one > 0.99,
+		"Base Moisture must keep increasing toward one without a fixed ceiling"
+	)
+
+
+func _test_drainage_reduces_base_moisture() -> void:
+	var settings := EcologySettings.new()
+	var low_drainage := EcologyGenerator.base_ecological_moisture_for(
+		20.0, 0.1, 0.5, settings
+	)
+	var high_drainage := EcologyGenerator.base_ecological_moisture_for(
+		20.0, 0.9, 0.5, settings
+	)
+	_expect(
+		low_drainage > high_drainage,
+		"higher Drainage must reduce Base Moisture at equal supply and Evaporation"
+	)
+
+
+func _test_evaporation_reduces_base_moisture() -> void:
+	var settings := EcologySettings.new()
+	var low_evaporation := EcologyGenerator.base_ecological_moisture_for(
+		20.0, 0.5, 0.0, settings
+	)
+	var high_evaporation := EcologyGenerator.base_ecological_moisture_for(
+		20.0, 0.5, 1.0, settings
+	)
+	_expect(
+		low_evaporation > high_evaporation,
+		"higher Evaporation must increase demand and reduce Base Moisture"
+	)
+
+
+func _test_zero_precipitation_has_zero_base_moisture() -> void:
+	var settings := EcologySettings.new()
+	var base_moisture := EcologyGenerator.base_ecological_moisture_for(
+		0.0, 0.5, 0.5, settings
+	)
+	var final_moisture := EcologyGenerator.ecological_moisture_for(
+		0.0, 0.5, 0.5, 0.0, 0.0, settings
+	)
+	_expect(
+		is_zero_approx(base_moisture) and is_zero_approx(final_moisture),
+		"zero precipitation without River or Lake support must produce zero moisture"
+	)
 
 
 func _test_permeability_increases_drainage() -> void:
@@ -208,6 +303,24 @@ func _test_wetland_requires_high_moisture_and_low_drainage() -> void:
 		not EcologyGenerator.is_wetland_candidate(0.8, 0.301, settings),
 		"Drainage above 0.30 must prevent Wetland"
 	)
+
+
+func _test_moisture_band_boundaries() -> void:
+	var cases := [
+		[0.1499, EcologyCatalog.MoistureBand.ARID],
+		[0.1500, EcologyCatalog.MoistureBand.DRY],
+		[0.2999, EcologyCatalog.MoistureBand.DRY],
+		[0.3000, EcologyCatalog.MoistureBand.MODERATE],
+		[0.4999, EcologyCatalog.MoistureBand.MODERATE],
+		[0.5000, EcologyCatalog.MoistureBand.HUMID],
+		[0.6699, EcologyCatalog.MoistureBand.HUMID],
+		[0.6700, EcologyCatalog.MoistureBand.WET],
+	]
+	for entry in cases:
+		_expect(
+			EcologyCatalog.moisture_band(entry[0]) == entry[1],
+			"Moisture %.4f must classify at the deterministic v1.9.6 boundary" % entry[0]
+		)
 
 
 func _test_biome_matrix() -> void:
@@ -404,7 +517,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Ecology / Surface Environment: all 13 test groups passed")
+		print("Ecology / Surface Environment: all 19 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

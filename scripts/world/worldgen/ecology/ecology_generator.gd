@@ -136,14 +136,29 @@ static func ecological_moisture_for(
 		shore_bonus: float,
 		settings: EcologySettings
 ) -> float:
-	var climate_supply := precipitation / (precipitation + settings.precip_reference)
-	var base_retention := (
-		clampf(climate_supply, 0.0, 1.0)
-		* (1.0 - settings.drainage_moisture_weight * clampf(drainage_index, 0.0, 1.0))
-		* (1.0 - settings.evaporation_moisture_weight * clampf(evaporation_factor, 0.0, 1.0))
+	var base_moisture := base_ecological_moisture_for(
+		precipitation, drainage_index, evaporation_factor, settings
 	)
 	var river_bonus := clampf(river_strength, 0.0, 1.0) * settings.max_river_bonus
-	return clampf(base_retention + river_bonus + shore_bonus, 0.0, 1.0)
+	return clampf(base_moisture + river_bonus + shore_bonus, 0.0, 1.0)
+
+
+static func base_ecological_moisture_for(
+		precipitation: float,
+		drainage_index: float,
+		evaporation_factor: float,
+		settings: EcologySettings
+) -> float:
+	var retained_supply := maxf(precipitation, 0.0) * (
+		1.0 - settings.drainage_moisture_weight * clampf(drainage_index, 0.0, 1.0)
+	)
+	retained_supply = maxf(retained_supply, 0.0)
+	var drying_demand := settings.precip_reference * (
+		1.0
+		+ settings.evaporation_moisture_weight * clampf(evaporation_factor, 0.0, 1.0)
+	)
+	var denominator := maxf(retained_supply + drying_demand, 0.000001)
+	return clampf(retained_supply / denominator, 0.0, 1.0)
 
 
 static func temperature_suitability_for(

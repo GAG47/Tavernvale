@@ -728,6 +728,9 @@ func _regenerate_composition() -> void:
 	_soil_statistics = _calculate_soil_statistics()
 	_print_soil_texture_diagnostics()
 	_print_soil_deposition_diagnostics()
+	_print_ecological_moisture_balance_diagnostics()
+	_print_moisture_band_diagnostics()
+	_print_ecology_river_bonus_diagnostics()
 	_print_river_network_diagnostics()
 	selected_cell_id = -1
 	queue_redraw()
@@ -1574,6 +1577,7 @@ func _print_river_network_diagnostics() -> void:
 	_print_short_river_network_diagnostics(cells_by_network)
 	_print_river_mouth_discharge_what_if(cells_by_network, river_cell_count)
 	_print_formal_river_source_height_diagnostics(cells_by_network)
+	_print_formal_river_min_cells_order_what_if(cells_by_network, river_cell_count)
 
 
 func _print_river_mouth_discharge_what_if(
@@ -1726,6 +1730,359 @@ func _print_formal_river_source_height_diagnostics(
 			diagnostics.relative_height_stats.p90,
 		]
 	)
+
+
+func _print_formal_river_min_cells_order_what_if(
+		current_cells_by_network: Array[PackedInt32Array], current_river_cell_count: int
+) -> void:
+	var flow_to_before := formal_hydrology.flow_to.duplicate()
+	var accumulation_before := formal_hydrology.flow_accumulation.duplicate()
+	var watershed_before := formal_hydrology.watershed_id.duplicate()
+	var topology := HydrologyFlowCalculator.accumulate_flow(
+		formal_hydrology.local_runoff, formal_hydrology.flow_to
+	)
+	if not topology.ok:
+		print("  Formal River min_cells Order What-if: topology unavailable")
+		return
+	var candidate_mask := WorldHydrologyGenerator._river_mask(
+		terrain.terrain_height,
+		formal_hydrology.flow_accumulation,
+		formal_hydrology.settings.river_runoff_threshold
+	)
+	var candidate_order := WorldHydrologyGenerator._calculate_strahler_order(
+		candidate_mask, formal_hydrology.flow_to, topology.topological_order
+	)
+	var candidate_networks := WorldHydrologyGenerator._build_river_networks(
+		graph,
+		candidate_mask,
+		formal_hydrology.flow_to,
+		topology.upstream,
+		formal_hydrology.flow_accumulation,
+		candidate_order
+	)
+	var candidate_cells_by_network := _river_cells_by_network_id(
+		candidate_networks.river_network_id, candidate_networks.river_networks.size()
+	)
+	var discharge_mask := candidate_mask.duplicate()
+	var discharge_qualified_candidate_ids := PackedInt32Array()
+	var candidate_length_counts := {"1 Cell": 0, "2 Cells": 0, "3+ Cells": 0}
+	var short_candidate_ids := PackedInt32Array()
+	for candidate_id in candidate_networks.river_networks.size():
+		var network: HydrologyRiverNetwork = candidate_networks.river_networks[candidate_id]
+		var candidate_length := candidate_cells_by_network[candidate_id].size()
+		if network.discharge < formal_hydrology.settings.formal_river_min_discharge:
+			for cell_id in candidate_cells_by_network[candidate_id]:
+				discharge_mask[cell_id] = 0
+			continue
+		discharge_qualified_candidate_ids.append(candidate_id)
+		if candidate_length == 1:
+			candidate_length_counts["1 Cell"] += 1
+			short_candidate_ids.append(candidate_id)
+		elif candidate_length == 2:
+			candidate_length_counts["2 Cells"] += 1
+			short_candidate_ids.append(candidate_id)
+		else:
+			candidate_length_counts["3+ Cells"] += 1
+
+	var discharge_order := WorldHydrologyGenerator._calculate_strahler_order(
+		discharge_mask, formal_hydrology.flow_to, topology.topological_order
+	)
+	var discharge_networks := WorldHydrologyGenerator._build_river_networks(
+		graph,
+		discharge_mask,
+		formal_hydrology.flow_to,
+		topology.upstream,
+		formal_hydrology.flow_accumulation,
+		discharge_order
+	)
+	var tracing := WorldHydrologyGenerator._trace_natural_main_upstreams(
+		terrain.terrain_height,
+		discharge_mask,
+		discharge_networks.river_network_id,
+		topology.upstream,
+		formal_hydrology.flow_accumulation
+	)
+	if not tracing.ok:
+		print("  Formal River min_cells Order What-if: Natural tracing failed")
+		return
+	var final_mask: PackedByteArray = tracing.river_mask
+	var final_order := WorldHydrologyGenerator._calculate_strahler_order(
+		final_mask, formal_hydrology.flow_to, topology.topological_order
+	)
+	var final_networks := WorldHydrologyGenerator._build_river_networks(
+		graph,
+		final_mask,
+		formal_hydrology.flow_to,
+		topology.upstream,
+		formal_hydrology.flow_accumulation,
+		final_order
+	)
+	var final_cells_by_network := _river_cells_by_network_id(
+		final_networks.river_network_id, final_networks.river_networks.size()
+	)
+	var final_record_by_candidate := {}
+	var watershed_max_height := _river_watershed_max_land_height()
+	for final_network_id in final_networks.river_networks.size():
+		var final_network: HydrologyRiverNetwork = final_networks.river_networks[final_network_id]
+		var candidate_id: int = candidate_networks.river_network_id[final_network.mouth_cell]
+		var candidate_network: HydrologyRiverNetwork = candidate_networks.river_networks[candidate_id]
+		var source_cell := final_network.source_cell
+		var watershed_id := formal_hydrology.watershed_id[final_network.mouth_cell]
+		var maximum_height := watershed_max_height[watershed_id] \
+				if watershed_id >= 0 and watershed_id < watershed_max_height.size() else 0.0
+		final_record_by_candidate[candidate_id] = {
+			"candidate_id": candidate_id,
+			"candidate_length": candidate_cells_by_network[candidate_id].size(),
+			"candidate_network": candidate_network,
+			"candidate_outlet": _trace_river_network_outlet(candidate_network).type,
+			"watershed_id": watershed_id,
+			"final_network_id": final_network_id,
+			"final_network": final_network,
+			"final_length": final_cells_by_network[final_network_id].size(),
+			"final_source_height": terrain.terrain_height[source_cell],
+			"relative_source_height": terrain.terrain_height[source_cell] \
+					/ maxf(maximum_height, 0.000001),
+			"final_outlet": _trace_river_network_outlet(final_network).type,
+		}
+
+	var final_short_length_buckets := {
+		"1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6~7": 0, "8~15": 0, "16+": 0,
+	}
+	var restored_records: Array[Dictionary] = []
+	print("  Formal River min_cells Order What-if Diagnostics:")
+	print("    Temporary flow: mouth discharge -> Natural tracing -> final min_cells.")
+	print("    Current Formal Networks: %d" % formal_hydrology.river_networks.size())
+	print("    Discharge-qualified Candidate Networks: %d" % discharge_networks.river_networks.size())
+	for length_group in ["1 Cell", "2 Cells", "3+ Cells"]:
+		_print_river_diagnostic_count(
+			"Candidate %s" % length_group,
+			candidate_length_counts[length_group],
+			discharge_networks.river_networks.size()
+		)
+	print("    Discharge-qualified Candidate Networks below 3 Cells:")
+	for candidate_id in short_candidate_ids:
+		var candidate_network: HydrologyRiverNetwork = candidate_networks.river_networks[candidate_id]
+		var record: Dictionary = final_record_by_candidate[candidate_id]
+		var candidate_length: int = record.candidate_length
+		var final_length: int = record.final_length
+		final_short_length_buckets[_river_min_cells_final_length_bucket(final_length)] += 1
+		if final_length >= 3:
+			restored_records.append(record)
+		print(
+			"      Candidate %d | Cells %d | Discharge %.4f | Outlet %s | Watershed %d | Source Height %.4f | Source Acc %.4f"
+			% [
+				candidate_id,
+				candidate_length,
+				candidate_network.discharge,
+				record.candidate_outlet,
+				record.watershed_id,
+				terrain.terrain_height[candidate_network.source_cell],
+				formal_hydrology.flow_accumulation[candidate_network.source_cell],
+			]
+		)
+		print(
+			"        Final Cells %d | Added %d | Final Source Height %.4f | Relative %.4f | Final Outlet %s"
+			% [
+				final_length,
+				final_length - candidate_length,
+				record.final_source_height,
+				record.relative_source_height,
+				record.final_outlet,
+			]
+		)
+	print("    Candidate < 3 Final Length Distribution:")
+	for length_bucket in ["1", "2", "3", "4", "5", "6~7", "8~15", "16+"]:
+		_print_river_diagnostic_count(
+			length_bucket,
+			final_short_length_buckets[length_bucket],
+			short_candidate_ids.size()
+		)
+
+	var current_lengths := PackedFloat32Array()
+	for network_cells in current_cells_by_network:
+		current_lengths.append(network_cells.size())
+	var current_stats := _soil_continuous_statistics(current_lengths)
+	var what_if_lengths := PackedFloat32Array()
+	var what_if_cells := 0
+	for candidate_id in discharge_qualified_candidate_ids:
+		var record: Dictionary = final_record_by_candidate[candidate_id]
+		if record.final_length < 3:
+			continue
+		what_if_lengths.append(record.final_length)
+		what_if_cells += record.final_length
+	var what_if_stats := _soil_continuous_statistics(what_if_lengths)
+	print("    CURRENT vs WHAT-IF FINAL >= 3:")
+	print(
+		"      CURRENT | Networks %d | Cells %d | Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			current_lengths.size(), current_river_cell_count, current_stats.mean,
+			current_stats.p50, current_stats.p75, current_stats.p90, current_stats.max,
+		]
+	)
+	print(
+		"      WHAT-IF | Networks %d | Cells %d | Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f | Added Networks %d"
+		% [
+			what_if_lengths.size(), what_if_cells, what_if_stats.mean, what_if_stats.p50,
+			what_if_stats.p75, what_if_stats.p90, what_if_stats.max,
+			what_if_lengths.size() - current_lengths.size(),
+		]
+	)
+	print("    Networks restored only by post-tracing min_cells:")
+	for record in restored_records:
+		var candidate_network: HydrologyRiverNetwork = record.candidate_network
+		print(
+			"      Candidate %d | Candidate %d -> Final %d | Discharge %.4f | Source Height %.4f | Outlet %s"
+			% [
+				record.candidate_id, record.candidate_length, record.final_length,
+				candidate_network.discharge, record.final_source_height, record.final_outlet,
+			]
+		)
+
+	print("    Post-tracing min_cells sensitivity:")
+	for minimum_cells in [3, 5, 7]:
+		var retained_count := 0
+		var removed_lengths := {}
+		for candidate_id in discharge_qualified_candidate_ids:
+			var final_length: int = final_record_by_candidate[candidate_id].final_length
+			if final_length >= minimum_cells:
+				retained_count += 1
+			elif final_length >= 3:
+				removed_lengths[final_length] = int(removed_lengths.get(final_length, 0)) + 1
+		print(
+			"      min_cells %d | Networks %d | Extra removed vs min_cells 3: %s"
+			% [minimum_cells, retained_count, _river_length_count_summary(removed_lengths)]
+		)
+
+	var validation := _validate_river_min_cells_order_what_if(
+		discharge_mask,
+		final_mask,
+		final_networks.river_network_id,
+		topology.upstream,
+		final_record_by_candidate,
+		discharge_networks.river_networks.size(),
+		final_networks.river_networks.size()
+	)
+	var formal_data_unchanged := formal_hydrology.flow_to == flow_to_before \
+			and formal_hydrology.flow_accumulation == accumulation_before \
+			and formal_hydrology.watershed_id == watershed_before
+	print(
+		"    Validation: %s | Network Count Stable %s | Disconnected %d | Cross Watershed %d | Cycles %d | Branching %d | Wrong Predecessor %d | Outlet Changed %d | Formal Data Unchanged %s"
+		% [
+			"PASS" if validation.ok and formal_data_unchanged else "FAIL",
+			"PASS" if validation.network_count_stable else "FAIL",
+			validation.disconnected,
+			validation.cross_watershed,
+			validation.cycles,
+			validation.branching,
+			validation.wrong_predecessor,
+			validation.outlet_changed,
+			"PASS" if formal_data_unchanged else "FAIL",
+		]
+	)
+
+
+func _river_cells_by_network_id(
+		network_id_by_cell: PackedInt32Array, network_count: int
+) -> Array[PackedInt32Array]:
+	var cells_by_network: Array[PackedInt32Array] = []
+	for network_id in network_count:
+		cells_by_network.append(PackedInt32Array())
+	for cell_id in network_id_by_cell.size():
+		var network_id := network_id_by_cell[cell_id]
+		if network_id < 0 or network_id >= network_count:
+			continue
+		var network_cells: PackedInt32Array = cells_by_network[network_id]
+		network_cells.append(cell_id)
+		cells_by_network[network_id] = network_cells
+	return cells_by_network
+
+
+func _river_min_cells_final_length_bucket(length: int) -> String:
+	if length <= 5:
+		return str(length)
+	if length <= 7:
+		return "6~7"
+	if length <= 15:
+		return "8~15"
+	return "16+"
+
+
+func _river_length_count_summary(length_counts: Dictionary) -> String:
+	if length_counts.is_empty():
+		return "none"
+	var lengths := length_counts.keys()
+	lengths.sort()
+	var parts := PackedStringArray()
+	for length in lengths:
+		parts.append("%d:%d" % [length, length_counts[length]])
+	return ", ".join(parts)
+
+
+func _validate_river_min_cells_order_what_if(
+		discharge_mask: PackedByteArray,
+		final_mask: PackedByteArray,
+		final_network_id: PackedInt32Array,
+		upstream: Array,
+		final_record_by_candidate: Dictionary,
+		discharge_network_count: int,
+		final_network_count: int
+) -> Dictionary:
+	var disconnected := 0
+	var cross_watershed := 0
+	var cycles := 0
+	var branching := 0
+	var wrong_predecessor := 0
+	for cell_id in final_mask.size():
+		if final_mask[cell_id] == 0:
+			continue
+		var network_id := final_network_id[cell_id]
+		var added_upstream_count := 0
+		for upstream_id in upstream[cell_id]:
+			if final_mask[upstream_id] != 0 and discharge_mask[upstream_id] == 0 \
+					and final_network_id[upstream_id] == network_id:
+				added_upstream_count += 1
+		if added_upstream_count > 1:
+			branching += 1
+		if discharge_mask[cell_id] != 0:
+			continue
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id < 0 or final_network_id[downstream_id] != network_id:
+			disconnected += 1
+			continue
+		if formal_hydrology.watershed_id[cell_id] != formal_hydrology.watershed_id[downstream_id]:
+			cross_watershed += 1
+		if WorldHydrologyGenerator._main_upstream_predecessor(
+			downstream_id,
+			terrain.terrain_height,
+			upstream,
+			formal_hydrology.flow_accumulation
+		) != cell_id:
+			wrong_predecessor += 1
+		var current_cell := cell_id
+		var visited := {}
+		while current_cell >= 0 and discharge_mask[current_cell] == 0:
+			if visited.has(current_cell):
+				cycles += 1
+				break
+			visited[current_cell] = true
+			current_cell = formal_hydrology.flow_to[current_cell]
+	var outlet_changed := 0
+	for record in final_record_by_candidate.values():
+		if record.candidate_outlet != record.final_outlet:
+			outlet_changed += 1
+	var network_count_stable := discharge_network_count == final_network_count \
+			and final_record_by_candidate.size() == final_network_count
+	return {
+		"ok": disconnected == 0 and cross_watershed == 0 and cycles == 0 \
+				and branching == 0 and wrong_predecessor == 0 and outlet_changed == 0,
+		"network_count_stable": network_count_stable,
+		"disconnected": disconnected,
+		"cross_watershed": cross_watershed,
+		"cycles": cycles,
+		"branching": branching,
+		"wrong_predecessor": wrong_predecessor,
+		"outlet_changed": outlet_changed,
+	}
 
 
 func _print_river_main_upstream_what_if(
@@ -3224,6 +3581,391 @@ func _calculate_soil_statistics() -> Dictionary:
 		"material_texture_counts": material_texture_counts,
 		"land_count": depth_values.size(),
 	}
+
+
+func _print_ecological_moisture_balance_diagnostics() -> void:
+	if ecology == null or climate == null or terrain == null:
+		return
+	var records: Array[Dictionary] = []
+	var base_values := PackedFloat32Array()
+	var final_values := PackedFloat32Array()
+	for cell_id in ecology.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0:
+			continue
+		var base_moisture := EcologyGenerator.base_ecological_moisture_for(
+			climate.precipitation[cell_id],
+			ecology.drainage_index[cell_id],
+			surface_water_settings.evaporation_factor(climate.temperature[cell_id]),
+			ecology_settings
+		)
+		base_values.append(base_moisture)
+		final_values.append(ecology.ecological_moisture[cell_id])
+		records.append({
+			"precipitation": climate.precipitation[cell_id],
+			"temperature": climate.temperature[cell_id],
+			"base": base_moisture,
+			"final": ecology.ecological_moisture[cell_id],
+		})
+	records.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		return first.precipitation < second.precipitation
+	)
+	var base_statistics := _v195_moisture_statistics(base_values)
+	var final_statistics := _v195_moisture_statistics(final_values)
+	print("Ecological Moisture Water Balance diagnostic (%s, Seed %d):" % [template_id, seed])
+	print("  Land-only Cells: %d (terrain_height >= 0.0)" % records.size())
+	_print_v195_full_moisture_statistics("Final Ecological Moisture", final_statistics, true)
+	_print_v195_full_moisture_statistics("Base Moisture", base_statistics, false)
+
+	var precipitation_bands := [
+		{"label": "Bottom 25%", "values": PackedFloat32Array()},
+		{"label": "25~50%", "values": PackedFloat32Array()},
+		{"label": "50~75%", "values": PackedFloat32Array()},
+		{"label": "75~90%", "values": PackedFloat32Array()},
+		{"label": "Top 10%", "values": PackedFloat32Array()},
+	]
+	var warm_hot_top_base := PackedFloat32Array()
+	var warm_hot_top_final := PackedFloat32Array()
+	var bottom_ten_base := PackedFloat32Array()
+	var bottom_ten_final := PackedFloat32Array()
+	var count := records.size()
+	var cut_10 := ceili(float(count) * 0.10)
+	var cut_25 := ceili(float(count) * 0.25)
+	var cut_50 := ceili(float(count) * 0.50)
+	var cut_75 := ceili(float(count) * 0.75)
+	var cut_90 := ceili(float(count) * 0.90)
+	for rank in count:
+		var record: Dictionary = records[rank]
+		var band_index := 0
+		if rank >= cut_90:
+			band_index = 4
+		elif rank >= cut_75:
+			band_index = 3
+		elif rank >= cut_50:
+			band_index = 2
+		elif rank >= cut_25:
+			band_index = 1
+		precipitation_bands[band_index].values.append(record.base)
+		if rank < cut_10:
+			bottom_ten_base.append(record.base)
+			bottom_ten_final.append(record.final)
+		if rank >= cut_90:
+			var temperature_band := EcologyCatalog.temperature_band(record.temperature)
+			if temperature_band == EcologyCatalog.TemperatureBand.WARM \
+					or temperature_band == EcologyCatalog.TemperatureBand.HOT:
+				warm_hot_top_base.append(record.base)
+				warm_hot_top_final.append(record.final)
+
+	print("  Base Moisture by Land Precipitation percentile:")
+	for band in precipitation_bands:
+		var statistics := _v195_moisture_statistics(band.values)
+		print(
+			"    %s: Cells %d | Mean %.6f | P50 %.6f | P90 %.6f"
+			% [band.label, statistics.count, statistics.mean, statistics.p50, statistics.p90]
+		)
+
+	print("  Warm/Hot Land + Precipitation Top 10%%: %d Cells" % warm_hot_top_base.size())
+	_print_v195_subset_statistics("Base Moisture", warm_hot_top_base)
+	_print_v195_subset_statistics("Final Moisture", warm_hot_top_final)
+	_print_v195_threshold_ratios("Base Moisture", warm_hot_top_base, [0.50, 0.60, 0.70, 0.80])
+	_print_v195_threshold_ratios("Final Moisture", warm_hot_top_final, [0.50, 0.60, 0.70, 0.80])
+
+	print("  Precipitation Bottom 10%% Land: %d Cells" % bottom_ten_base.size())
+	_print_v195_bottom_statistics("Base Moisture", bottom_ten_base)
+	_print_v195_bottom_statistics("Final Moisture", bottom_ten_final)
+	_print_v195_threshold_ratios("Base Moisture", bottom_ten_base, [0.50, 0.60])
+	_print_v195_threshold_ratios("Final Moisture", bottom_ten_final, [0.50, 0.60])
+
+	print("  Current Biome distribution (unchanged thresholds):")
+	var biome_land_count: int = _ecology_statistics.land_count
+	for biome_id in EcologyCatalog.BIOME_COUNT:
+		var biome_count: int = _ecology_statistics.biome_land_counts[biome_id]
+		var biome_percent := (
+			100.0 * float(biome_count) / float(biome_land_count)
+			if biome_land_count > 0 else 0.0
+		)
+		print(
+			"    %s: %d / %.2f%% Land"
+			% [EcologyCatalog.biome_name(biome_id), biome_count, biome_percent]
+		)
+	if soil != null and not _soil_statistics.is_empty():
+		print("  Soil regression (soil-bearing Land):")
+		_print_v195_soil_statistics("Soil Depth", _soil_statistics.depth)
+		_print_v195_soil_statistics("Organic Matter", _soil_statistics.organic_matter)
+		_print_v195_soil_statistics("Fertility", _soil_statistics.fertility)
+
+
+func _print_moisture_band_diagnostics() -> void:
+	if ecology == null or terrain == null:
+		return
+	var band_counts := PackedInt32Array()
+	band_counts.resize(EcologyCatalog.MoistureBand.size())
+	var land_count := 0
+	for cell_id in ecology.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0:
+			continue
+		land_count += 1
+		var band := EcologyCatalog.moisture_band(ecology.ecological_moisture[cell_id])
+		band_counts[band] += 1
+	print("Ecological Moisture Band diagnostic (%s, Seed %d):" % [template_id, seed])
+	print("  Land-only Cells: %d (terrain_height >= 0.0)" % land_count)
+	var labels := ["Arid", "Dry", "Moderate", "Humid", "Wet"]
+	for band in EcologyCatalog.MoistureBand.size():
+		var count := band_counts[band]
+		var percent := 100.0 * float(count) / float(land_count) if land_count > 0 else 0.0
+		print("  %s: %d / %.2f%% Land" % [labels[band], count, percent])
+
+
+func _v195_moisture_statistics(values: PackedFloat32Array) -> Dictionary:
+	var statistics := _continuous_statistics(values)
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	statistics["count"] = values.size()
+	statistics["p10"] = _percentile(sorted_values, 0.10)
+	statistics["p90"] = _percentile(sorted_values, 0.90)
+	statistics["p95"] = _percentile(sorted_values, 0.95)
+	return statistics
+
+
+func _print_v195_full_moisture_statistics(
+		label: String, statistics: Dictionary, include_p10: bool
+) -> void:
+	if include_p10:
+		print(
+			"  %s: Mean %.6f | P10 %.6f | P25 %.6f | P50 %.6f | P75 %.6f | P90 %.6f | P95 %.6f | Max %.6f"
+			% [
+				label,
+				statistics.mean,
+				statistics.p10,
+				statistics.p25,
+				statistics.p50,
+				statistics.p75,
+				statistics.p90,
+				statistics.p95,
+				statistics.max,
+			]
+		)
+	else:
+		print(
+			"  %s: Mean %.6f | P50 %.6f | P75 %.6f | P90 %.6f | P95 %.6f | Max %.6f"
+			% [
+				label,
+				statistics.mean,
+				statistics.p50,
+				statistics.p75,
+				statistics.p90,
+				statistics.p95,
+				statistics.max,
+			]
+		)
+
+
+func _print_v195_subset_statistics(label: String, values: PackedFloat32Array) -> void:
+	var statistics := _v195_moisture_statistics(values)
+	print(
+		"    %s: Mean %.6f | P50 %.6f | P75 %.6f | P90 %.6f | Max %.6f"
+		% [
+			label,
+			statistics.mean,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+			statistics.max,
+		]
+	)
+
+
+func _print_v195_bottom_statistics(label: String, values: PackedFloat32Array) -> void:
+	var statistics := _v195_moisture_statistics(values)
+	print(
+		"    %s: Mean %.6f | P50 %.6f | P90 %.6f | Max %.6f"
+		% [label, statistics.mean, statistics.p50, statistics.p90, statistics.max]
+	)
+
+
+func _print_v195_threshold_ratios(
+		label: String, values: PackedFloat32Array, thresholds: Array
+) -> void:
+	var entries := PackedStringArray()
+	for threshold in thresholds:
+		var threshold_count := 0
+		for value in values:
+			if value >= float(threshold):
+				threshold_count += 1
+		var percent := (
+			100.0 * float(threshold_count) / float(values.size())
+			if not values.is_empty() else 0.0
+		)
+		entries.append(">=%.2f %d/%.2f%%" % [threshold, threshold_count, percent])
+	print("    %s thresholds: %s" % [label, " | ".join(entries)])
+
+
+func _print_v195_soil_statistics(label: String, statistics: Dictionary) -> void:
+	print(
+		"    %s: Mean %.6f | P50 %.6f | P90 %.6f"
+		% [label, statistics.mean, statistics.p50, statistics.p90]
+	)
+
+
+func _print_ecology_river_bonus_diagnostics() -> void:
+	if ecology == null or formal_hydrology == null or surface_water == null:
+		return
+	var band_labels := ["<1000", "1000~5000", "5000~20000", ">=20000"]
+	var bands := {}
+	for label in band_labels:
+		bands[label] = {
+			"bonus": PackedFloat32Array(),
+			"delta": PackedFloat32Array(),
+			"ge_001": 0,
+			"ge_002": 0,
+			"ge_003": 0,
+			"ge_005": 0,
+			"ge_010": 0,
+		}
+	var no_river_values := PackedFloat32Array()
+	var current_values := PackedFloat32Array()
+	var formal_bonus := PackedFloat32Array()
+	var formal_delta := PackedFloat32Array()
+	var ordinary_bonus := PackedFloat32Array()
+	var ordinary_delta := PackedFloat32Array()
+	var lake_shore := EcologyGenerator._lake_shore_cells(graph, terrain, surface_water)
+	for cell_id in ecology.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0 or surface_water.lake_id[cell_id] >= 0:
+			continue
+		var accumulation := formal_hydrology.flow_accumulation[cell_id]
+		var river_strength := EcologyGenerator.river_strength_for(
+			accumulation, formal_hydrology.settings.river_runoff_threshold
+		)
+		var river_bonus := clampf(river_strength, 0.0, 1.0) \
+				* ecology_settings.max_river_bonus
+		var shore_bonus := ecology_settings.lake_shore_bonus if lake_shore[cell_id] != 0 else 0.0
+		var moisture_without_river := EcologyGenerator.ecological_moisture_for(
+			climate.precipitation[cell_id],
+			ecology.drainage_index[cell_id],
+			surface_water_settings.evaporation_factor(climate.temperature[cell_id]),
+			0.0,
+			shore_bonus,
+			ecology_settings
+		)
+		var current_moisture := ecology.ecological_moisture[cell_id]
+		var actual_delta := current_moisture - moisture_without_river
+		var band_label := _river_bonus_accumulation_band(accumulation)
+		var band: Dictionary = bands[band_label]
+		band.bonus.append(river_bonus)
+		band.delta.append(actual_delta)
+		if river_bonus >= 0.01:
+			band.ge_001 += 1
+		if river_bonus >= 0.02:
+			band.ge_002 += 1
+		if river_bonus >= 0.03:
+			band.ge_003 += 1
+		if river_bonus >= 0.05:
+			band.ge_005 += 1
+		if river_bonus >= 0.10:
+			band.ge_010 += 1
+		bands[band_label] = band
+		no_river_values.append(moisture_without_river)
+		current_values.append(current_moisture)
+		if formal_hydrology.is_river(cell_id):
+			formal_bonus.append(river_bonus)
+			formal_delta.append(actual_delta)
+		else:
+			ordinary_bonus.append(river_bonus)
+			ordinary_delta.append(actual_delta)
+
+	print("Ecology River Bonus diagnostic (%s, Seed %d):" % [template_id, seed])
+	print(
+		"  Formula: strength=clamp(log(1+accumulation/%.1f)/log(21), 0, 1); bonus=strength*%.2f; final moisture clamped [0,1]."
+		% [formal_hydrology.settings.river_runoff_threshold, ecology_settings.max_river_bonus]
+	)
+	print("  Land excludes Ocean and Lake; formal River identity is not an input to bonus.")
+	var total_land := current_values.size()
+	for label in band_labels:
+		var band: Dictionary = bands[label]
+		var count: int = band.bonus.size()
+		var land_percent := 100.0 * float(count) / float(total_land) if total_land > 0 else 0.0
+		var bonus_stats := _river_bonus_continuous_statistics(band.bonus)
+		var delta_stats := _river_bonus_continuous_statistics(band.delta)
+		print("  Accumulation %s: Cells %d / %.2f%% Land" % [label, count, land_percent])
+		_print_river_bonus_value_statistics("River Bonus", bonus_stats)
+		_print_river_bonus_threshold_count(">= 0.01", band.ge_001, count)
+		_print_river_bonus_threshold_count(">= 0.02", band.ge_002, count)
+		_print_river_bonus_threshold_count(">= 0.03", band.ge_003, count)
+		_print_river_bonus_threshold_count(">= 0.05", band.ge_005, count)
+		_print_river_bonus_threshold_count(">= 0.10", band.ge_010, count)
+		_print_river_bonus_value_statistics("Actual River Delta", delta_stats)
+	var no_river_stats := _river_bonus_continuous_statistics(no_river_values)
+	var current_stats := _river_bonus_continuous_statistics(current_values)
+	print(
+		"  Land No-river Moisture: Mean %.6f | P50 %.6f | P90 %.6f"
+		% [no_river_stats.mean, no_river_stats.p50, no_river_stats.p90]
+	)
+	print(
+		"  Land Current Moisture: Mean %.6f | P50 %.6f | P90 %.6f"
+		% [current_stats.mean, current_stats.p50, current_stats.p90]
+	)
+	print("  River Contribution to Land Mean: %.6f" % (current_stats.mean - no_river_stats.mean))
+	_print_river_bonus_identity_statistics(
+		"Formal World River Cells", formal_bonus, formal_delta
+	)
+	_print_river_bonus_identity_statistics(
+		"Ordinary non-formal Land Cells", ordinary_bonus, ordinary_delta
+	)
+
+
+func _river_bonus_accumulation_band(accumulation: float) -> String:
+	if accumulation < 1000.0:
+		return "<1000"
+	if accumulation < 5000.0:
+		return "1000~5000"
+	if accumulation < 20000.0:
+		return "5000~20000"
+	return ">=20000"
+
+
+func _river_bonus_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
+	var statistics := _continuous_statistics(values)
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	statistics["p90"] = _percentile(sorted_values, 0.90)
+	statistics["p95"] = _percentile(sorted_values, 0.95)
+	statistics["count"] = values.size()
+	return statistics
+
+
+func _print_river_bonus_value_statistics(label: String, statistics: Dictionary) -> void:
+	print(
+		"    %s: Mean %.6f | P50 %.6f | P75 %.6f | P90 %.6f | P95 %.6f | Max %.6f"
+		% [
+			label,
+			statistics.mean,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+			statistics.p95,
+			statistics.max,
+		]
+	)
+
+
+func _print_river_bonus_threshold_count(label: String, count: int, total: int) -> void:
+	var percent := 100.0 * float(count) / float(total) if total > 0 else 0.0
+	print("    Bonus %s: %d / %.2f%%" % [label, count, percent])
+
+
+func _print_river_bonus_identity_statistics(
+		label: String, bonus_values: PackedFloat32Array, delta_values: PackedFloat32Array
+) -> void:
+	var bonus_stats := _river_bonus_continuous_statistics(bonus_values)
+	var delta_stats := _river_bonus_continuous_statistics(delta_values)
+	print("  %s: %d" % [label, bonus_values.size()])
+	print(
+		"    Bonus: Mean %.6f | P50 %.6f | P90 %.6f | P95 %.6f"
+		% [bonus_stats.mean, bonus_stats.p50, bonus_stats.p90, bonus_stats.p95]
+	)
+	print(
+		"    Actual Delta: Mean %.6f | P50 %.6f | P90 %.6f | P95 %.6f"
+		% [delta_stats.mean, delta_stats.p50, delta_stats.p90, delta_stats.p95]
+	)
 
 
 func _soil_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
