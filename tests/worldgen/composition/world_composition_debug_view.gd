@@ -34,6 +34,9 @@ var resource_settings: ResourcePotentialSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
+var reference_view := ReferenceView.NONE
+var _height_reference_held := false
+var _biome_reference_held := false
 var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
@@ -69,6 +72,12 @@ enum DebugPage {
 	HYDROLOGY,
 	ECOLOGY_SOIL,
 	RESOURCES,
+}
+
+enum ReferenceView {
+	NONE,
+	HEIGHT,
+	BIOME,
 }
 
 enum ViewMode {
@@ -166,7 +175,15 @@ func _on_viewport_size_changed() -> void:
 
 
 func _unhandled_input(event: InputEvent) -> void:
-	if event is InputEventKey and event.pressed and not event.echo:
+	if event is InputEventKey:
+		if event.echo:
+			return
+		if event.keycode == KEY_H or event.keycode == KEY_B:
+			_update_reference_key(event.keycode, event.pressed)
+			queue_redraw()
+			return
+		if not event.pressed:
+			return
 		if event.keycode == KEY_TAB:
 			_change_debug_page(-1 if event.shift_pressed else 1)
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
@@ -184,6 +201,21 @@ func _unhandled_input(event: InputEvent) -> void:
 		queue_redraw()
 	elif event is InputEventMouseButton and event.button_index == MOUSE_BUTTON_LEFT and event.pressed:
 		_select_cell_at((event.position - _view_offset) / _view_scale)
+
+
+func _update_reference_key(keycode: Key, pressed: bool) -> void:
+	if keycode == KEY_H:
+		_height_reference_held = pressed
+		if pressed:
+			reference_view = ReferenceView.HEIGHT
+		elif reference_view == ReferenceView.HEIGHT:
+			reference_view = ReferenceView.BIOME if _biome_reference_held else ReferenceView.NONE
+	else:
+		_biome_reference_held = pressed
+		if pressed:
+			reference_view = ReferenceView.BIOME
+		elif reference_view == ReferenceView.BIOME:
+			reference_view = ReferenceView.HEIGHT if _height_reference_held else ReferenceView.NONE
 
 
 func _draw() -> void:
@@ -273,7 +305,7 @@ func _mask_outside_logical_world() -> void:
 
 
 func _cell_color(cell_id: int) -> Color:
-	match view_mode:
+	match _map_view_mode():
 		ViewMode.RAW_COMPOSITION:
 			var grayscale := float(composition.continental_value[cell_id]) / 100.0
 			return Color(grayscale, grayscale, grayscale)
@@ -347,6 +379,14 @@ func _cell_color(cell_id: int) -> Color:
 			return _precipitation_delta_color(cell_id)
 		_:
 			return Color.MAGENTA
+
+
+func _map_view_mode() -> int:
+	if reference_view == ReferenceView.HEIGHT:
+		return ViewMode.TERRAIN_HEIGHT
+	if reference_view == ReferenceView.BIOME:
+		return ViewMode.BIOME
+	return view_mode
 
 
 func _resource_heatmap_color(value: float) -> Color:
@@ -820,14 +860,18 @@ func _draw_information() -> void:
 		"Cell Count: %d" % graph.cell_count(),
 		"Page: " + _debug_page_name(),
 		"View: " + _view_mode_name(),
-		"",
 	])
+	if reference_view != ReferenceView.NONE:
+		lines.append("Reference: " + _reference_view_name())
+	lines.append("")
 	var page_views: Array = DEBUG_PAGE_VIEWS[debug_page]
 	for view_index in page_views.size():
 		lines.append("[%d] %s" % [view_index + 1, _view_mode_name(page_views[view_index])])
 	lines.append("")
 	lines.append("Tab        Next Page")
 	lines.append("Shift+Tab  Previous Page")
+	lines.append("H          Hold Height Reference")
+	lines.append("B          Hold Biome Reference")
 	lines.append("T          Template")
 	lines.append("R          Seed +1")
 	lines.append("Click      Inspect Cell")
@@ -835,9 +879,8 @@ func _draw_information() -> void:
 	_append_mode_statistics(lines)
 	if selected_cell_id >= 0:
 		lines.append("")
-		lines.append("Cell ID: %d" % selected_cell_id)
+		_append_cell_inspector_header(lines, selected_cell_id)
 		if view_mode == ViewMode.TEMPERATURE_DELTA:
-			lines.append("Conditioned Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Preliminary Temp: %.3f °C" % preliminary_climate.temperature[selected_cell_id])
 			lines.append("Final Temp: %.3f °C" % climate.temperature[selected_cell_id])
 			lines.append(
@@ -845,7 +888,6 @@ func _draw_information() -> void:
 				% (climate.temperature[selected_cell_id] - preliminary_climate.temperature[selected_cell_id])
 			)
 		elif view_mode == ViewMode.PRECIPITATION_DELTA:
-			lines.append("Conditioned Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Preliminary Precip: %.3f" % preliminary_climate.precipitation[selected_cell_id])
 			lines.append("Final Precip: %.3f" % climate.precipitation[selected_cell_id])
 			lines.append(
@@ -855,14 +897,9 @@ func _draw_information() -> void:
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
 		elif _is_soil_view():
-			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append(
 				"Material: %s"
 				% GeologyCatalog.material_name(geology.material_id[selected_cell_id])
-			)
-			lines.append(
-				"Biome: %s"
-				% EcologyCatalog.biome_name(ecology.biome_id[selected_cell_id])
 			)
 			lines.append("Soil Depth: %.4f" % soil.soil_depth[selected_cell_id])
 			lines.append(
@@ -872,7 +909,6 @@ func _draw_information() -> void:
 			lines.append("Organic Matter: %.4f" % soil.organic_matter[selected_cell_id])
 			lines.append("Soil Fertility: %.4f" % soil.soil_fertility[selected_cell_id])
 		elif _is_ecology_view():
-			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Temperature: %.2f °C" % climate.temperature[selected_cell_id])
 			lines.append("Precipitation: %.2f" % climate.precipitation[selected_cell_id])
 			lines.append("Permeability: %.3f" % geology.permeability[selected_cell_id])
@@ -908,10 +944,6 @@ func _draw_information() -> void:
 					"Vegetation Potential: %.4f"
 					% ecology.vegetation_potential[selected_cell_id]
 				)
-			lines.append(
-				"Biome: %s"
-				% EcologyCatalog.biome_name(ecology.biome_id[selected_cell_id])
-			)
 		elif view_mode == ViewMode.HYDROLOGY_CONDITIONING:
 			lines.append("Original Height: %.3f" % hydrology.original_height[selected_cell_id])
 			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
@@ -924,7 +956,6 @@ func _draw_information() -> void:
 				% HydrologyConditioner.material_resistance(geology.erodibility[selected_cell_id])
 			)
 		elif _is_surface_water_view():
-			lines.append("Terrain Height: %.3f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Closed Basin ID: %d" % hydrology.closed_basin_id[selected_cell_id])
 			lines.append("Lake ID: %d" % surface_water.lake_id[selected_cell_id])
 			lines.append(
@@ -949,8 +980,6 @@ func _draw_information() -> void:
 				and not _is_ecology_view() \
 				and not _is_soil_view() \
 				and not _is_resource_view():
-			if view_mode != ViewMode.HYDROLOGY_CONDITIONING:
-				lines.append("Conditioned Height: %.2f" % terrain.terrain_height[selected_cell_id])
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
 				selected_cell_id, graph, climate_settings
 			))
@@ -980,6 +1009,12 @@ func _draw_information() -> void:
 		)
 
 
+func _append_cell_inspector_header(lines: PackedStringArray, cell_id: int) -> void:
+	lines.append("Cell ID: %d" % cell_id)
+	lines.append("Height: %.3f" % terrain.terrain_height[cell_id])
+	lines.append("Biome: %s" % EcologyCatalog.biome_name(ecology.biome_id[cell_id]))
+
+
 func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
 	lines.append("Agriculture: %.4f" % resource_potential.agriculture_potential[cell_id])
 	lines.append("Timber: %.4f" % resource_potential.timber_potential[cell_id])
@@ -987,15 +1022,13 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 	lines.append("Construction Stone: %.4f" % resource_potential.construction_stone_potential[cell_id])
 	lines.append("Base Metal: %.4f" % resource_potential.base_metal_potential[cell_id])
 	lines.append("Precious Mineral: %.4f" % resource_potential.precious_mineral_potential[cell_id])
-	lines.append("Freshwater Aquatic: %.4f" % resource_potential.freshwater_aquatic_potential[cell_id])
-	lines.append("Coastal Aquatic: %.4f" % resource_potential.coastal_aquatic_potential[cell_id])
+	lines.append("Freshwater Aquatic / Fishery: %.4f" % resource_potential.freshwater_aquatic_potential[cell_id])
+	lines.append("Coastal Aquatic / Fishery: %.4f" % resource_potential.coastal_aquatic_potential[cell_id])
 	lines.append("")
-	lines.append("Terrain Height: %.3f" % terrain.terrain_height[cell_id])
 	lines.append("Temperature: %.2f °C" % climate.temperature[cell_id])
 	lines.append("Ecological Moisture: %.4f" % ecology.ecological_moisture[cell_id])
 	lines.append("Drainage: %.4f" % ecology.drainage_index[cell_id])
 	lines.append("Vegetation: %.4f" % ecology.vegetation_potential[cell_id])
-	lines.append("Biome: %s" % EcologyCatalog.biome_name(ecology.biome_id[cell_id]))
 	lines.append("Soil Depth: %.4f" % soil.soil_depth[cell_id])
 	lines.append("Soil Fertility: %.4f" % soil.soil_fertility[cell_id])
 	lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[cell_id]))
@@ -1028,6 +1061,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 			0.70 + 0.15 * soil.soil_depth[cell_id] + 0.15 * soil.soil_fertility[cell_id]
 		))
 	elif view_mode == ViewMode.FORAGE_POTENTIAL:
+		lines.append("Forage Growth Support: %.4f" % ResourcePotentialGenerator.forage_growth_support_for(
+			ecology.vegetation_potential[cell_id], resource_settings
+		))
 		lines.append("Open-land Factor: %.3f" % ResourcePotentialGenerator.forage_biome_factor_for(
 			ecology.biome_id[cell_id]
 		))
@@ -1067,6 +1103,13 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 			climate.temperature[cell_id]
 		))
 	elif view_mode == ViewMode.COASTAL_AQUATIC_POTENTIAL:
+		var ocean_depth := ResourcePotentialGenerator.ocean_depth_for(
+			terrain.terrain_height[cell_id]
+		)
+		lines.append("Ocean Depth: %.3f" % ocean_depth)
+		lines.append("Shelf Suitability: %.4f" % ResourcePotentialGenerator.shelf_suitability_for(
+			terrain.terrain_height[cell_id], resource_settings
+		))
 		lines.append("Coastal Ocean: %s" % (
 			"Yes" if ResourcePotentialGenerator.is_coastal_ocean_cell(graph, terrain, cell_id) else "No"
 		))
@@ -1617,6 +1660,14 @@ func _calculate_resource_statistics() -> Dictionary:
 				values.append(source[cell_id])
 		var statistics := _resource_continuous_statistics(values)
 		statistics["denominator_name"] = _resource_denominator_name(mode)
+		if mode == ViewMode.COASTAL_AQUATIC_POTENTIAL:
+			var shelf_values := PackedFloat32Array()
+			for cell_id in graph.cell_count():
+				if _resource_denominator_includes(mode, cell_id):
+					shelf_values.append(ResourcePotentialGenerator.shelf_suitability_for(
+						terrain.terrain_height[cell_id], resource_settings
+					))
+			statistics["shelf"] = _resource_continuous_statistics(shelf_values)
 		result[mode] = statistics
 	return result
 
@@ -1657,6 +1708,14 @@ func _append_resource_statistics(lines: PackedStringArray, statistics: Dictionar
 			% [float(threshold_key.trim_prefix("ge_")) / 100.0, threshold_count,
 				100.0 * threshold_count / maxf(float(count), 1.0)]
 		)
+	if statistics.has("shelf"):
+		var shelf: Dictionary = statistics.shelf
+		lines.append("")
+		lines.append("Shelf Suitability:")
+		lines.append("Mean: %.4f" % shelf.mean)
+		lines.append("P50: %.4f" % shelf.p50)
+		lines.append("P75: %.4f" % shelf.p75)
+		lines.append("P90: %.4f" % shelf.p90)
 
 
 func _resource_values_for_mode(mode: int) -> PackedFloat32Array:
@@ -1774,6 +1833,14 @@ func _percentile(sorted_values: PackedFloat32Array, percentile: float) -> float:
 
 func _debug_page_name() -> String:
 	return DEBUG_PAGE_NAMES[debug_page]
+
+
+func _reference_view_name() -> String:
+	if reference_view == ReferenceView.HEIGHT:
+		return "Terrain Height"
+	if reference_view == ReferenceView.BIOME:
+		return "Biome"
+	return "None"
 
 
 func _current_page_views() -> Array:

@@ -9,7 +9,9 @@ var forage_potential := PackedFloat32Array()
 var construction_stone_potential := PackedFloat32Array()
 var base_metal_potential := PackedFloat32Array()
 var precious_mineral_potential := PackedFloat32Array()
+## Aquatic biological / fishery resource potential, not drinking-water availability.
 var freshwater_aquatic_potential := PackedFloat32Array()
+## Coastal aquatic biological / fishery potential on actual coastal Ocean Cells.
 var coastal_aquatic_potential := PackedFloat32Array()
 
 

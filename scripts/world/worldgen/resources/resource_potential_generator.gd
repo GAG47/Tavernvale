@@ -56,7 +56,7 @@ static func generate(
 			)
 			resources.forage_potential[cell_id] = forage_potential_for(
 				ecology.vegetation_potential[cell_id], ecology.biome_id[cell_id],
-				soil.soil_fertility[cell_id]
+				soil.soil_fertility[cell_id], actual_settings
 			)
 			resources.construction_stone_potential[cell_id] = construction_stone_potential_for(
 				geology.material_id[cell_id], soil.soil_depth[cell_id]
@@ -87,9 +87,13 @@ static func generate(
 		)
 		if is_ocean and is_coastal_ocean_cell(graph, terrain, cell_id):
 			resources.coastal_aquatic_potential[cell_id] = coastal_aquatic_potential_for(
-				temperature, estuary_strength_for(graph, terrain, hydrology, cell_id)
+				temperature,
+				shelf_suitability_for(terrain.terrain_height[cell_id], actual_settings),
+				estuary_strength_for(graph, terrain, hydrology, cell_id)
 			)
-	var errors := ResourcePotentialValidator.validate(graph, terrain, surface_water, resources)
+	var errors := ResourcePotentialValidator.validate(
+		graph, terrain, surface_water, resources, actual_settings
+	)
 	if not errors.is_empty():
 		push_error("Resource Potential validation failed: " + "; ".join(errors))
 		return null
@@ -130,9 +134,28 @@ static func timber_potential_for(
 	return clampf(vegetation * woody_biome_factor_for(biome_id) * soil_support, 0.0, 1.0)
 
 
-static func forage_potential_for(vegetation: float, biome_id: int, fertility: float) -> float:
+static func forage_potential_for(
+		vegetation: float,
+		biome_id: int,
+		fertility: float,
+		settings: ResourcePotentialSettings = null
+) -> float:
+	var actual_settings := settings if settings != null else ResourcePotentialSettings.new()
 	var soil_support := 0.75 + 0.25 * fertility
-	return clampf(vegetation * forage_biome_factor_for(biome_id) * soil_support, 0.0, 1.0)
+	return clampf(
+		forage_growth_support_for(vegetation, actual_settings)
+				* forage_biome_factor_for(biome_id) * soil_support,
+		0.0,
+		1.0
+	)
+
+
+static func forage_growth_support_for(
+		vegetation: float, settings: ResourcePotentialSettings
+) -> float:
+	return smoothstep(
+		settings.forage_vegetation_low, settings.forage_vegetation_full, vegetation
+	)
 
 
 static func construction_stone_potential_for(material_id: int, soil_depth: float) -> float:
@@ -195,12 +218,29 @@ static func freshwater_aquatic_potential_for(
 	return clampf(water_habitat * freshwater_temperature_suitability_for(temperature), 0.0, 1.0)
 
 
-static func coastal_aquatic_potential_for(temperature: float, estuary_strength: float) -> float:
+static func coastal_aquatic_potential_for(
+		temperature: float, shelf_suitability: float, estuary_strength: float
+) -> float:
 	return clampf(
 		coastal_temperature_suitability_for(temperature)
-				* (0.65 + 0.35 * clampf(estuary_strength, 0.0, 1.0)),
+				* (0.45 + 0.35 * clampf(shelf_suitability, 0.0, 1.0)
+						+ 0.20 * clampf(estuary_strength, 0.0, 1.0)),
 		0.0,
 		1.0
+	)
+
+
+static func ocean_depth_for(terrain_height: float) -> float:
+	return maxf(-terrain_height, 0.0)
+
+
+static func shelf_suitability_for(
+		terrain_height: float, settings: ResourcePotentialSettings
+) -> float:
+	return 1.0 - smoothstep(
+		settings.coastal_shallow_shelf_depth,
+		settings.coastal_deep_shelf_depth,
+		ocean_depth_for(terrain_height)
 	)
 
 

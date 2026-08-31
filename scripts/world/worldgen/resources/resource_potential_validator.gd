@@ -6,9 +6,11 @@ static func validate(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
 		surface_water: SurfaceWaterLayer,
-		resources: ResourcePotentialLayer
+		resources: ResourcePotentialLayer,
+		settings: ResourcePotentialSettings = null
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
+	var actual_settings := settings if settings != null else ResourcePotentialSettings.new()
 	if graph == null or terrain == null or surface_water == null or resources == null:
 		errors.append("Resource Potential validation requires all pipeline inputs and a ResourcePotentialLayer")
 		return errors
@@ -21,6 +23,7 @@ static func validate(
 			or surface_water.lake_id.size() != count \
 			or graph.cell_neighbors.size() != count:
 		errors.append("Resource Potential validation inputs must contain one value per Cell")
+	errors.append_array(actual_settings.validate())
 	if not errors.is_empty():
 		return errors
 	for cell_id in count:
@@ -43,6 +46,13 @@ static func validate(
 				and not ResourcePotentialGenerator.is_coastal_ocean_cell(graph, terrain, cell_id) \
 				and resources.coastal_aquatic_potential[cell_id] != 0.0:
 			errors.append("Non-coastal Ocean Cell %d must have no Coastal Aquatic Potential" % cell_id)
+		if is_ocean and ResourcePotentialGenerator.is_coastal_ocean_cell(graph, terrain, cell_id):
+			var shelf_suitability := ResourcePotentialGenerator.shelf_suitability_for(
+				terrain.terrain_height[cell_id], actual_settings
+			)
+			if not is_finite(shelf_suitability) \
+					or shelf_suitability < 0.0 or shelf_suitability > 1.0:
+				errors.append("Coastal Ocean Cell %d has invalid shelf suitability" % cell_id)
 	return errors
 
 
