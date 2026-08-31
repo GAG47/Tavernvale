@@ -11,6 +11,7 @@ func _run_all() -> void:
 	_test_flow_direction_uses_steepest_slope()
 	_test_flow_accumulation_confluence()
 	_test_river_strahler_hierarchy()
+	_test_short_formal_rivers_are_filtered_without_removing_hydrology()
 	_test_two_watersheds()
 	_test_closed_basin_inflow()
 	_test_lengths_values_and_loop_validation()
@@ -124,6 +125,64 @@ func _test_river_strahler_hierarchy() -> void:
 	)
 
 
+func _test_short_formal_rivers_are_filtered_without_removing_hydrology() -> void:
+	var graph := _graph(
+		[
+			PackedInt32Array([1]),
+			PackedInt32Array([0]),
+			PackedInt32Array([3]),
+			PackedInt32Array([2, 4]),
+			PackedInt32Array([3]),
+		],
+		_unit_distances([1, 1, 1, 2, 1]),
+		PackedFloat64Array([1.0, 1.0, 1.0, 1.0, 1.0]),
+		PackedByteArray([0, 1, 0, 0, 1])
+	)
+	var terrain := _terrain([10.0, 0.0, 20.0, 10.0, 0.0])
+	var climate := _climate(
+		[1.0, 1.0, 1.0, 1.0, 1.0], [10.0, 10.0, 10.0, 10.0, 10.0]
+	)
+	var closed := PackedInt32Array([-1, -1, -1, -1, -1])
+	var unfiltered := WorldHydrologyGenerator.generate(
+		graph, terrain, climate, closed, WorldHydrologySettings.new(1.0, 0.5, 1)
+	)
+	var filtered := WorldHydrologyGenerator.generate(
+		graph, terrain, climate, closed, WorldHydrologySettings.new(1.0, 0.5, 3)
+	)
+	_expect(unfiltered != null and filtered != null, "short River filtering cases should generate")
+	if unfiltered == null or filtered == null:
+		return
+	_expect(unfiltered.river_networks.size() == 2, "unfiltered case should contain both candidates")
+	_expect(filtered.river_networks.size() == 1, "two-Cell candidate must be absent formally")
+	_expect(
+		filtered.river_network_id[0] == -1 and filtered.river_network_id[1] == -1,
+		"filtered creek Cells must not retain formal River Network IDs"
+	)
+	_expect(
+		filtered.river_order[0] == -1 and filtered.river_order[1] == -1,
+		"filtered creek Cells must not retain formal Strahler Order"
+	)
+	_expect(
+		filtered.river_network_id[2] == 0 \
+				and filtered.river_network_id[3] == 0 \
+				and filtered.river_network_id[4] == 0,
+		"three-Cell candidate must remain one consistently renumbered formal Network"
+	)
+	_expect(filtered.local_runoff == unfiltered.local_runoff, "filtering must preserve Local Runoff")
+	_expect(filtered.flow_to == unfiltered.flow_to, "filtering must preserve Flow Direction")
+	_expect(
+		filtered.flow_accumulation == unfiltered.flow_accumulation,
+		"filtering must preserve Flow Accumulation"
+	)
+	_expect(filtered.watershed_id == unfiltered.watershed_id, "filtering must preserve Watersheds")
+	_expect(
+		EcologyGenerator.river_strength_for(
+			filtered.flow_accumulation[1], filtered.settings.river_runoff_threshold
+		) > 0.0,
+		"filtered creek must retain accumulation-based Ecology and Soil influence"
+	)
+
+
 func _test_two_watersheds() -> void:
 	var graph := _graph(
 		[
@@ -190,8 +249,12 @@ func _test_lengths_values_and_loop_validation() -> void:
 	if layer == null:
 		return
 	_expect(
-		is_equal_approx(layer.settings.river_runoff_threshold, 5000.0),
-		"default river runoff threshold should be 5000"
+		is_equal_approx(layer.settings.river_runoff_threshold, 3000.0),
+		"default river runoff threshold should be 3000"
+	)
+	_expect(
+		layer.settings.formal_river_min_cells == 3,
+		"default formal minimum River Network length should be 3 Cells"
 	)
 	for values in [
 		layer.local_runoff,
@@ -273,7 +336,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Formal Hydrology: all 6 test groups passed")
+		print("Formal Hydrology: all 7 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

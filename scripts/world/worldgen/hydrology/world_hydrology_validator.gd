@@ -32,6 +32,8 @@ static func validate(
 		return errors
 	var indegree := PackedInt32Array()
 	indegree.resize(count)
+	var river_network_cell_counts := PackedInt32Array()
+	river_network_cell_counts.resize(layer.river_networks.size())
 	for cell_id in count:
 		var runoff := layer.local_runoff[cell_id]
 		var accumulation := layer.flow_accumulation[cell_id]
@@ -68,6 +70,8 @@ static func validate(
 					or terrain.terrain_height[cell_id] < 0.0 \
 					or layer.river_order[cell_id] < 1:
 				errors.append("River Network Cell %d must be Land with positive Strahler Order" % cell_id)
+			else:
+				river_network_cell_counts[layer.river_network_id[cell_id]] += 1
 		elif layer.river_order[cell_id] != -1:
 			errors.append("non-River Cell %d must use river_order -1" % cell_id)
 	var queue := PackedInt32Array()
@@ -96,6 +100,12 @@ static func validate(
 				or river_network.discharge < 0.0 \
 				or river_network.order < 1:
 			errors.append("River Network %d metadata is invalid" % network_index)
+		if layer.settings != null \
+				and river_network_cell_counts[network_index] < layer.settings.formal_river_min_cells:
+			errors.append(
+				"River Network %d must contain at least %d Cells"
+				% [network_index, layer.settings.formal_river_min_cells]
+			)
 	for basin in layer.closed_basin_inflows:
 		if basin.closed_basin_id < 0 \
 				or not is_finite(basin.catchment_area) \

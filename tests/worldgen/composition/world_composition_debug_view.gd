@@ -728,6 +728,7 @@ func _regenerate_composition() -> void:
 	_soil_statistics = _calculate_soil_statistics()
 	_print_soil_texture_diagnostics()
 	_print_soil_deposition_diagnostics()
+	_print_river_network_diagnostics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -1353,6 +1354,606 @@ func _calculate_formal_hydrology_statistics() -> Dictionary:
 		"max_river_order": max_river_order,
 		"largest_discharge": largest_discharge,
 	}
+
+
+func _print_river_network_diagnostics() -> void:
+	if formal_hydrology == null or surface_water == null or terrain == null:
+		return
+	var network_count := formal_hydrology.river_networks.size()
+	var cells_by_network: Array[PackedInt32Array] = []
+	for network_id in network_count:
+		cells_by_network.append(PackedInt32Array())
+	var river_cell_count := 0
+	for cell_id in formal_hydrology.cell_count():
+		var network_id := formal_hydrology.river_network_id[cell_id]
+		if network_id < 0 or network_id >= network_count:
+			continue
+		var network_cells: PackedInt32Array = cells_by_network[network_id]
+		network_cells.append(cell_id)
+		cells_by_network[network_id] = network_cells
+		river_cell_count += 1
+	var network_sizes := PackedFloat32Array()
+	var two_cell_network_count := 0
+	var four_plus_network_count := 0
+	var eight_plus_network_count := 0
+	var size_bucket_counts := {
+		"1 Cell": 0,
+		"2~3 Cells": 0,
+		"4~7 Cells": 0,
+		"8~15 Cells": 0,
+		"16+ Cells": 0,
+	}
+	var maximum_network_size := 0
+	for network_cells in cells_by_network:
+		var network_size := network_cells.size()
+		network_sizes.append(network_size)
+		maximum_network_size = maxi(maximum_network_size, network_size)
+		if network_size == 2:
+			two_cell_network_count += 1
+		if network_size >= 4:
+			four_plus_network_count += 1
+		if network_size >= 8:
+			eight_plus_network_count += 1
+		if network_size == 1:
+			size_bucket_counts["1 Cell"] += 1
+		elif network_size <= 3:
+			size_bucket_counts["2~3 Cells"] += 1
+		elif network_size <= 7:
+			size_bucket_counts["4~7 Cells"] += 1
+		elif network_size <= 15:
+			size_bucket_counts["8~15 Cells"] += 1
+		else:
+			size_bucket_counts["16+ Cells"] += 1
+	var sorted_network_sizes := network_sizes.duplicate()
+	sorted_network_sizes.sort()
+	print("River Network diagnostic (%s, Seed %d):" % [template_id, seed])
+	print(
+		"  Formal Minimum Network Cells: %d"
+		% formal_hydrology.settings.formal_river_min_cells
+	)
+	print("  Total River Network Count: %d" % network_count)
+	print("  Total River Cell Count: %d" % river_cell_count)
+	print(
+		"  Mean Cells per Network: %.4f"
+		% (float(river_cell_count) / float(network_count) if network_count > 0 else 0.0)
+	)
+	print("  Median Cells per Network: %.4f" % _percentile(sorted_network_sizes, 0.50))
+	print("  P75 Cells per Network: %.4f" % _percentile(sorted_network_sizes, 0.75))
+	print("  P90 Cells per Network: %.4f" % _percentile(sorted_network_sizes, 0.90))
+	print("  Max Cells in one Network: %d" % maximum_network_size)
+	print("  Network Size Distribution:")
+	for label in ["1 Cell", "2~3 Cells", "4~7 Cells", "8~15 Cells", "16+ Cells"]:
+		_print_river_diagnostic_count(label, size_bucket_counts[label], network_count)
+	_print_river_diagnostic_count("Exact 2 Cell", two_cell_network_count, network_count)
+	_print_river_diagnostic_count("4+ Cells", four_plus_network_count, network_count)
+	_print_river_diagnostic_count("8+ Cells", eight_plus_network_count, network_count)
+	_print_river_diagnostic_count("16+ Cells", size_bucket_counts["16+ Cells"], network_count)
+
+	var outlet_counts := {
+		"OCEAN": 0,
+		"LAKE": 0,
+		"CLOSED_BASIN": 0,
+		"LAND_SINK": 0,
+		"INVALID / NO_DOWNSTREAM": 0,
+	}
+	var boundary_outlet_count := 0
+	var abnormal_samples: Array[Dictionary] = []
+	var abnormal_sample_keys := {}
+	for network_id in network_count:
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		var outlet := _trace_river_network_outlet(network)
+		var outlet_type: String = outlet.type
+		outlet_counts[outlet_type] += 1
+		if bool(outlet.boundary_exit):
+			boundary_outlet_count += 1
+		if outlet_type == "LAND_SINK" or outlet_type == "INVALID / NO_DOWNSTREAM":
+			_append_river_abnormal_sample(
+				abnormal_samples,
+				abnormal_sample_keys,
+				network.mouth_cell,
+				network_id,
+				outlet_type
+			)
+	print("  River Network Outlet Type:")
+	for outlet_type in [
+		"OCEAN", "LAKE", "CLOSED_BASIN", "LAND_SINK", "INVALID / NO_DOWNSTREAM"
+	]:
+		_print_river_diagnostic_count(outlet_type, outlet_counts[outlet_type], network_count)
+	print("    OCEAN formal World Boundary exits: %d" % boundary_outlet_count)
+	var abnormal_outlet_count: int = outlet_counts["LAND_SINK"] \
+			+ outlet_counts["INVALID / NO_DOWNSTREAM"]
+	print("  Abnormal Outlet Count: %d" % abnormal_outlet_count)
+
+	var river_has_upstream := PackedByteArray()
+	river_has_upstream.resize(formal_hydrology.cell_count())
+	for cell_id in formal_hydrology.cell_count():
+		if not formal_hydrology.is_river(cell_id):
+			continue
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id >= 0 \
+				and downstream_id < formal_hydrology.cell_count() \
+				and formal_hydrology.is_river(downstream_id):
+			river_has_upstream[downstream_id] = 1
+	var continuity_counts := {
+		"CONTINUES": 0,
+		"VALID_OCEAN_EXIT": 0,
+		"VALID_LAKE_EXIT": 0,
+		"VALID_CLOSED_BASIN_EXIT": 0,
+		"RIVER_TO_NON_RIVER_LAND": 0,
+		"INVALID_FLOW_END": 0,
+	}
+	var source_accumulation := PackedFloat32Array()
+	for cell_id in formal_hydrology.cell_count():
+		if not formal_hydrology.is_river(cell_id):
+			continue
+		if river_has_upstream[cell_id] == 0:
+			source_accumulation.append(formal_hydrology.flow_accumulation[cell_id])
+		var continuity_type := _river_continuity_type(cell_id)
+		continuity_counts[continuity_type] += 1
+		if continuity_type == "RIVER_TO_NON_RIVER_LAND" \
+				or continuity_type == "INVALID_FLOW_END":
+			_append_river_abnormal_sample(
+				abnormal_samples,
+				abnormal_sample_keys,
+				cell_id,
+				formal_hydrology.river_network_id[cell_id],
+				continuity_type
+			)
+	print("  River Continuity Diagnostics:")
+	for continuity_type in [
+		"CONTINUES",
+		"VALID_OCEAN_EXIT",
+		"VALID_LAKE_EXIT",
+		"VALID_CLOSED_BASIN_EXIT",
+		"RIVER_TO_NON_RIVER_LAND",
+		"INVALID_FLOW_END",
+	]:
+		_print_river_diagnostic_count(
+			continuity_type, continuity_counts[continuity_type], river_cell_count
+		)
+
+	source_accumulation.sort()
+	var source_statistics := _soil_continuous_statistics(source_accumulation)
+	var river_threshold := formal_hydrology.settings.river_runoff_threshold
+	var source_within_110_percent := 0
+	var source_within_125_percent := 0
+	for accumulation in source_accumulation:
+		if accumulation <= river_threshold * 1.10:
+			source_within_110_percent += 1
+		if accumulation <= river_threshold * 1.25:
+			source_within_125_percent += 1
+	print("  River Source Diagnostics:")
+	print("    River Threshold: %.4f" % river_threshold)
+	print("    Source Cell Count: %d" % source_accumulation.size())
+	print(
+		"    Accumulation: Min %.4f | Mean %.4f | P25 %.4f | P50 %.4f"
+		% [
+			source_statistics.min,
+			source_statistics.mean,
+			source_statistics.p25,
+			source_statistics.p50,
+		]
+	)
+	print(
+		"    Accumulation: P75 %.4f | P90 %.4f | Max %.4f"
+		% [source_statistics.p75, source_statistics.p90, source_statistics.max]
+	)
+	_print_river_diagnostic_count(
+		"Sources <= 1.10x Threshold", source_within_110_percent, source_accumulation.size()
+	)
+	_print_river_diagnostic_count(
+		"Sources <= 1.25x Threshold", source_within_125_percent, source_accumulation.size()
+	)
+
+	var strahler_one_sizes := PackedFloat32Array()
+	var strahler_two_sizes := PackedFloat32Array()
+	var strahler_three_plus_sizes := PackedFloat32Array()
+	for network_id in network_count:
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		var network_size := cells_by_network[network_id].size()
+		if network.order <= 1:
+			strahler_one_sizes.append(network_size)
+		elif network.order == 2:
+			strahler_two_sizes.append(network_size)
+		else:
+			strahler_three_plus_sizes.append(network_size)
+	print("  Strahler / Network Size:")
+	_print_strahler_network_statistics("Strahler 1", strahler_one_sizes)
+	_print_strahler_network_statistics("Strahler 2", strahler_two_sizes)
+	_print_strahler_network_statistics("Strahler 3+", strahler_three_plus_sizes)
+	print("    Max Strahler Order: %d" % _formal_hydrology_statistics.max_river_order)
+	_print_river_abnormal_samples(abnormal_samples)
+	_print_short_river_network_diagnostics(cells_by_network)
+
+
+func _print_short_river_network_diagnostics(
+		cells_by_network: Array[PackedInt32Array]
+) -> void:
+	var cell_count := formal_hydrology.cell_count()
+	var upstream_by_cell: Array[PackedInt32Array] = []
+	for cell_id in cell_count:
+		upstream_by_cell.append(PackedInt32Array())
+	for cell_id in cell_count:
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id < 0 or downstream_id >= cell_count:
+			continue
+		var upstream_cells: PackedInt32Array = upstream_by_cell[downstream_id]
+		upstream_cells.append(cell_id)
+		upstream_by_cell[downstream_id] = upstream_cells
+
+	# Reuse Formal Hydrology's watershed assignment instead of rebuilding catchments.
+	var watershed_cell_counts := PackedInt32Array()
+	watershed_cell_counts.resize(formal_hydrology.watershed_count)
+	for cell_id in cell_count:
+		if terrain.terrain_height[cell_id] < 0.0:
+			continue
+		var watershed_id := formal_hydrology.watershed_id[cell_id]
+		if watershed_id >= 0 and watershed_id < watershed_cell_counts.size():
+			watershed_cell_counts[watershed_id] += 1
+
+	var records_by_size := {
+		"1 Cell": [],
+		"2~3 Cells": [],
+		"4~7 Cells": [],
+		"8+ Cells": [],
+	}
+	var river_threshold := formal_hydrology.settings.river_runoff_threshold
+	for network_id in formal_hydrology.river_networks.size():
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		var network_size := cells_by_network[network_id].size()
+		var size_group := _short_river_size_group(network_size)
+		var source_cell := network.source_cell
+		var mouth_cell := network.mouth_cell
+		var non_river_upstream_length := _main_non_river_upstream_length(
+			source_cell, upstream_by_cell
+		)
+		var total_path_length := network_size + non_river_upstream_length
+		var source_accumulation := formal_hydrology.flow_accumulation[source_cell]
+		var watershed_id := formal_hydrology.watershed_id[mouth_cell]
+		var basin_cell_count := watershed_cell_counts[watershed_id] \
+				if watershed_id >= 0 and watershed_id < watershed_cell_counts.size() else 0
+		var outlet := _trace_river_network_outlet(network)
+		records_by_size[size_group].append({
+			"network_id": network_id,
+			"network_size": network_size,
+			"max_strahler": network.order,
+			"source_accumulation": source_accumulation,
+			"source_threshold_ratio": source_accumulation / river_threshold \
+					if river_threshold > 0.0 else 0.0,
+			"outlet_accumulation": formal_hydrology.flow_accumulation[mouth_cell],
+			"discharge": network.discharge,
+			"non_river_upstream_length": non_river_upstream_length,
+			"total_path_length": total_path_length,
+			"upstream_extension_ratio": float(non_river_upstream_length) \
+					/ float(maxi(total_path_length, 1)),
+			"basin_cell_count": basin_cell_count,
+			"outlet_type": outlet.type,
+		})
+
+	print("  Short River Network Diagnostics:")
+	print("    Basin Cell Count reuses land-cell counts grouped by formal watershed_id.")
+	for size_group in ["1 Cell", "2~3 Cells", "4~7 Cells", "8+ Cells"]:
+		_print_short_river_size_group(size_group, records_by_size[size_group])
+
+
+func _short_river_size_group(network_size: int) -> String:
+	if network_size == 1:
+		return "1 Cell"
+	if network_size <= 3:
+		return "2~3 Cells"
+	if network_size <= 7:
+		return "4~7 Cells"
+	return "8+ Cells"
+
+
+func _main_non_river_upstream_length(
+		source_cell: int,
+		upstream_by_cell: Array[PackedInt32Array]
+) -> int:
+	if source_cell < 0 or source_cell >= formal_hydrology.cell_count():
+		return 0
+	var visited := PackedByteArray()
+	visited.resize(formal_hydrology.cell_count())
+	visited[source_cell] = 1
+	var current_cell := source_cell
+	var length := 0
+	for step in formal_hydrology.cell_count():
+		var predecessor := -1
+		var maximum_accumulation := -INF
+		for upstream_id in upstream_by_cell[current_cell]:
+			var accumulation := formal_hydrology.flow_accumulation[upstream_id]
+			if predecessor < 0 or accumulation > maximum_accumulation:
+				predecessor = upstream_id
+				maximum_accumulation = accumulation
+		if predecessor < 0 \
+				or terrain.terrain_height[predecessor] < 0.0 \
+				or surface_water.lake_id[predecessor] >= 0 \
+				or formal_hydrology.is_river(predecessor) \
+				or visited[predecessor] != 0:
+			break
+		visited[predecessor] = 1
+		length += 1
+		current_cell = predecessor
+	return length
+
+
+func _print_short_river_size_group(size_group: String, records: Array) -> void:
+	print("    %s Networks: %d" % [size_group, records.size()])
+	var outlet_accumulations := PackedFloat32Array()
+	var discharges := PackedFloat32Array()
+	var upstream_lengths := PackedFloat32Array()
+	var total_lengths := PackedFloat32Array()
+	var extension_ratios := PackedFloat32Array()
+	var source_threshold_ratios := PackedFloat32Array()
+	var basin_cell_counts := PackedFloat32Array()
+	var source_ratio_counts := {
+		"<= 1.10x": 0,
+		"<= 1.25x": 0,
+		"<= 1.50x": 0,
+		"> 1.50x": 0,
+	}
+	for record in records:
+		outlet_accumulations.append(record.outlet_accumulation)
+		discharges.append(record.discharge)
+		upstream_lengths.append(record.non_river_upstream_length)
+		total_lengths.append(record.total_path_length)
+		extension_ratios.append(record.upstream_extension_ratio)
+		source_threshold_ratios.append(record.source_threshold_ratio)
+		basin_cell_counts.append(record.basin_cell_count)
+		if record.source_threshold_ratio <= 1.10:
+			source_ratio_counts["<= 1.10x"] += 1
+		if record.source_threshold_ratio <= 1.25:
+			source_ratio_counts["<= 1.25x"] += 1
+		if record.source_threshold_ratio <= 1.50:
+			source_ratio_counts["<= 1.50x"] += 1
+		else:
+			source_ratio_counts["> 1.50x"] += 1
+	_print_river_full_statistics("Outlet Accumulation", outlet_accumulations)
+	_print_river_full_statistics("Outlet Discharge", discharges)
+	_print_river_full_statistics("Non-river Upstream Length", upstream_lengths)
+	_print_river_full_statistics("Total Main Drainage Path Length", total_lengths)
+	_print_river_ratio_statistics("Upstream Extension Ratio", extension_ratios)
+	_print_river_ratio_statistics("Source / Threshold Ratio", source_threshold_ratios)
+	for label in ["<= 1.10x", "<= 1.25x", "<= 1.50x", "> 1.50x"]:
+		_print_river_diagnostic_count(
+			"Source / Threshold %s" % label, source_ratio_counts[label], records.size()
+		)
+	_print_river_basin_statistics(basin_cell_counts)
+	_print_short_river_samples(records)
+
+
+func _print_river_full_statistics(label: String, values: PackedFloat32Array) -> void:
+	var statistics := _soil_continuous_statistics(values)
+	print(
+		"      %s: Min %.4f | Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			label,
+			statistics.min,
+			statistics.mean,
+			statistics.p25,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+			statistics.max,
+		]
+	)
+
+
+func _print_river_ratio_statistics(label: String, values: PackedFloat32Array) -> void:
+	var statistics := _soil_continuous_statistics(values)
+	print(
+		"      %s: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			label,
+			statistics.mean,
+			statistics.p25,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+		]
+	)
+
+
+func _print_river_basin_statistics(values: PackedFloat32Array) -> void:
+	var statistics := _soil_continuous_statistics(values)
+	print(
+		"      Basin Cell Count: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			statistics.mean,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+			statistics.max,
+		]
+	)
+
+
+func _print_short_river_samples(records: Array) -> void:
+	var sorted_records := records.duplicate()
+	sorted_records.sort_custom(func(first: Dictionary, second: Dictionary) -> bool:
+		if first.non_river_upstream_length == second.non_river_upstream_length:
+			return first.network_id < second.network_id
+		return first.non_river_upstream_length < second.non_river_upstream_length
+	)
+	var sample_count := mini(sorted_records.size(), 5)
+	print("      Representative Samples: %d (max 5)" % sample_count)
+	for sample_index in sample_count:
+		var record_index := 0 if sample_count <= 1 else roundi(
+			float(sample_index) * float(sorted_records.size() - 1) / float(sample_count - 1)
+		)
+		var record: Dictionary = sorted_records[record_index]
+		print(
+			"        Network %d | River Cells %d | Max Strahler %d | Outlet %s"
+			% [record.network_id, record.network_size, record.max_strahler, record.outlet_type]
+		)
+		print(
+			"          Source Acc %.4f | Source/Threshold %.4f | Outlet Acc %.4f"
+			% [
+				record.source_accumulation,
+				record.source_threshold_ratio,
+				record.outlet_accumulation,
+			]
+		)
+		print(
+			"          Non-river Upstream %d | Total Path %d | Basin Cells %d"
+			% [
+				record.non_river_upstream_length,
+				record.total_path_length,
+				record.basin_cell_count,
+			]
+		)
+
+
+func _trace_river_network_outlet(network: HydrologyRiverNetwork) -> Dictionary:
+	var current_cell := network.mouth_cell
+	var visited := PackedByteArray()
+	visited.resize(formal_hydrology.cell_count())
+	while true:
+		if current_cell < 0 or current_cell >= formal_hydrology.cell_count():
+			return {
+				"type": "INVALID / NO_DOWNSTREAM",
+				"terminal_cell": current_cell,
+				"boundary_exit": false,
+			}
+		if visited[current_cell] != 0:
+			return {
+				"type": "INVALID / NO_DOWNSTREAM",
+				"terminal_cell": current_cell,
+				"boundary_exit": false,
+			}
+		visited[current_cell] = 1
+		if surface_water.lake_id[current_cell] >= 0:
+			return {"type": "LAKE", "terminal_cell": current_cell, "boundary_exit": false}
+		if terrain.terrain_height[current_cell] < 0.0:
+			return {"type": "OCEAN", "terminal_cell": current_cell, "boundary_exit": false}
+		var downstream_id := formal_hydrology.flow_to[current_cell]
+		if downstream_id >= 0:
+			if downstream_id >= formal_hydrology.cell_count():
+				return {
+					"type": "INVALID / NO_DOWNSTREAM",
+					"terminal_cell": current_cell,
+					"boundary_exit": false,
+				}
+			current_cell = downstream_id
+			continue
+		if downstream_id == WorldHydrologyLayer.FLOW_TO_CLOSED_BASIN \
+				and hydrology.closed_basin_id[current_cell] >= 0:
+			return {
+				"type": "CLOSED_BASIN",
+				"terminal_cell": current_cell,
+				"boundary_exit": false,
+			}
+		if downstream_id == WorldHydrologyLayer.FLOW_TO_BOUNDARY:
+			return {"type": "OCEAN", "terminal_cell": current_cell, "boundary_exit": true}
+		if downstream_id == HydrologyFlowResult.FLOW_TO_SINK:
+			return {"type": "LAND_SINK", "terminal_cell": current_cell, "boundary_exit": false}
+		return {
+			"type": "INVALID / NO_DOWNSTREAM",
+			"terminal_cell": current_cell,
+			"boundary_exit": false,
+		}
+	return {"type": "INVALID / NO_DOWNSTREAM", "terminal_cell": -1, "boundary_exit": false}
+
+
+func _river_continuity_type(cell_id: int) -> String:
+	var downstream_id := formal_hydrology.flow_to[cell_id]
+	if downstream_id >= 0:
+		if downstream_id >= formal_hydrology.cell_count():
+			return "INVALID_FLOW_END"
+		if surface_water.lake_id[downstream_id] >= 0:
+			return "VALID_LAKE_EXIT"
+		if terrain.terrain_height[downstream_id] < 0.0:
+			return "VALID_OCEAN_EXIT"
+		if formal_hydrology.is_river(downstream_id):
+			return "CONTINUES"
+		return "RIVER_TO_NON_RIVER_LAND"
+	if downstream_id == WorldHydrologyLayer.FLOW_TO_BOUNDARY:
+		return "VALID_OCEAN_EXIT"
+	if downstream_id == WorldHydrologyLayer.FLOW_TO_CLOSED_BASIN \
+			and hydrology.closed_basin_id[cell_id] >= 0:
+		return "VALID_CLOSED_BASIN_EXIT"
+	return "INVALID_FLOW_END"
+
+
+func _print_river_diagnostic_count(label: String, count: int, total: int) -> void:
+	var ratio := float(count) / float(total) * 100.0 if total > 0 else 0.0
+	print("    %s: %d / %.2f%%" % [label, count, ratio])
+
+
+func _print_strahler_network_statistics(label: String, sizes: PackedFloat32Array) -> void:
+	var sorted_sizes := sizes.duplicate()
+	sorted_sizes.sort()
+	var sum := 0.0
+	var maximum := 0
+	for size in sizes:
+		sum += size
+		maximum = maxi(maximum, int(size))
+	print(
+		"    %s: Networks %d | Mean Cells %.4f | Median Cells %.4f | Max Cells %d"
+		% [
+			label,
+			sizes.size(),
+			sum / float(sizes.size()) if not sizes.is_empty() else 0.0,
+			_percentile(sorted_sizes, 0.50),
+			maximum,
+		]
+	)
+
+
+func _append_river_abnormal_sample(
+		samples: Array[Dictionary],
+		sample_keys: Dictionary,
+		cell_id: int,
+		network_id: int,
+		type: String
+) -> void:
+	if samples.size() >= 10 or cell_id < 0 or cell_id >= formal_hydrology.cell_count():
+		return
+	var key := "%s:%d" % [type, cell_id]
+	if sample_keys.has(key):
+		return
+	sample_keys[key] = true
+	samples.append({"type": type, "cell_id": cell_id, "network_id": network_id})
+
+
+func _print_river_abnormal_samples(samples: Array[Dictionary]) -> void:
+	print("  Abnormal Endpoint Samples: %d (max 10)" % samples.size())
+	for sample in samples:
+		var cell_id: int = sample.cell_id
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		var has_downstream := downstream_id >= 0 \
+				and downstream_id < formal_hydrology.cell_count()
+		print(
+			"    %s | Cell %d | Network %d"
+			% [sample.type, cell_id, sample.network_id]
+		)
+		print(
+			"      Height %.4f | Accumulation %.4f | Closed Basin %s"
+			% [
+				terrain.terrain_height[cell_id],
+				formal_hydrology.flow_accumulation[cell_id],
+				"YES" if hydrology.closed_basin_id[cell_id] >= 0 else "NO",
+			]
+		)
+		if not has_downstream:
+			print("      Downstream: NONE (flow_to %d)" % downstream_id)
+			continue
+		print(
+			"      Downstream Cell %d | Height %.4f | Accumulation %.4f"
+			% [
+				downstream_id,
+				terrain.terrain_height[downstream_id],
+				formal_hydrology.flow_accumulation[downstream_id],
+			]
+		)
+		print(
+			"      River %s | Ocean %s | Lake %s"
+			% [
+				"YES" if formal_hydrology.is_river(downstream_id) else "NO",
+				"YES" if terrain.terrain_height[downstream_id] < 0.0 else "NO",
+				"YES" if surface_water.lake_id[downstream_id] >= 0 else "NO",
+			]
+		)
 
 
 func _calculate_geology_statistics() -> Dictionary:

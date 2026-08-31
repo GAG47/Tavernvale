@@ -31,15 +31,32 @@ static func generate(
 		push_error("Formal Hydrology flow_to contains a loop")
 		return null
 	layer.flow_accumulation = topology.accumulation
-	var river_mask := _river_mask(
+	var candidate_river_mask := _river_mask(
 		terrain.terrain_height, layer.flow_accumulation, actual_settings.river_runoff_threshold
 	)
+	var candidate_river_order := _calculate_strahler_order(
+		candidate_river_mask, layer.flow_to, topology.topological_order
+	)
+	var candidate_networks := _build_river_networks(
+		graph,
+		candidate_river_mask,
+		layer.flow_to,
+		topology.upstream,
+		layer.flow_accumulation,
+		candidate_river_order
+	)
+	var formal_river_mask := _filter_short_river_networks(
+		candidate_river_mask,
+		candidate_networks.river_network_id,
+		candidate_networks.river_networks.size(),
+		actual_settings.formal_river_min_cells
+	)
 	layer.river_order = _calculate_strahler_order(
-		river_mask, layer.flow_to, topology.topological_order
+		formal_river_mask, layer.flow_to, topology.topological_order
 	)
 	var networks := _build_river_networks(
 		graph,
-		river_mask,
+		formal_river_mask,
 		layer.flow_to,
 		topology.upstream,
 		layer.flow_accumulation,
@@ -170,6 +187,27 @@ static func _calculate_strahler_order(
 		elif order == maximum_upstream[downstream_id]:
 			maximum_count[downstream_id] += 1
 	return river_order
+
+
+static func _filter_short_river_networks(
+		candidate_river_mask: PackedByteArray,
+		candidate_network_id: PackedInt32Array,
+		candidate_network_count: int,
+		minimum_cells: int
+) -> PackedByteArray:
+	if minimum_cells <= 1:
+		return candidate_river_mask.duplicate()
+	var network_cell_counts := PackedInt32Array()
+	network_cell_counts.resize(candidate_network_count)
+	for network_id in candidate_network_id:
+		if network_id >= 0 and network_id < candidate_network_count:
+			network_cell_counts[network_id] += 1
+	var formal_river_mask := candidate_river_mask.duplicate()
+	for cell_id in formal_river_mask.size():
+		var network_id := candidate_network_id[cell_id]
+		if network_id >= 0 and network_cell_counts[network_id] < minimum_cells:
+			formal_river_mask[cell_id] = 0
+	return formal_river_mask
 
 
 static func _build_river_networks(
