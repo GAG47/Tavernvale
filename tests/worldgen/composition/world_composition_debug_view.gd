@@ -1376,6 +1376,7 @@ func _print_river_network_diagnostics() -> void:
 	var two_cell_network_count := 0
 	var four_plus_network_count := 0
 	var eight_plus_network_count := 0
+	var thirty_two_plus_network_count := 0
 	var size_bucket_counts := {
 		"1 Cell": 0,
 		"2~3 Cells": 0,
@@ -1394,6 +1395,8 @@ func _print_river_network_diagnostics() -> void:
 			four_plus_network_count += 1
 		if network_size >= 8:
 			eight_plus_network_count += 1
+		if network_size >= 32:
+			thirty_two_plus_network_count += 1
 		if network_size == 1:
 			size_bucket_counts["1 Cell"] += 1
 		elif network_size <= 3:
@@ -1410,6 +1413,10 @@ func _print_river_network_diagnostics() -> void:
 	print(
 		"  Formal Minimum Network Cells: %d"
 		% formal_hydrology.settings.formal_river_min_cells
+	)
+	print(
+		"  Formal Minimum Mouth Discharge: %.1f"
+		% formal_hydrology.settings.formal_river_min_discharge
 	)
 	print("  Total River Network Count: %d" % network_count)
 	print("  Total River Cell Count: %d" % river_cell_count)
@@ -1428,6 +1435,7 @@ func _print_river_network_diagnostics() -> void:
 	_print_river_diagnostic_count("4+ Cells", four_plus_network_count, network_count)
 	_print_river_diagnostic_count("8+ Cells", eight_plus_network_count, network_count)
 	_print_river_diagnostic_count("16+ Cells", size_bucket_counts["16+ Cells"], network_count)
+	_print_river_diagnostic_count("32+ Cells", thirty_two_plus_network_count, network_count)
 
 	var outlet_counts := {
 		"OCEAN": 0,
@@ -1564,6 +1572,1119 @@ func _print_river_network_diagnostics() -> void:
 	print("    Max Strahler Order: %d" % _formal_hydrology_statistics.max_river_order)
 	_print_river_abnormal_samples(abnormal_samples)
 	_print_short_river_network_diagnostics(cells_by_network)
+	_print_river_mouth_discharge_what_if(cells_by_network, river_cell_count)
+	_print_formal_river_source_height_diagnostics(cells_by_network)
+
+
+func _print_river_mouth_discharge_what_if(
+		cells_by_network: Array[PackedInt32Array], total_river_cell_count: int
+) -> void:
+	var discharge_by_length := {
+		"3 Cells": PackedFloat32Array(),
+		"4~7 Cells": PackedFloat32Array(),
+		"8~15 Cells": PackedFloat32Array(),
+		"16+ Cells": PackedFloat32Array(),
+	}
+	for network_id in formal_hydrology.river_networks.size():
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		var length_group := _mouth_discharge_length_group(cells_by_network[network_id].size())
+		var group_values: PackedFloat32Array = discharge_by_length[length_group]
+		group_values.append(network.discharge)
+		discharge_by_length[length_group] = group_values
+
+	print("  River Mouth Discharge What-if Diagnostics:")
+	print("    mouth_discharge uses formal network.discharge (mouth flow_accumulation).")
+	print("    Current Mouth Discharge by Network Length:")
+	for length_group in ["3 Cells", "4~7 Cells", "8~15 Cells", "16+ Cells"]:
+		_print_mouth_discharge_length_statistics(
+			length_group, discharge_by_length[length_group]
+		)
+
+	for discharge_threshold in [10000.0, 15000.0, 20000.0, 30000.0]:
+		_print_mouth_discharge_threshold_what_if(
+			discharge_threshold, cells_by_network, total_river_cell_count
+		)
+
+
+func _mouth_discharge_length_group(network_size: int) -> String:
+	if network_size <= 3:
+		return "3 Cells"
+	if network_size <= 7:
+		return "4~7 Cells"
+	if network_size <= 15:
+		return "8~15 Cells"
+	return "16+ Cells"
+
+
+func _print_mouth_discharge_length_statistics(
+		length_group: String, values: PackedFloat32Array
+) -> void:
+	var statistics := _soil_continuous_statistics(values)
+	print(
+		"      %s: Networks %d | Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			length_group,
+			values.size(),
+			statistics.mean,
+			statistics.p25,
+			statistics.p50,
+			statistics.p75,
+			statistics.p90,
+		]
+	)
+
+
+func _print_mouth_discharge_threshold_what_if(
+		discharge_threshold: float,
+		cells_by_network: Array[PackedInt32Array],
+		total_river_cell_count: int
+) -> void:
+	var retained_lengths := PackedFloat32Array()
+	var retained_cell_count := 0
+	var retained_size_counts := {
+		"3 Cells": 0,
+		"4~7 Cells": 0,
+		"8~15 Cells": 0,
+		"16+ Cells": 0,
+	}
+	for network_id in formal_hydrology.river_networks.size():
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		if network.discharge < discharge_threshold:
+			continue
+		var network_size := cells_by_network[network_id].size()
+		retained_lengths.append(network_size)
+		retained_cell_count += network_size
+		retained_size_counts[_mouth_discharge_length_group(network_size)] += 1
+	var retained_network_count := retained_lengths.size()
+	var total_network_count := formal_hydrology.river_networks.size()
+	var length_statistics := _soil_continuous_statistics(retained_lengths)
+	print("    What-if mouth_discharge >= %.0f:" % discharge_threshold)
+	_print_river_diagnostic_count(
+		"Networks retained", retained_network_count, total_network_count
+	)
+	_print_river_diagnostic_count(
+		"River Cells retained", retained_cell_count, total_river_cell_count
+	)
+	print(
+		"      Length: Mean %.4f | Median %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			length_statistics.mean,
+			length_statistics.p50,
+			length_statistics.p75,
+			length_statistics.p90,
+			length_statistics.max,
+		]
+	)
+	for length_group in ["3 Cells", "4~7 Cells", "8~15 Cells", "16+ Cells"]:
+		_print_river_diagnostic_count(
+			length_group,
+			retained_size_counts[length_group],
+			retained_network_count
+		)
+
+
+func _print_formal_river_source_height_diagnostics(
+		cells_by_network: Array[PackedInt32Array]
+) -> void:
+	var upstream_by_cell: Array[PackedInt32Array] = []
+	for cell_id in formal_hydrology.cell_count():
+		upstream_by_cell.append(PackedInt32Array())
+	for cell_id in formal_hydrology.cell_count():
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id < 0 or downstream_id >= formal_hydrology.cell_count():
+			continue
+		var upstream_cells: PackedInt32Array = upstream_by_cell[downstream_id]
+		upstream_cells.append(cell_id)
+		upstream_by_cell[downstream_id] = upstream_cells
+	var formal_sources := _river_main_upstream_formal_sources(
+		formal_hydrology.river_network_id, upstream_by_cell
+	)
+	var network_lengths := PackedFloat32Array()
+	for network_cells in cells_by_network:
+		network_lengths.append(network_cells.size())
+	var diagnostics := _river_main_upstream_baseline(
+		formal_sources, network_lengths, _river_watershed_max_land_height()
+	)
+	print("  Final Natural Headwater Source Diagnostics:")
+	print("    Source Count: %d" % diagnostics.source_count)
+	print(
+		"    Terrain Height: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			diagnostics.source_height_stats.mean,
+			diagnostics.source_height_stats.p50,
+			diagnostics.source_height_stats.p75,
+			diagnostics.source_height_stats.p90,
+			diagnostics.source_height_stats.max,
+		]
+	)
+	print(
+		"    Relative Watershed Height: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			diagnostics.relative_height_stats.mean,
+			diagnostics.relative_height_stats.p50,
+			diagnostics.relative_height_stats.p75,
+			diagnostics.relative_height_stats.p90,
+		]
+	)
+
+
+func _print_river_main_upstream_what_if(
+		cells_by_network: Array[PackedInt32Array], formal_river_cell_count: int
+) -> void:
+	var cell_count := formal_hydrology.cell_count()
+	var network_count := formal_hydrology.river_networks.size()
+	var upstream_by_cell: Array[PackedInt32Array] = []
+	for cell_id in cell_count:
+		upstream_by_cell.append(PackedInt32Array())
+	for cell_id in cell_count:
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id < 0 or downstream_id >= cell_count:
+			continue
+		var upstream_cells: PackedInt32Array = upstream_by_cell[downstream_id]
+		upstream_cells.append(cell_id)
+		upstream_by_cell[downstream_id] = upstream_cells
+
+	var formal_network_by_cell := PackedInt32Array()
+	formal_network_by_cell.resize(cell_count)
+	formal_network_by_cell.fill(-1)
+	var formal_lengths := PackedFloat32Array()
+	for network_id in network_count:
+		formal_lengths.append(cells_by_network[network_id].size())
+		for cell_id in cells_by_network[network_id]:
+			formal_network_by_cell[cell_id] = network_id
+	var formal_sources := _river_main_upstream_formal_sources(
+		formal_network_by_cell, upstream_by_cell
+	)
+	var watershed_max_height := _river_watershed_max_land_height()
+	var baseline := _river_main_upstream_baseline(
+		formal_sources, formal_lengths, watershed_max_height
+	)
+
+	print("  Formal River Main-Upstream Headwater What-if Diagnostics:")
+	print("    Each formal Source independently follows one maximum-accumulation predecessor.")
+	print("    Equal accumulation uses the smallest Cell ID; no data is written to RiverLayer.")
+	_print_river_main_upstream_baseline(baseline, formal_river_cell_count, network_count)
+
+	var variants := [
+		{"label": "1500", "threshold": 1500.0, "natural": false},
+		{"label": "1000", "threshold": 1000.0, "natural": false},
+		{"label": "500", "threshold": 500.0, "natural": false},
+		{"label": "NATURAL", "threshold": -1.0, "natural": true},
+	]
+	var results: Array[Dictionary] = []
+	var previous_network_by_cell := PackedInt32Array()
+	for variant in variants:
+		var result := _trace_river_main_upstream_variant(
+			variant.label,
+			variant.threshold,
+			variant.natural,
+			formal_sources,
+			cells_by_network,
+			formal_network_by_cell,
+			upstream_by_cell,
+			watershed_max_height
+		)
+		result["nested_with_previous"] = _river_temporary_masks_are_nested(
+			previous_network_by_cell, result.network_by_cell
+		)
+		results.append(result)
+		_print_river_main_upstream_result(
+			result, formal_river_cell_count, network_count
+		)
+		previous_network_by_cell = result.network_by_cell
+
+	print("    Main-Upstream Concise Comparison:")
+	print(
+		"      CURRENT | Cells %d | Length Mean %.4f P50 %.4f P90 %.4f | Added 0 | Main Path P50 0.0000 P90 0.0000 | Source Height P50 %.4f P75 %.4f P90 %.4f | Height Gain P50 0.0000 P90 0.0000 | Relative Mean %.4f P50 %.4f P75 %.4f P90 %.4f"
+		% [
+			formal_river_cell_count,
+			baseline.length_stats.mean,
+			baseline.length_stats.p50,
+			baseline.length_stats.p90,
+			baseline.source_height_stats.p50,
+			baseline.source_height_stats.p75,
+			baseline.source_height_stats.p90,
+			baseline.relative_height_stats.mean,
+			baseline.relative_height_stats.p50,
+			baseline.relative_height_stats.p75,
+			baseline.relative_height_stats.p90,
+		]
+	)
+	for result in results:
+		print(
+			"      %s | Cells %d | Length Mean %.4f P50 %.4f P90 %.4f | Added %d | Main Path P50 %.4f P90 %.4f | Source Height P50 %.4f P75 %.4f P90 %.4f | Height Gain P50 %.4f P90 %.4f | Relative Mean %.4f P50 %.4f P75 %.4f P90 %.4f"
+			% [
+				result.label,
+				result.temp_cell_count,
+				result.length_stats.mean,
+				result.length_stats.p50,
+				result.length_stats.p90,
+				result.added_cell_count,
+				result.path_length_stats.p50,
+				result.path_length_stats.p90,
+				result.source_height_stats.p50,
+				result.source_height_stats.p75,
+				result.source_height_stats.p90,
+				result.height_gain_stats.p50,
+				result.height_gain_stats.p90,
+				result.relative_height_stats.mean,
+				result.relative_height_stats.p50,
+				result.relative_height_stats.p75,
+				result.relative_height_stats.p90,
+			]
+		)
+
+
+func _river_main_upstream_formal_sources(
+		formal_network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array]
+) -> Array[Dictionary]:
+	var sources: Array[Dictionary] = []
+	for cell_id in formal_network_by_cell.size():
+		var network_id := formal_network_by_cell[cell_id]
+		if network_id < 0:
+			continue
+		var has_formal_upstream := false
+		for upstream_cell in upstream_by_cell[cell_id]:
+			if formal_network_by_cell[upstream_cell] == network_id:
+				has_formal_upstream = true
+				break
+		if not has_formal_upstream:
+			sources.append({"cell_id": cell_id, "network_id": network_id})
+	return sources
+
+
+func _river_watershed_max_land_height() -> PackedFloat32Array:
+	var maximums := PackedFloat32Array()
+	maximums.resize(formal_hydrology.watershed_count)
+	for cell_id in formal_hydrology.cell_count():
+		var cell_height := terrain.terrain_height[cell_id]
+		if cell_height < 0.0:
+			continue
+		var watershed_id := formal_hydrology.watershed_id[cell_id]
+		if watershed_id >= 0 and watershed_id < maximums.size():
+			maximums[watershed_id] = maxf(maximums[watershed_id], cell_height)
+	return maximums
+
+
+func _river_main_upstream_baseline(
+		formal_sources: Array[Dictionary],
+		formal_lengths: PackedFloat32Array,
+		watershed_max_height: PackedFloat32Array
+) -> Dictionary:
+	var source_heights := PackedFloat32Array()
+	var relative_heights := PackedFloat32Array()
+	for source in formal_sources:
+		var source_cell: int = source.cell_id
+		var source_height := terrain.terrain_height[source_cell]
+		source_heights.append(source_height)
+		var watershed_id := formal_hydrology.watershed_id[source_cell]
+		var maximum_height := watershed_max_height[watershed_id] \
+				if watershed_id >= 0 and watershed_id < watershed_max_height.size() else 0.0
+		relative_heights.append(source_height / maxf(maximum_height, 0.000001))
+	return {
+		"source_count": formal_sources.size(),
+		"length_stats": _soil_continuous_statistics(formal_lengths),
+		"source_height_stats": _soil_continuous_statistics(source_heights),
+		"relative_height_stats": _soil_continuous_statistics(relative_heights),
+	}
+
+
+func _trace_river_main_upstream_variant(
+		label: String,
+		headwater_threshold: float,
+		natural_headwater: bool,
+		formal_sources: Array[Dictionary],
+		cells_by_network: Array[PackedInt32Array],
+		formal_network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array],
+		watershed_max_height: PackedFloat32Array
+) -> Dictionary:
+	var cell_count := formal_hydrology.cell_count()
+	var network_count := formal_hydrology.river_networks.size()
+	var network_by_cell := formal_network_by_cell.duplicate()
+	var path_lengths := PackedFloat32Array()
+	var final_source_heights := PackedFloat32Array()
+	var source_height_gains := PackedFloat32Array()
+	var relative_heights := PackedFloat32Array()
+	var source_samples: Array[Dictionary] = []
+	var added_by_network := PackedFloat32Array()
+	added_by_network.resize(network_count)
+	var ownership_conflicts := 0
+	var safety_limit_hits := 0
+
+	for source in formal_sources:
+		var original_source: int = source.cell_id
+		var network_id: int = source.network_id
+		var current_cell := original_source
+		var added_length := 0
+		var visited := {original_source: true}
+		for step in cell_count:
+			var predecessor := _river_main_upstream_predecessor(
+				current_cell, upstream_by_cell
+			)
+			if predecessor < 0:
+				break
+			if not natural_headwater \
+					and formal_hydrology.flow_accumulation[predecessor] < headwater_threshold:
+				break
+			if visited.has(predecessor):
+				safety_limit_hits += 1
+				break
+			if network_by_cell[predecessor] >= 0 \
+					and network_by_cell[predecessor] != network_id:
+				ownership_conflicts += 1
+				break
+			if network_by_cell[predecessor] == network_id:
+				break
+			visited[predecessor] = true
+			network_by_cell[predecessor] = network_id
+			added_length += 1
+			added_by_network[network_id] += 1.0
+			current_cell = predecessor
+			if step == cell_count - 1:
+				safety_limit_hits += 1
+
+		var original_height := terrain.terrain_height[original_source]
+		var final_height := terrain.terrain_height[current_cell]
+		path_lengths.append(added_length)
+		final_source_heights.append(final_height)
+		source_height_gains.append(final_height - original_height)
+		var watershed_id := formal_hydrology.watershed_id[original_source]
+		var maximum_height := watershed_max_height[watershed_id] \
+				if watershed_id >= 0 and watershed_id < watershed_max_height.size() else 0.0
+		relative_heights.append(final_height / maxf(maximum_height, 0.000001))
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		source_samples.append({
+			"network_id": network_id,
+			"original_source": original_source,
+			"final_source": current_cell,
+			"added_length": added_length,
+			"original_height": original_height,
+			"final_height": final_height,
+			"original_accumulation": formal_hydrology.flow_accumulation[original_source],
+			"final_accumulation": formal_hydrology.flow_accumulation[current_cell],
+			"outlet_discharge": network.discharge,
+		})
+
+	var lengths := PackedFloat32Array()
+	var temp_cell_count := 0
+	var formal_cell_count := 0
+	for network_id in network_count:
+		lengths.append(cells_by_network[network_id].size() + added_by_network[network_id])
+		temp_cell_count += int(lengths[network_id])
+		formal_cell_count += cells_by_network[network_id].size()
+	var validation := _validate_river_temporary_tracing(
+		network_by_cell,
+		formal_network_by_cell,
+		cells_by_network,
+		ownership_conflicts
+	)
+	validation["safety_limit_hits"] = safety_limit_hits
+	validation["branching_violations"] = _river_main_upstream_branching_violations(
+		network_by_cell, formal_network_by_cell, upstream_by_cell
+	)
+	return {
+		"label": label,
+		"threshold": headwater_threshold,
+		"natural": natural_headwater,
+		"network_by_cell": network_by_cell,
+		"temp_cell_count": temp_cell_count,
+		"added_cell_count": temp_cell_count - formal_cell_count,
+		"lengths": lengths,
+		"length_stats": _soil_continuous_statistics(lengths),
+		"added_by_network": added_by_network,
+		"path_lengths": path_lengths,
+		"path_length_stats": _soil_continuous_statistics(path_lengths),
+		"source_height_stats": _soil_continuous_statistics(final_source_heights),
+		"height_gain_stats": _soil_continuous_statistics(source_height_gains),
+		"relative_height_stats": _soil_continuous_statistics(relative_heights),
+		"source_samples": source_samples,
+		"validation": validation,
+	}
+
+
+func _river_main_upstream_predecessor(
+		current_cell: int, upstream_by_cell: Array[PackedInt32Array]
+) -> int:
+	var best_cell := -1
+	var best_accumulation := -INF
+	for upstream_cell in upstream_by_cell[current_cell]:
+		if terrain.terrain_height[upstream_cell] < 0.0:
+			continue
+		var accumulation := formal_hydrology.flow_accumulation[upstream_cell]
+		if accumulation > best_accumulation \
+				or (is_equal_approx(accumulation, best_accumulation) \
+				and (best_cell < 0 or upstream_cell < best_cell)):
+			best_cell = upstream_cell
+			best_accumulation = accumulation
+	return best_cell
+
+
+func _river_main_upstream_branching_violations(
+		network_by_cell: PackedInt32Array,
+		formal_network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array]
+) -> int:
+	var violations := 0
+	for cell_id in network_by_cell.size():
+		if network_by_cell[cell_id] < 0:
+			continue
+		var added_upstream_count := 0
+		for upstream_cell in upstream_by_cell[cell_id]:
+			if formal_network_by_cell[upstream_cell] < 0 \
+					and network_by_cell[upstream_cell] == network_by_cell[cell_id]:
+				added_upstream_count += 1
+		if added_upstream_count > 1:
+			violations += 1
+	return violations
+
+
+func _print_river_main_upstream_baseline(
+		baseline: Dictionary, formal_river_cell_count: int, network_count: int
+) -> void:
+	print(
+		"    CURRENT: Networks %d | Cells %d | Length Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			network_count,
+			formal_river_cell_count,
+			baseline.length_stats.mean,
+			baseline.length_stats.p50,
+			baseline.length_stats.p75,
+			baseline.length_stats.p90,
+			baseline.length_stats.max,
+		]
+	)
+	print(
+		"      Source Terrain Height: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			baseline.source_height_stats.mean,
+			baseline.source_height_stats.p25,
+			baseline.source_height_stats.p50,
+			baseline.source_height_stats.p75,
+			baseline.source_height_stats.p90,
+			baseline.source_height_stats.max,
+		]
+	)
+	print(
+		"      Relative Watershed Height: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			baseline.relative_height_stats.mean,
+			baseline.relative_height_stats.p50,
+			baseline.relative_height_stats.p75,
+			baseline.relative_height_stats.p90,
+		]
+	)
+
+
+func _print_river_main_upstream_result(
+		result: Dictionary, formal_river_cell_count: int, network_count: int
+) -> void:
+	var added_percent := 100.0 * float(result.added_cell_count) \
+			/ float(formal_river_cell_count) if formal_river_cell_count > 0 else 0.0
+	print("    Main-Upstream What-if %s:" % result.label)
+	print("      Formal Network Count (unchanged): %d" % network_count)
+	print(
+		"      Temporary River Cells: %d | Added %d / %.2f%%"
+		% [result.temp_cell_count, result.added_cell_count, added_percent]
+	)
+	print(
+		"      Network Length: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			result.length_stats.mean,
+			result.length_stats.p50,
+			result.length_stats.p75,
+			result.length_stats.p90,
+			result.length_stats.max,
+		]
+	)
+	for minimum_length in [8, 16, 32]:
+		var qualifying_count := 0
+		for network_length in result.lengths:
+			if network_length >= minimum_length:
+				qualifying_count += 1
+		_print_river_diagnostic_count(
+			"%d+ Cell Networks" % minimum_length, qualifying_count, network_count
+		)
+	print(
+		"      Added Main Path / Formal Source: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			result.path_length_stats.mean,
+			result.path_length_stats.p25,
+			result.path_length_stats.p50,
+			result.path_length_stats.p75,
+			result.path_length_stats.p90,
+			result.path_length_stats.max,
+		]
+	)
+	var path_buckets := {"0 Cell": 0, "1 Cell": 0, "2~3 Cells": 0, "4~7 Cells": 0, "8+ Cells": 0}
+	for path_length in result.path_lengths:
+		if path_length <= 0:
+			path_buckets["0 Cell"] += 1
+		elif path_length == 1:
+			path_buckets["1 Cell"] += 1
+		elif path_length <= 3:
+			path_buckets["2~3 Cells"] += 1
+		elif path_length <= 7:
+			path_buckets["4~7 Cells"] += 1
+		else:
+			path_buckets["8+ Cells"] += 1
+	print("      Main Path Length Distribution:")
+	for bucket in ["0 Cell", "1 Cell", "2~3 Cells", "4~7 Cells", "8+ Cells"]:
+		_print_river_diagnostic_count(bucket, path_buckets[bucket], result.path_lengths.size())
+	print(
+		"      Source Terrain Height: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			result.source_height_stats.mean,
+			result.source_height_stats.p25,
+			result.source_height_stats.p50,
+			result.source_height_stats.p75,
+			result.source_height_stats.p90,
+			result.source_height_stats.max,
+		]
+	)
+	print(
+		"      Source Height Gain: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			result.height_gain_stats.mean,
+			result.height_gain_stats.p50,
+			result.height_gain_stats.p75,
+			result.height_gain_stats.p90,
+		]
+	)
+	print(
+		"      Relative Watershed Height: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f"
+		% [
+			result.relative_height_stats.mean,
+			result.relative_height_stats.p50,
+			result.relative_height_stats.p75,
+			result.relative_height_stats.p90,
+		]
+	)
+	if result.natural:
+		for minimum_path_length in [8, 12, 16]:
+			var long_source_count := 0
+			for path_length in result.path_lengths:
+				if path_length >= minimum_path_length:
+					long_source_count += 1
+			_print_river_diagnostic_count(
+				"Natural Main Path >= %d" % minimum_path_length,
+				long_source_count,
+				result.path_lengths.size()
+			)
+		_print_river_natural_longest_samples(result.source_samples)
+	var validation: Dictionary = result.validation
+	var validation_ok: bool = validation.formal_cells_missing == 0 \
+			and validation.disconnected_cells == 0 \
+			and validation.paths_not_reaching_formal == 0 \
+			and validation.watershed_mismatches == 0 \
+			and validation.cycle_paths == 0 \
+			and validation.ownership_conflicts == 0 \
+			and validation.safety_limit_hits == 0 \
+			and validation.branching_violations == 0
+	print(
+		"      Validation: %s | Formal Missing %d | Disconnected %d | Does Not Reach Formal %d | Cross Watershed %d | Cycle Paths %d | Ownership Conflicts %d | Safety Limit %d | Branching %d | Nested %s"
+		% [
+			"PASS" if validation_ok else "FAIL",
+			validation.formal_cells_missing,
+			validation.disconnected_cells,
+			validation.paths_not_reaching_formal,
+			validation.watershed_mismatches,
+			validation.cycle_paths,
+			validation.ownership_conflicts,
+			validation.safety_limit_hits,
+			validation.branching_violations,
+			"PASS" if result.nested_with_previous else "FAIL",
+		]
+	)
+
+
+func _print_river_natural_longest_samples(source_samples: Array[Dictionary]) -> void:
+	var sorted_samples := source_samples.duplicate()
+	sorted_samples.sort_custom(func(a: Dictionary, b: Dictionary) -> bool:
+		return int(a.added_length) > int(b.added_length)
+	)
+	print("      Natural Longest Main-Path Samples (up to 10):")
+	for sample_index in mini(sorted_samples.size(), 10):
+		var sample: Dictionary = sorted_samples[sample_index]
+		print(
+			"        Network %d | Source %d -> %d | Added %d | Height %.4f -> %.4f | Accumulation %.4f -> %.4f | Outlet Discharge %.4f"
+			% [
+				sample.network_id,
+				sample.original_source,
+				sample.final_source,
+				sample.added_length,
+				sample.original_height,
+				sample.final_height,
+				sample.original_accumulation,
+				sample.final_accumulation,
+				sample.outlet_discharge,
+			]
+		)
+
+
+func _print_river_headwater_tracing_what_if(
+		cells_by_network: Array[PackedInt32Array], formal_river_cell_count: int
+) -> void:
+	var cell_count := formal_hydrology.cell_count()
+	var network_count := formal_hydrology.river_networks.size()
+	var upstream_by_cell: Array[PackedInt32Array] = []
+	for cell_id in cell_count:
+		upstream_by_cell.append(PackedInt32Array())
+	for cell_id in cell_count:
+		var downstream_id := formal_hydrology.flow_to[cell_id]
+		if downstream_id < 0 or downstream_id >= cell_count:
+			continue
+		var upstream_cells: PackedInt32Array = upstream_by_cell[downstream_id]
+		upstream_cells.append(cell_id)
+		upstream_by_cell[downstream_id] = upstream_cells
+
+	var formal_network_by_cell := PackedInt32Array()
+	formal_network_by_cell.resize(cell_count)
+	formal_network_by_cell.fill(-1)
+	var formal_lengths := PackedFloat32Array()
+	for network_id in network_count:
+		formal_lengths.append(cells_by_network[network_id].size())
+		for cell_id in cells_by_network[network_id]:
+			formal_network_by_cell[cell_id] = network_id
+	var baseline_sources := _river_temporary_source_diagnostics(
+		formal_network_by_cell, upstream_by_cell, network_count
+	)
+	var baseline_length_stats := _soil_continuous_statistics(formal_lengths)
+	var baseline_source_count_stats := _soil_continuous_statistics(
+		baseline_sources.counts_by_network
+	)
+	var baseline_source_height_stats := _soil_continuous_statistics(
+		baseline_sources.heights
+	)
+
+	print("  Formal River Headwater Tracing What-if Diagnostics:")
+	print("    Reverse graph is derived only from the existing flow_to graph.")
+	print("    Temporary cells are land cells and are never written to RiverLayer.")
+	print(
+		"    CURRENT: Networks %d | Cells %d | Length Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			network_count,
+			formal_river_cell_count,
+			baseline_length_stats.mean,
+			baseline_length_stats.p50,
+			baseline_length_stats.p75,
+			baseline_length_stats.p90,
+			baseline_length_stats.max,
+		]
+	)
+	print(
+		"      Formal Sources: %d | Sources/Network Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			baseline_sources.source_count,
+			baseline_source_count_stats.mean,
+			baseline_source_count_stats.p50,
+			baseline_source_count_stats.p75,
+			baseline_source_count_stats.p90,
+			baseline_source_count_stats.max,
+		]
+	)
+	print(
+		"      Formal Source Height: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			baseline_source_height_stats.mean,
+			baseline_source_height_stats.p25,
+			baseline_source_height_stats.p50,
+			baseline_source_height_stats.p75,
+			baseline_source_height_stats.p90,
+			baseline_source_height_stats.max,
+		]
+	)
+
+	var results: Array[Dictionary] = []
+	var previous_network_by_cell := PackedInt32Array()
+	for headwater_threshold in [2500.0, 2000.0, 1500.0, 1000.0]:
+		var result := _trace_formal_rivers_upstream_what_if(
+			headwater_threshold,
+			cells_by_network,
+			formal_network_by_cell,
+			upstream_by_cell
+		)
+		result["nested_with_previous"] = _river_temporary_masks_are_nested(
+			previous_network_by_cell, result.network_by_cell
+		)
+		results.append(result)
+		_print_river_headwater_threshold_result(
+			result, formal_river_cell_count, network_count
+		)
+		previous_network_by_cell = result.network_by_cell
+
+	print("    Concise Comparison:")
+	print(
+		"      CURRENT | Cells %d | Length Mean %.4f Median %.4f P90 %.4f | Mean Added 0.0000 | Source Height P50 %.4f | Sources/Network Mean %.4f | 1-2 Twig N/A"
+		% [
+			formal_river_cell_count,
+			baseline_length_stats.mean,
+			baseline_length_stats.p50,
+			baseline_length_stats.p90,
+			baseline_source_height_stats.p50,
+			baseline_source_count_stats.mean,
+		]
+	)
+	for result in results:
+		var length_stats: Dictionary = result.length_stats
+		var added_stats: Dictionary = result.added_stats
+		var source_count_stats: Dictionary = result.source_count_stats
+		var source_height_stats: Dictionary = result.source_height_stats
+		var twig_total: int = result.twig_total
+		var short_twig_count: int = result.twig_counts["1 Cell"] \
+				+ result.twig_counts["2 Cells"]
+		var short_twig_percent := 100.0 * float(short_twig_count) \
+				/ float(twig_total) if twig_total > 0 else 0.0
+		print(
+			"      %.0f | Cells %d | Length Mean %.4f Median %.4f P90 %.4f | Mean Added %.4f | Source Height P50 %.4f | Sources/Network Mean %.4f | 1-2 Twig %.2f%%"
+			% [
+				result.threshold,
+				result.temp_cell_count,
+				length_stats.mean,
+				length_stats.p50,
+				length_stats.p90,
+				added_stats.mean,
+				source_height_stats.p50,
+				source_count_stats.mean,
+				short_twig_percent,
+			]
+		)
+
+
+func _trace_formal_rivers_upstream_what_if(
+		headwater_threshold: float,
+		cells_by_network: Array[PackedInt32Array],
+		formal_network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array]
+) -> Dictionary:
+	var cell_count := formal_hydrology.cell_count()
+	var network_count := formal_hydrology.river_networks.size()
+	var network_by_cell := PackedInt32Array()
+	network_by_cell.resize(cell_count)
+	network_by_cell.fill(-1)
+	var queue := PackedInt32Array()
+	for network_id in network_count:
+		for cell_id in cells_by_network[network_id]:
+			network_by_cell[cell_id] = network_id
+			queue.append(cell_id)
+
+	var ownership_conflicts := 0
+	var queue_index := 0
+	while queue_index < queue.size():
+		var downstream_cell := queue[queue_index]
+		queue_index += 1
+		var network_id := network_by_cell[downstream_cell]
+		for upstream_cell in upstream_by_cell[downstream_cell]:
+			if terrain.terrain_height[upstream_cell] < 0.0:
+				continue
+			if formal_hydrology.flow_accumulation[upstream_cell] < headwater_threshold:
+				continue
+			if network_by_cell[upstream_cell] == network_id:
+				continue
+			if network_by_cell[upstream_cell] >= 0:
+				ownership_conflicts += 1
+				continue
+			network_by_cell[upstream_cell] = network_id
+			queue.append(upstream_cell)
+
+	var lengths := PackedFloat32Array()
+	var added_by_network := PackedFloat32Array()
+	var temp_cell_count := 0
+	var added_cell_count := 0
+	for network_id in network_count:
+		lengths.append(0.0)
+		added_by_network.append(0.0)
+	for cell_id in cell_count:
+		var network_id := network_by_cell[cell_id]
+		if network_id < 0:
+			continue
+		temp_cell_count += 1
+		lengths[network_id] += 1.0
+		if formal_network_by_cell[cell_id] < 0:
+			added_cell_count += 1
+			added_by_network[network_id] += 1.0
+
+	var sources := _river_temporary_source_diagnostics(
+		network_by_cell, upstream_by_cell, network_count
+	)
+	var twig_diagnostics := _river_temporary_twig_diagnostics(
+		network_by_cell, formal_network_by_cell, upstream_by_cell, sources.cells
+	)
+	var validation := _validate_river_temporary_tracing(
+		network_by_cell,
+		formal_network_by_cell,
+		cells_by_network,
+		ownership_conflicts
+	)
+	return {
+		"threshold": headwater_threshold,
+		"network_by_cell": network_by_cell,
+		"temp_cell_count": temp_cell_count,
+		"added_cell_count": added_cell_count,
+		"lengths": lengths,
+		"length_stats": _soil_continuous_statistics(lengths),
+		"added_by_network": added_by_network,
+		"added_stats": _soil_continuous_statistics(added_by_network),
+		"source_count": sources.source_count,
+		"source_counts_by_network": sources.counts_by_network,
+		"source_count_stats": _soil_continuous_statistics(sources.counts_by_network),
+		"source_heights": sources.heights,
+		"source_height_stats": _soil_continuous_statistics(sources.heights),
+		"twig_counts": twig_diagnostics.counts,
+		"twig_total": twig_diagnostics.total,
+		"validation": validation,
+	}
+
+
+func _river_temporary_source_diagnostics(
+		network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array],
+		network_count: int
+) -> Dictionary:
+	var counts_by_network := PackedFloat32Array()
+	counts_by_network.resize(network_count)
+	var source_cells := PackedInt32Array()
+	var source_heights := PackedFloat32Array()
+	for cell_id in network_by_cell.size():
+		var network_id := network_by_cell[cell_id]
+		if network_id < 0:
+			continue
+		var has_upstream_river := false
+		for upstream_cell in upstream_by_cell[cell_id]:
+			if network_by_cell[upstream_cell] == network_id:
+				has_upstream_river = true
+				break
+		if has_upstream_river:
+			continue
+		source_cells.append(cell_id)
+		source_heights.append(terrain.terrain_height[cell_id])
+		counts_by_network[network_id] += 1.0
+	return {
+		"source_count": source_cells.size(),
+		"cells": source_cells,
+		"heights": source_heights,
+		"counts_by_network": counts_by_network,
+	}
+
+
+func _river_temporary_twig_diagnostics(
+		network_by_cell: PackedInt32Array,
+		formal_network_by_cell: PackedInt32Array,
+		upstream_by_cell: Array[PackedInt32Array],
+		source_cells: PackedInt32Array
+) -> Dictionary:
+	var upstream_branch_count := PackedInt32Array()
+	upstream_branch_count.resize(network_by_cell.size())
+	for cell_id in network_by_cell.size():
+		var network_id := network_by_cell[cell_id]
+		if network_id < 0:
+			continue
+		for upstream_cell in upstream_by_cell[cell_id]:
+			if network_by_cell[upstream_cell] == network_id:
+				upstream_branch_count[cell_id] += 1
+	var twig_counts := {
+		"1 Cell": 0,
+		"2 Cells": 0,
+		"3~4 Cells": 0,
+		"5+ Cells": 0,
+	}
+	var twig_total := 0
+	for source_cell in source_cells:
+		# A source already in the formal mask has no newly traced headwater twig.
+		if formal_network_by_cell[source_cell] >= 0:
+			continue
+		var network_id := network_by_cell[source_cell]
+		var twig_length := 0
+		var current_cell := source_cell
+		while current_cell >= 0 and formal_network_by_cell[current_cell] < 0:
+			twig_length += 1
+			var downstream_cell := formal_hydrology.flow_to[current_cell]
+			if downstream_cell < 0 \
+					or downstream_cell >= network_by_cell.size() \
+					or network_by_cell[downstream_cell] != network_id:
+				break
+			if formal_network_by_cell[downstream_cell] >= 0 \
+					or upstream_branch_count[downstream_cell] > 1:
+				break
+			current_cell = downstream_cell
+		if twig_length <= 0:
+			continue
+		twig_total += 1
+		if twig_length == 1:
+			twig_counts["1 Cell"] += 1
+		elif twig_length == 2:
+			twig_counts["2 Cells"] += 1
+		elif twig_length <= 4:
+			twig_counts["3~4 Cells"] += 1
+		else:
+			twig_counts["5+ Cells"] += 1
+	return {"counts": twig_counts, "total": twig_total}
+
+
+func _validate_river_temporary_tracing(
+		network_by_cell: PackedInt32Array,
+		formal_network_by_cell: PackedInt32Array,
+		cells_by_network: Array[PackedInt32Array],
+		ownership_conflicts: int
+) -> Dictionary:
+	var formal_cells_missing := 0
+	for network_id in cells_by_network.size():
+		for cell_id in cells_by_network[network_id]:
+			if network_by_cell[cell_id] != network_id:
+				formal_cells_missing += 1
+	var disconnected_cells := 0
+	var paths_not_reaching_formal := 0
+	var watershed_mismatches := 0
+	var cycle_paths := 0
+	for cell_id in network_by_cell.size():
+		var network_id := network_by_cell[cell_id]
+		if network_id < 0 or formal_network_by_cell[cell_id] >= 0:
+			continue
+		var downstream_cell := formal_hydrology.flow_to[cell_id]
+		if downstream_cell < 0 \
+				or downstream_cell >= network_by_cell.size() \
+				or network_by_cell[downstream_cell] != network_id:
+			disconnected_cells += 1
+		var network: HydrologyRiverNetwork = formal_hydrology.river_networks[network_id]
+		var expected_watershed := formal_hydrology.watershed_id[network.mouth_cell]
+		if formal_hydrology.watershed_id[cell_id] != expected_watershed:
+			watershed_mismatches += 1
+		var visited := {}
+		var current_cell := cell_id
+		var reached_formal := false
+		while current_cell >= 0 and current_cell < network_by_cell.size():
+			if formal_network_by_cell[current_cell] == network_id:
+				reached_formal = true
+				break
+			if visited.has(current_cell):
+				cycle_paths += 1
+				break
+			visited[current_cell] = true
+			if network_by_cell[current_cell] != network_id:
+				break
+			current_cell = formal_hydrology.flow_to[current_cell]
+		if not reached_formal:
+			paths_not_reaching_formal += 1
+	return {
+		"formal_cells_missing": formal_cells_missing,
+		"disconnected_cells": disconnected_cells,
+		"paths_not_reaching_formal": paths_not_reaching_formal,
+		"watershed_mismatches": watershed_mismatches,
+		"cycle_paths": cycle_paths,
+		"ownership_conflicts": ownership_conflicts,
+	}
+
+
+func _river_temporary_masks_are_nested(
+		previous_network_by_cell: PackedInt32Array,
+		current_network_by_cell: PackedInt32Array
+) -> bool:
+	if previous_network_by_cell.is_empty():
+		return true
+	if previous_network_by_cell.size() != current_network_by_cell.size():
+		return false
+	for cell_id in previous_network_by_cell.size():
+		if previous_network_by_cell[cell_id] >= 0 \
+				and current_network_by_cell[cell_id] != previous_network_by_cell[cell_id]:
+			return false
+	return true
+
+
+func _print_river_headwater_threshold_result(
+		result: Dictionary, formal_river_cell_count: int, network_count: int
+) -> void:
+	var length_stats: Dictionary = result.length_stats
+	var added_stats: Dictionary = result.added_stats
+	var source_count_stats: Dictionary = result.source_count_stats
+	var source_height_stats: Dictionary = result.source_height_stats
+	var added_percent := 100.0 * float(result.added_cell_count) \
+			/ float(formal_river_cell_count) if formal_river_cell_count > 0 else 0.0
+	print("    What-if headwater_threshold >= %.0f:" % result.threshold)
+	print("      Formal Network Count (unchanged): %d" % network_count)
+	print("      Temporary River Cell Count: %d" % result.temp_cell_count)
+	print(
+		"      Added Upstream Cells: %d / %.2f%% of current formal River Cells"
+		% [result.added_cell_count, added_percent]
+	)
+	print(
+		"      Network Length: Mean %.4f | Median %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			length_stats.mean,
+			length_stats.p50,
+			length_stats.p75,
+			length_stats.p90,
+			length_stats.max,
+		]
+	)
+	for minimum_length in [8, 16, 32]:
+		var qualifying_count := 0
+		for network_length in result.lengths:
+			if network_length >= minimum_length:
+				qualifying_count += 1
+		_print_river_diagnostic_count(
+			"%d+ Cell Networks" % minimum_length, qualifying_count, network_count
+		)
+	print(
+		"      Sources: %d | Per Network Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			result.source_count,
+			source_count_stats.mean,
+			source_count_stats.p50,
+			source_count_stats.p75,
+			source_count_stats.p90,
+			source_count_stats.max,
+		]
+	)
+	print(
+		"      Source Terrain Height: Mean %.4f | P25 %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			source_height_stats.mean,
+			source_height_stats.p25,
+			source_height_stats.p50,
+			source_height_stats.p75,
+			source_height_stats.p90,
+			source_height_stats.max,
+		]
+	)
+	print(
+		"      Added Cells / Network: Mean %.4f | P50 %.4f | P75 %.4f | P90 %.4f | Max %.4f"
+		% [
+			added_stats.mean,
+			added_stats.p50,
+			added_stats.p75,
+			added_stats.p90,
+			added_stats.max,
+		]
+	)
+	print("      Newly traced terminal twig lengths:")
+	for twig_group in ["1 Cell", "2 Cells", "3~4 Cells", "5+ Cells"]:
+		_print_river_diagnostic_count(
+			twig_group, result.twig_counts[twig_group], result.twig_total
+		)
+	var one_two_twig_count: int = result.twig_counts["1 Cell"] \
+			+ result.twig_counts["2 Cells"]
+	_print_river_diagnostic_count("1~2 Cell Twigs", one_two_twig_count, result.twig_total)
+	var validation: Dictionary = result.validation
+	var validation_ok: bool = validation.formal_cells_missing == 0 \
+			and validation.disconnected_cells == 0 \
+			and validation.paths_not_reaching_formal == 0 \
+			and validation.watershed_mismatches == 0 \
+			and validation.cycle_paths == 0 \
+			and validation.ownership_conflicts == 0
+	print(
+		"      Validation: %s | Formal Missing %d | Disconnected %d | Does Not Reach Formal %d | Cross Watershed %d | Cycle Paths %d | Ownership Conflicts %d | Nested %s"
+		% [
+			"PASS" if validation_ok else "FAIL",
+			validation.formal_cells_missing,
+			validation.disconnected_cells,
+			validation.paths_not_reaching_formal,
+			validation.watershed_mismatches,
+			validation.cycle_paths,
+			validation.ownership_conflicts,
+			"PASS" if result.nested_with_previous else "FAIL",
+		]
+	)
 
 
 func _print_short_river_network_diagnostics(

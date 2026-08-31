@@ -45,12 +45,35 @@ static func generate(
 		layer.flow_accumulation,
 		candidate_river_order
 	)
-	var formal_river_mask := _filter_short_river_networks(
+	var formal_river_mask := _filter_formal_river_networks(
 		candidate_river_mask,
 		candidate_networks.river_network_id,
-		candidate_networks.river_networks.size(),
-		actual_settings.formal_river_min_cells
+		candidate_networks.river_networks,
+		actual_settings.formal_river_min_cells,
+		actual_settings.formal_river_min_discharge
 	)
+	var pretracing_river_order := _calculate_strahler_order(
+		formal_river_mask, layer.flow_to, topology.topological_order
+	)
+	var pretracing_networks := _build_river_networks(
+		graph,
+		formal_river_mask,
+		layer.flow_to,
+		topology.upstream,
+		layer.flow_accumulation,
+		pretracing_river_order
+	)
+	var tracing := _trace_natural_main_upstreams(
+		terrain.terrain_height,
+		formal_river_mask,
+		pretracing_networks.river_network_id,
+		topology.upstream,
+		layer.flow_accumulation
+	)
+	if not tracing.ok:
+		push_error("Formal Hydrology Natural Main-Upstream tracing failed")
+		return null
+	formal_river_mask = tracing.river_mask
 	layer.river_order = _calculate_strahler_order(
 		formal_river_mask, layer.flow_to, topology.topological_order
 	)
@@ -62,6 +85,9 @@ static func generate(
 		layer.flow_accumulation,
 		layer.river_order
 	)
+	if networks.river_networks.size() != pretracing_networks.river_networks.size():
+		push_error("Formal Hydrology Natural Main-Upstream tracing changed Network Count")
+		return null
 	layer.river_network_id = networks.river_network_id
 	layer.river_networks = networks.river_networks
 	var watersheds := _calculate_watersheds(
@@ -189,25 +215,98 @@ static func _calculate_strahler_order(
 	return river_order
 
 
-static func _filter_short_river_networks(
+static func _filter_formal_river_networks(
 		candidate_river_mask: PackedByteArray,
 		candidate_network_id: PackedInt32Array,
-		candidate_network_count: int,
-		minimum_cells: int
+		candidate_networks: Array,
+		minimum_cells: int,
+		minimum_discharge: float
 ) -> PackedByteArray:
-	if minimum_cells <= 1:
+	if minimum_cells <= 1 and minimum_discharge <= 0.0:
 		return candidate_river_mask.duplicate()
 	var network_cell_counts := PackedInt32Array()
-	network_cell_counts.resize(candidate_network_count)
+	network_cell_counts.resize(candidate_networks.size())
 	for network_id in candidate_network_id:
-		if network_id >= 0 and network_id < candidate_network_count:
+		if network_id >= 0 and network_id < candidate_networks.size():
 			network_cell_counts[network_id] += 1
 	var formal_river_mask := candidate_river_mask.duplicate()
 	for cell_id in formal_river_mask.size():
 		var network_id := candidate_network_id[cell_id]
-		if network_id >= 0 and network_cell_counts[network_id] < minimum_cells:
+		if network_id < 0:
+			continue
+		var network: HydrologyRiverNetwork = candidate_networks[network_id]
+		if network_cell_counts[network_id] < minimum_cells \
+				or network.discharge < minimum_discharge:
 			formal_river_mask[cell_id] = 0
 	return formal_river_mask
+
+
+static func _trace_natural_main_upstreams(
+		heights: PackedFloat32Array,
+		formal_river_mask: PackedByteArray,
+		formal_network_id: PackedInt32Array,
+		upstream: Array,
+		flow_accumulation: PackedFloat32Array
+) -> Dictionary:
+	var traced_mask := formal_river_mask.duplicate()
+	var traced_network_id := formal_network_id.duplicate()
+	var formal_sources := PackedInt32Array()
+	for cell_id in formal_river_mask.size():
+		if formal_river_mask[cell_id] == 0:
+			continue
+		var has_formal_upstream := false
+		for upstream_id in upstream[cell_id]:
+			if formal_river_mask[upstream_id] != 0:
+				has_formal_upstream = true
+				break
+		if not has_formal_upstream:
+			formal_sources.append(cell_id)
+
+	for source_cell in formal_sources:
+		var network_id := formal_network_id[source_cell]
+		if network_id < 0:
+			return {"ok": false}
+		var current_cell := source_cell
+		var visited := {source_cell: true}
+		for step in formal_river_mask.size():
+			var predecessor := _main_upstream_predecessor(
+				current_cell, heights, upstream, flow_accumulation
+			)
+			if predecessor < 0:
+				break
+			if visited.has(predecessor):
+				return {"ok": false}
+			if traced_network_id[predecessor] >= 0:
+				if traced_network_id[predecessor] != network_id:
+					return {"ok": false}
+				break
+			visited[predecessor] = true
+			traced_mask[predecessor] = 1
+			traced_network_id[predecessor] = network_id
+			current_cell = predecessor
+			if step == formal_river_mask.size() - 1:
+				return {"ok": false}
+	return {"ok": true, "river_mask": traced_mask}
+
+
+static func _main_upstream_predecessor(
+		current_cell: int,
+		heights: PackedFloat32Array,
+		upstream: Array,
+		flow_accumulation: PackedFloat32Array
+) -> int:
+	var best_cell := -1
+	var best_accumulation := -INF
+	for upstream_id in upstream[current_cell]:
+		if heights[upstream_id] < 0.0:
+			continue
+		var accumulation := flow_accumulation[upstream_id]
+		if accumulation > best_accumulation \
+				or (is_equal_approx(accumulation, best_accumulation) \
+				and (best_cell < 0 or upstream_id < best_cell)):
+			best_cell = upstream_id
+			best_accumulation = accumulation
+	return best_cell
 
 
 static func _build_river_networks(
