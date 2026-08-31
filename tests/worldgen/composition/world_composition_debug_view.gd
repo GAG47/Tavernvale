@@ -57,6 +57,7 @@ var _soil_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
+const _HIGH_DEPOSITION_THRESHOLD := 0.50
 
 enum ViewMode {
 	RAW_COMPOSITION,
@@ -726,6 +727,7 @@ func _regenerate_composition() -> void:
 	_ecology_statistics = _calculate_ecology_statistics()
 	_soil_statistics = _calculate_soil_statistics()
 	_print_soil_texture_diagnostics()
+	_print_soil_deposition_diagnostics()
 	selected_cell_id = -1
 	queue_redraw()
 
@@ -736,7 +738,7 @@ func _draw_information() -> void:
 	draw_rect(panel, Color(0.055, 0.065, 0.085, 0.97))
 	var mode := _view_mode_name()
 	var lines := PackedStringArray([
-		"Soil Foundation v1.10 Debug",
+		"Soil Foundation v1.10.1 Debug",
 		"Template: %s" % CompositionTemplates.display_name(StringName(template_id)),
 		"Seed: %d" % seed,
 		"World: %d x %d" % [int(world_width), int(world_height)],
@@ -1069,7 +1071,7 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 				% _ecology_statistics.biome_counts[EcologyCatalog.Biome.WETLAND]
 			)
 		ViewMode.SOIL_DEPTH:
-			_append_continuous_soil_statistics(lines, _soil_statistics.depth)
+			_append_soil_depth_diagnostics(lines)
 		ViewMode.SOIL_TEXTURE:
 			var soil_land_count: int = _soil_statistics.land_count
 			for texture_id in range(SoilCatalog.TextureType.SANDY, SoilCatalog.TEXTURE_COUNT):
@@ -1133,6 +1135,25 @@ func _append_continuous_soil_statistics(
 		lines.append("No soil-bearing Land Cells")
 		return
 	lines.append("Land Only:")
+	_append_soil_statistic_values(lines, statistics)
+
+
+func _append_soil_depth_diagnostics(lines: PackedStringArray) -> void:
+	if int(_soil_statistics.depth.count) == 0:
+		lines.append("No soil-bearing Land Cells")
+		return
+	lines.append("Land Only:")
+	for entry in [
+		["Soil Depth", _soil_statistics.depth],
+		["Formation Potential", _soil_statistics.formation_potential],
+		["Erosion Pressure", _soil_statistics.erosion_pressure],
+		["Deposition Tendency", _soil_statistics.deposition_tendency],
+	]:
+		lines.append(str(entry[0]) + ":")
+		_append_soil_statistic_values(lines, entry[1])
+
+
+func _append_soil_statistic_values(lines: PackedStringArray, statistics: Dictionary) -> void:
 	lines.append("Min: %.4f" % statistics.min)
 	lines.append("Mean: %.4f" % statistics.mean)
 	lines.append("P25: %.4f" % statistics.p25)
@@ -1421,6 +1442,9 @@ func _calculate_ecology_statistics() -> Dictionary:
 
 func _calculate_soil_statistics() -> Dictionary:
 	var depth_values := PackedFloat32Array()
+	var formation_values := PackedFloat32Array()
+	var erosion_values := PackedFloat32Array()
+	var deposition_values := PackedFloat32Array()
 	var organic_values := PackedFloat32Array()
 	var fertility_values := PackedFloat32Array()
 	var texture_counts := PackedInt32Array()
@@ -1434,6 +1458,34 @@ func _calculate_soil_statistics() -> Dictionary:
 		for cell_id in soil.cell_count():
 			if _cell_has_surface_soil(cell_id):
 				depth_values.append(soil.soil_depth[cell_id])
+				var slope_factor := SoilGenerator.slope_factor_for(
+					graph,
+					terrain.terrain_height,
+					cell_id,
+					soil_settings.slope_reference
+				)
+				var climate_weathering := SoilGenerator.climate_weathering_for(
+					climate.temperature[cell_id],
+					climate.precipitation[cell_id],
+					soil_settings.weathering_precip_reference
+				)
+				formation_values.append(SoilGenerator.formation_potential_for(
+					SoilCatalog.weatherability_for(geology.material_id[cell_id]),
+					climate_weathering
+				))
+				erosion_values.append(SoilGenerator.erosion_pressure_for(
+					slope_factor, geology.erodibility[cell_id]
+				))
+				var valley_position := SoilGenerator.valley_position_for(
+					graph, terrain.terrain_height, cell_id
+				)
+				var flow_strength := EcologyGenerator.river_strength_for(
+					formal_hydrology.flow_accumulation[cell_id],
+					formal_hydrology.settings.river_runoff_threshold
+				)
+				deposition_values.append(SoilGenerator.deposition_tendency_for(
+					slope_factor, valley_position, flow_strength
+				))
 				organic_values.append(soil.organic_matter[cell_id])
 				fertility_values.append(soil.soil_fertility[cell_id])
 				var texture_id := soil.soil_texture_id[cell_id]
@@ -1441,6 +1493,9 @@ func _calculate_soil_statistics() -> Dictionary:
 				material_texture_counts[geology.material_id[cell_id]][texture_id] += 1
 	return {
 		"depth": _soil_continuous_statistics(depth_values),
+		"formation_potential": _soil_continuous_statistics(formation_values),
+		"erosion_pressure": _soil_continuous_statistics(erosion_values),
+		"deposition_tendency": _soil_continuous_statistics(deposition_values),
 		"organic_matter": _soil_continuous_statistics(organic_values),
 		"fertility": _soil_continuous_statistics(fertility_values),
 		"texture_counts": texture_counts,
@@ -1482,6 +1537,146 @@ func _print_soil_texture_diagnostics() -> void:
 				counts[SoilCatalog.TextureType.CLAYEY],
 			]
 		)
+
+
+func _print_soil_deposition_diagnostics() -> void:
+	if soil == null or _soil_statistics.is_empty():
+		return
+	var actual_depth_values := PackedFloat32Array()
+	var depth_without_deposition_values := PackedFloat32Array()
+	var depth_gain_values := PackedFloat32Array()
+	var actual_texture_counts := PackedInt32Array()
+	actual_texture_counts.resize(SoilCatalog.TEXTURE_COUNT)
+	var texture_without_deposition_counts := PackedInt32Array()
+	texture_without_deposition_counts.resize(SoilCatalog.TEXTURE_COUNT)
+	var shifted_finer_count := 0
+	var unchanged_count := 0
+	var shifted_coarser_count := 0
+	for cell_id in soil.cell_count():
+		if not _cell_has_surface_soil(cell_id):
+			continue
+		var slope_factor := SoilGenerator.slope_factor_for(
+			graph, terrain.terrain_height, cell_id, soil_settings.slope_reference
+		)
+		var climate_weathering := SoilGenerator.climate_weathering_for(
+			climate.temperature[cell_id],
+			climate.precipitation[cell_id],
+			soil_settings.weathering_precip_reference
+		)
+		var valley_position := SoilGenerator.valley_position_for(
+			graph, terrain.terrain_height, cell_id
+		)
+		var flow_strength := EcologyGenerator.river_strength_for(
+			formal_hydrology.flow_accumulation[cell_id],
+			formal_hydrology.settings.river_runoff_threshold
+		)
+		var deposition_tendency := SoilGenerator.deposition_tendency_for(
+			slope_factor, valley_position, flow_strength
+		)
+		if deposition_tendency < _HIGH_DEPOSITION_THRESHOLD:
+			continue
+		var material_id := geology.material_id[cell_id]
+		var formation_potential := SoilGenerator.formation_potential_for(
+			SoilCatalog.weatherability_for(material_id), climate_weathering
+		)
+		var erosion_pressure := SoilGenerator.erosion_pressure_for(
+			slope_factor, geology.erodibility[cell_id]
+		)
+		var actual_depth := soil.soil_depth[cell_id]
+		var depth_without_deposition := SoilGenerator.soil_depth_for(
+			formation_potential, 0.0, erosion_pressure
+		)
+		actual_depth_values.append(actual_depth)
+		depth_without_deposition_values.append(depth_without_deposition)
+		depth_gain_values.append(actual_depth - depth_without_deposition)
+		var actual_texture := soil.soil_texture_id[cell_id]
+		var texture_without_deposition := SoilGenerator.texture_for_fineness(
+			SoilGenerator.texture_fineness_for(
+				SoilCatalog.parent_fineness_for(material_id), climate_weathering, 0.0
+			)
+		)
+		actual_texture_counts[actual_texture] += 1
+		texture_without_deposition_counts[texture_without_deposition] += 1
+		if actual_texture > texture_without_deposition:
+			shifted_finer_count += 1
+		elif actual_texture == texture_without_deposition:
+			unchanged_count += 1
+		else:
+			shifted_coarser_count += 1
+	var high_deposition_count := actual_depth_values.size()
+	print(
+		"Soil Deposition diagnostic (%s, Seed %d, deposition >= %.2f):"
+		% [template_id, seed, _HIGH_DEPOSITION_THRESHOLD]
+	)
+	print("  High Deposition Cell Count: %d" % high_deposition_count)
+	if high_deposition_count == 0:
+		return
+	var actual_depth_statistics := _soil_continuous_statistics(actual_depth_values)
+	var depth_without_deposition_statistics := _soil_continuous_statistics(
+		depth_without_deposition_values
+	)
+	var depth_gain_statistics := _soil_continuous_statistics(depth_gain_values)
+	_print_soil_deposition_depth_statistics("Actual Depth", actual_depth_statistics, false)
+	_print_soil_deposition_depth_statistics(
+		"Without Deposition", depth_without_deposition_statistics, false
+	)
+	_print_soil_deposition_depth_statistics("Depth Gain", depth_gain_statistics, true)
+	_print_soil_deposition_texture_statistics(
+		"All Land Texture", _soil_statistics.texture_counts, _soil_statistics.land_count
+	)
+	_print_soil_deposition_texture_statistics(
+		"High Deposition Actual Texture", actual_texture_counts, high_deposition_count
+	)
+	_print_soil_deposition_texture_statistics(
+		"High Deposition Without Deposition Texture",
+		texture_without_deposition_counts,
+		high_deposition_count
+	)
+	_print_soil_texture_shift("Shifted Finer", shifted_finer_count, high_deposition_count)
+	_print_soil_texture_shift("Unchanged", unchanged_count, high_deposition_count)
+	_print_soil_texture_shift("Shifted Coarser", shifted_coarser_count, high_deposition_count)
+	var all_land_fine_count: int = _soil_statistics.texture_counts[SoilCatalog.TextureType.SILTY] \
+			+ _soil_statistics.texture_counts[SoilCatalog.TextureType.CLAYEY]
+	var high_deposition_fine_count := actual_texture_counts[SoilCatalog.TextureType.SILTY] \
+			+ actual_texture_counts[SoilCatalog.TextureType.CLAYEY]
+	print(
+		"  All Land SILTY + CLAYEY: %.2f%%"
+		% (float(all_land_fine_count) / float(_soil_statistics.land_count) * 100.0)
+	)
+	print(
+		"  High Deposition SILTY + CLAYEY: %.2f%%"
+		% (float(high_deposition_fine_count) / float(high_deposition_count) * 100.0)
+	)
+
+
+func _print_soil_deposition_depth_statistics(
+		label: String, statistics: Dictionary, include_maximum: bool
+) -> void:
+	var text := "  %s: Mean %.4f | P50 %.4f | P75 %.4f" % [
+		label, statistics.mean, statistics.p50, statistics.p75
+	]
+	if include_maximum:
+		text += " | Max %.4f" % statistics.max
+	print(text)
+
+
+func _print_soil_deposition_texture_statistics(
+		label: String, counts: PackedInt32Array, total: int
+) -> void:
+	print("  %s:" % label)
+	for texture_id in range(SoilCatalog.TextureType.SANDY, SoilCatalog.TEXTURE_COUNT):
+		print(
+			"    %s: %d / %.2f%%"
+			% [
+				SoilCatalog.texture_name(texture_id),
+				counts[texture_id],
+				float(counts[texture_id]) / float(total) * 100.0,
+			]
+		)
+
+
+func _print_soil_texture_shift(label: String, count: int, total: int) -> void:
+	print("  %s: %d / %.2f%%" % [label, count, float(count) / float(total) * 100.0])
 
 
 func _moisture_statistics(values: PackedFloat32Array) -> Dictionary:

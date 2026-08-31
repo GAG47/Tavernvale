@@ -146,7 +146,7 @@ static func soil_depth_for(
 ) -> float:
 	return clampf(
 		0.15 + 0.70 * formation_potential + 0.35 * deposition_tendency \
-				- 0.55 * erosion_pressure,
+				- 0.40 * erosion_pressure,
 		0.0,
 		1.0
 	)
