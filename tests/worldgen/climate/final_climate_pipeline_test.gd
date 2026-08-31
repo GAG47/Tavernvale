@@ -19,6 +19,7 @@ func _run_all() -> void:
 	_test_surface_water_uses_final_pipeline_outputs()
 	_test_ecology_uses_final_pipeline_outputs()
 	_test_soil_uses_final_pipeline_outputs()
+	_test_resource_potential_uses_final_pipeline_outputs()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -88,6 +89,7 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if ecology == null:
 		return {}
+	var soil_settings := SoilSettings.new()
 	var soil := SoilGenerator.generate(
 		graph,
 		conditioned,
@@ -96,9 +98,24 @@ func _build_fixed_pipeline() -> Dictionary:
 		geology,
 		surface_water,
 		ecology,
-		SoilSettings.new()
+		soil_settings
 	)
 	if soil == null:
+		return {}
+	var resource_settings := ResourcePotentialSettings.new()
+	var resources := ResourcePotentialGenerator.generate(
+		graph,
+		conditioned,
+		final_climate,
+		final_hydrology,
+		geology,
+		surface_water,
+		ecology,
+		soil,
+		resource_settings,
+		soil_settings
+	)
+	if resources == null:
 		return {}
 	return {
 		"graph": graph,
@@ -116,6 +133,9 @@ func _build_fixed_pipeline() -> Dictionary:
 		"surface_water": surface_water,
 		"ecology": ecology,
 		"soil": soil,
+		"soil_settings": soil_settings,
+		"resource_settings": resource_settings,
+		"resources": resources,
 	}
 
 
@@ -321,6 +341,24 @@ func _test_soil_uses_final_pipeline_outputs() -> void:
 			)
 
 
+func _test_resource_potential_uses_final_pipeline_outputs() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var terrain: TerrainHeightLayer = _pipeline.conditioned
+	var surface_water: SurfaceWaterLayer = _pipeline.surface_water
+	var resources: ResourcePotentialLayer = _pipeline.resources
+	_expect(resources.cell_count() == graph.cell_count(), "Resource Potential Cell Count should match")
+	_expect(
+		ResourcePotentialValidator.validate(graph, terrain, surface_water, resources).is_empty(),
+		"Resource Potential should validate after Soil"
+	)
+	for cell_id in graph.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0 or surface_water.lake_id[cell_id] >= 0:
+			_expect(resources.agriculture_potential[cell_id] == 0.0, "Water must have no Agriculture Potential")
+			_expect(resources.base_metal_potential[cell_id] == 0.0, "Water must have no Base Metal Potential")
+		if terrain.terrain_height[cell_id] < 0.0:
+			_expect(resources.freshwater_aquatic_potential[cell_id] == 0.0, "Ocean must have no Freshwater Potential")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -350,6 +388,28 @@ func _test_determinism() -> void:
 	_expect(first_hydrology.river_network_id == second_hydrology.river_network_id, "River Networks should be deterministic")
 	_expect(first_hydrology.river_order == second_hydrology.river_order, "River Order should be deterministic")
 	_expect(first_hydrology.watershed_id == second_hydrology.watershed_id, "Watersheds should be deterministic")
+	var repeated_resources := ResourcePotentialGenerator.generate(
+		graph,
+		conditioned,
+		first_climate,
+		first_hydrology,
+		_pipeline.geology,
+		_pipeline.surface_water,
+		_pipeline.ecology,
+		_pipeline.soil,
+		_pipeline.resource_settings,
+		_pipeline.soil_settings
+	)
+	_expect(repeated_resources != null, "repeat Resource Potential should generate")
+	if repeated_resources != null:
+		_expect(
+			_pipeline.resources.base_metal_potential == repeated_resources.base_metal_potential,
+			"Base Metal Potential should be deterministic"
+		)
+		_expect(
+			_pipeline.resources.precious_mineral_potential == repeated_resources.precious_mineral_potential,
+			"Precious Mineral Potential should be deterministic"
+		)
 
 
 func _terminal_closed_basin_id(
@@ -372,7 +432,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 7 test groups passed")
+		print("Final Climate Pipeline: all 8 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
