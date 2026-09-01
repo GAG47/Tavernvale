@@ -460,11 +460,7 @@ static func _make_noise(seed: int) -> FastNoiseLite:
 
 
 static func _channel_seed(world_seed: int, salt: int) -> int:
-	var value := (world_seed & 0x7fffffff) ^ (salt & 0x7fffffff)
-	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
-	value = ((value ^ (value >> 16)) * 0x45d9f3b) & 0x7fffffff
-	value = (value ^ (value >> 16)) & 0x7fffffff
-	return value if value != 0 else 1
+	return DeterministicRng.stable_mix(world_seed, salt)
 
 
 static func _raw_concentration_at(

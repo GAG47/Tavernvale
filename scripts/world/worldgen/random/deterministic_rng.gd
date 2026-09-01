@@ -20,7 +20,11 @@ func _init(seed_value: int) -> void:
 
 
 static func spatial_seed(world_seed: int) -> int:
-	var value := (world_seed & _MASK) ^ _SPATIAL_SALT
+	return stable_mix(world_seed, _SPATIAL_SALT)
+
+
+static func stable_mix(world_seed: int, salt: int) -> int:
+	var value := (world_seed & _MASK) ^ (salt & _MASK)
 	# Stable integer avalanche; all intermediates remain within signed 64-bit range.
 	value = ((value ^ (value >> 16)) * 0x45d9f3b) & _MASK
 	value = ((value ^ (value >> 16)) * 0x45d9f3b) & _MASK

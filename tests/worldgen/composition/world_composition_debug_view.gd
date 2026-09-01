@@ -22,6 +22,7 @@ var surface_water: SurfaceWaterLayer
 var ecology: EcologyLayer
 var soil: SoilLayer
 var resource_potential: ResourcePotentialLayer
+var arcane_field: ArcaneFieldLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -31,6 +32,7 @@ var surface_water_settings: SurfaceWaterSettings
 var ecology_settings: EcologySettings
 var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
+var arcane_settings: ArcaneFieldSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -48,6 +50,7 @@ var _surface_water_generation_ms := 0
 var _ecology_generation_ms := 0
 var _soil_generation_ms := 0
 var _resource_generation_ms := 0
+var _arcane_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -62,6 +65,7 @@ var _surface_water_statistics := {}
 var _ecology_statistics := {}
 var _soil_statistics := {}
 var _resource_statistics := {}
+var _arcane_statistics := {}
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -72,6 +76,7 @@ enum DebugPage {
 	HYDROLOGY,
 	ECOLOGY_SOIL,
 	RESOURCES,
+	ARCANE,
 }
 
 enum ReferenceView {
@@ -114,9 +119,13 @@ enum ViewMode {
 	PRECIOUS_MINERAL_POTENTIAL,
 	FRESHWATER_AQUATIC_POTENTIAL,
 	COASTAL_AQUATIC_POTENTIAL,
+	BACKGROUND_MANA,
+	BACKGROUND_STABILITY,
 }
 
-const DEBUG_PAGE_NAMES := ["World", "Geology", "Hydrology", "Ecology & Soil", "Resources"]
+const DEBUG_PAGE_NAMES := [
+	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane"
+]
 const DEBUG_PAGE_VIEWS := [
 	[
 		ViewMode.RAW_COMPOSITION,
@@ -160,6 +169,10 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.PRECIOUS_MINERAL_POTENTIAL,
 		ViewMode.FRESHWATER_AQUATIC_POTENTIAL,
 		ViewMode.COASTAL_AQUATIC_POTENTIAL,
+	],
+	[
+		ViewMode.BACKGROUND_MANA,
+		ViewMode.BACKGROUND_STABILITY,
 	],
 ]
 
@@ -231,6 +244,7 @@ func _draw() -> void:
 			or ecology == null \
 			or soil == null \
 			or resource_potential == null \
+			or arcane_field == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -373,6 +387,10 @@ func _cell_color(cell_id: int) -> Color:
 			return _resource_heatmap_color(resource_potential.freshwater_aquatic_potential[cell_id])
 		ViewMode.COASTAL_AQUATIC_POTENTIAL:
 			return _resource_heatmap_color(resource_potential.coastal_aquatic_potential[cell_id])
+		ViewMode.BACKGROUND_MANA:
+			return _background_mana_color(arcane_field.background_mana[cell_id])
+		ViewMode.BACKGROUND_STABILITY:
+			return _background_stability_color(arcane_field.background_stability[cell_id])
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		ViewMode.PRECIPITATION_DELTA:
@@ -399,6 +417,24 @@ func _resource_heatmap_color(value: float) -> Color:
 		)
 	return Color(0.12, 0.68, 0.40).lerp(
 		Color(1.00, 0.84, 0.24), (normalized - 0.67) / 0.33
+	)
+
+
+func _background_mana_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.5:
+		return Color(0.04, 0.05, 0.14).lerp(Color(0.32, 0.16, 0.58), normalized * 2.0)
+	return Color(0.32, 0.16, 0.58).lerp(
+		Color(0.42, 0.94, 0.98), (normalized - 0.5) * 2.0
+	)
+
+
+func _background_stability_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.5:
+		return Color(0.26, 0.05, 0.12).lerp(Color(0.60, 0.34, 0.24), normalized * 2.0)
+	return Color(0.60, 0.34, 0.24).lerp(
+		Color(0.54, 0.94, 0.72), (normalized - 0.5) * 2.0
 	)
 
 
@@ -732,6 +768,7 @@ func _regenerate_composition() -> void:
 		ecology = null
 		soil = null
 		resource_potential = null
+		arcane_field = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -834,6 +871,12 @@ func _regenerate_composition() -> void:
 		soil_settings
 	)
 	_resource_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	arcane_settings = ArcaneFieldSettings.new()
+	arcane_field = null if resource_potential == null else ArcaneFieldGenerator.generate(
+		graph, seed, arcane_settings
+	)
+	_arcane_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -844,6 +887,7 @@ func _regenerate_composition() -> void:
 	_ecology_statistics = _calculate_ecology_statistics()
 	_soil_statistics = _calculate_soil_statistics()
 	_resource_statistics = _calculate_resource_statistics()
+	_arcane_statistics = _calculate_arcane_statistics()
 	_ensure_valid_page_view()
 	selected_cell_id = -1
 	queue_redraw()
@@ -896,6 +940,15 @@ func _draw_information() -> void:
 			)
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
+		elif _is_arcane_view():
+			lines.append("Arcane Field")
+			lines.append(
+				"Background Mana: %.4f" % arcane_field.background_mana[selected_cell_id]
+			)
+			lines.append(
+				"Background Stability: %.4f"
+				% arcane_field.background_stability[selected_cell_id]
+			)
 		elif _is_soil_view():
 			lines.append(
 				"Material: %s"
@@ -979,7 +1032,8 @@ func _draw_information() -> void:
 				and not _is_surface_water_view() \
 				and not _is_ecology_view() \
 				and not _is_soil_view() \
-				and not _is_resource_view():
+				and not _is_resource_view() \
+				and not _is_arcane_view():
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
 				selected_cell_id, graph, climate_settings
 			))
@@ -1129,6 +1183,10 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 		_append_resource_statistics(lines, _resource_statistics.get(view_mode, {}))
 		return
 	match view_mode:
+		ViewMode.BACKGROUND_MANA:
+			_append_arcane_statistics(lines, _arcane_statistics.get("mana", {}))
+		ViewMode.BACKGROUND_STABILITY:
+			_append_arcane_statistics(lines, _arcane_statistics.get("stability", {}))
 		ViewMode.RAW_COMPOSITION:
 			lines.append(
 				"Min %d | Max %d | Mean %.2f"
@@ -1675,6 +1733,52 @@ func _calculate_resource_statistics() -> Dictionary:
 	return result
 
 
+func _calculate_arcane_statistics() -> Dictionary:
+	if arcane_field == null:
+		return {}
+	return {
+		"mana": _arcane_field_statistics(arcane_field.background_mana),
+		"stability": _arcane_field_statistics(arcane_field.background_stability),
+	}
+
+
+func _arcane_field_statistics(values: PackedFloat32Array) -> Dictionary:
+	var statistics := _continuous_statistics(values)
+	var sorted_values := values.duplicate()
+	sorted_values.sort()
+	statistics["p10"] = _percentile(sorted_values, 0.10)
+	statistics["p90"] = _percentile(sorted_values, 0.90)
+	statistics["mean_neighbor_delta"] = _mean_neighbor_delta(values)
+	return statistics
+
+
+func _mean_neighbor_delta(values: PackedFloat32Array) -> float:
+	var delta_sum := 0.0
+	var edge_count := 0
+	for cell_id in graph.cell_count():
+		for neighbor_id in graph.cell_neighbors[cell_id]:
+			if neighbor_id > cell_id:
+				delta_sum += absf(values[cell_id] - values[neighbor_id])
+				edge_count += 1
+	return delta_sum / float(edge_count) if edge_count > 0 else 0.0
+
+
+func _append_arcane_statistics(lines: PackedStringArray, statistics: Dictionary) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Field data")
+		return
+	lines.append("Min: %.4f" % statistics.min)
+	lines.append("Mean: %.4f" % statistics.mean)
+	lines.append("P10: %.4f" % statistics.p10)
+	lines.append("P25: %.4f" % statistics.p25)
+	lines.append("P50 / Median: %.4f" % statistics.p50)
+	lines.append("P75: %.4f" % statistics.p75)
+	lines.append("P90: %.4f" % statistics.p90)
+	lines.append("Max: %.4f" % statistics.max)
+	lines.append("Mean Neighbor Delta: %.5f" % statistics.mean_neighbor_delta)
+	lines.append("Generation: %d ms" % _arcane_generation_ms)
+
+
 func _resource_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
 	var statistics := _continuous_statistics(values)
 	var sorted_values := values.duplicate()
@@ -1938,6 +2042,10 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Freshwater Aquatic"
 		ViewMode.COASTAL_AQUATIC_POTENTIAL:
 			return "Coastal Aquatic"
+		ViewMode.BACKGROUND_MANA:
+			return "Background Mana"
+		ViewMode.BACKGROUND_STABILITY:
+			return "Background Stability"
 		_:
 			return "Unknown"
 
@@ -1970,6 +2078,11 @@ func _is_soil_view() -> bool:
 func _is_resource_view() -> bool:
 	return view_mode >= ViewMode.AGRICULTURE_POTENTIAL \
 			and view_mode <= ViewMode.COASTAL_AQUATIC_POTENTIAL
+
+
+func _is_arcane_view() -> bool:
+	return view_mode == ViewMode.BACKGROUND_MANA \
+			or view_mode == ViewMode.BACKGROUND_STABILITY
 
 
 func _select_cell_at(world_position: Vector2) -> void:

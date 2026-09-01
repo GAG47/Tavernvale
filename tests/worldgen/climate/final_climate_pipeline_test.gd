@@ -20,6 +20,7 @@ func _run_all() -> void:
 	_test_ecology_uses_final_pipeline_outputs()
 	_test_soil_uses_final_pipeline_outputs()
 	_test_resource_potential_uses_final_pipeline_outputs()
+	_test_arcane_field_follows_v1_and_preserves_it()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -117,8 +118,27 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if resources == null:
 		return {}
+	var v1_hash_before_arcane := _v1_pipeline_hash({
+		"composition": composition,
+		"projected": projected,
+		"geology": geology,
+		"preliminary": preliminary,
+		"preliminary_flow": preliminary_flow,
+		"conditioning": conditioning,
+		"conditioned": conditioned,
+		"final_climate": final_climate,
+		"final_hydrology": final_hydrology,
+		"surface_water": surface_water,
+		"ecology": ecology,
+		"soil": soil,
+		"resources": resources,
+	})
+	var arcane_field := ArcaneFieldGenerator.generate(graph, graph.config.seed)
+	if arcane_field == null:
+		return {}
 	return {
 		"graph": graph,
+		"composition": composition,
 		"projected": projected,
 		"geology": geology,
 		"preliminary": preliminary,
@@ -136,6 +156,8 @@ func _build_fixed_pipeline() -> Dictionary:
 		"soil_settings": soil_settings,
 		"resource_settings": resource_settings,
 		"resources": resources,
+		"arcane_field": arcane_field,
+		"v1_hash_before_arcane": v1_hash_before_arcane,
 	}
 
 
@@ -359,6 +381,17 @@ func _test_resource_potential_uses_final_pipeline_outputs() -> void:
 			_expect(resources.freshwater_aquatic_potential[cell_id] == 0.0, "Ocean must have no Freshwater Potential")
 
 
+func _test_arcane_field_follows_v1_and_preserves_it() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var arcane_field: ArcaneFieldLayer = _pipeline.arcane_field
+	_expect(arcane_field.cell_count() == graph.cell_count(),
+		"Arcane Field should be stored after Resource Potential with one value per Cell")
+	_expect(ArcaneFieldValidator.validate(graph, arcane_field).is_empty(),
+		"Arcane Field should validate in the complete composition pipeline")
+	_expect(_pipeline.v1_hash_before_arcane == _v1_pipeline_hash(_pipeline),
+		"Arcane Field generation must leave every existing v1 Layer unchanged")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -425,6 +458,50 @@ func _terminal_closed_basin_id(
 	return -1
 
 
+func _v1_pipeline_hash(pipeline: Dictionary) -> int:
+	return hash([
+		pipeline.composition.continental_value,
+		pipeline.projected.terrain_height,
+		pipeline.geology.province_id,
+		pipeline.geology.material_id,
+		pipeline.geology.permeability,
+		pipeline.geology.erodibility,
+		pipeline.preliminary.temperature,
+		pipeline.preliminary.precipitation,
+		pipeline.preliminary_flow.flow_to,
+		pipeline.preliminary_flow.flow_accumulation,
+		pipeline.conditioning.terrain_height,
+		pipeline.conditioning.height_delta,
+		pipeline.conditioned.terrain_height,
+		pipeline.final_climate.temperature,
+		pipeline.final_climate.precipitation,
+		pipeline.final_hydrology.local_runoff,
+		pipeline.final_hydrology.flow_to,
+		pipeline.final_hydrology.flow_accumulation,
+		pipeline.final_hydrology.watershed_id,
+		pipeline.final_hydrology.river_network_id,
+		pipeline.final_hydrology.river_order,
+		pipeline.surface_water.lake_id,
+		pipeline.surface_water.surface_water_depth,
+		pipeline.ecology.drainage_index,
+		pipeline.ecology.ecological_moisture,
+		pipeline.ecology.vegetation_potential,
+		pipeline.ecology.biome_id,
+		pipeline.soil.soil_depth,
+		pipeline.soil.soil_texture_id,
+		pipeline.soil.organic_matter,
+		pipeline.soil.soil_fertility,
+		pipeline.resources.agriculture_potential,
+		pipeline.resources.timber_potential,
+		pipeline.resources.forage_potential,
+		pipeline.resources.construction_stone_potential,
+		pipeline.resources.base_metal_potential,
+		pipeline.resources.precious_mineral_potential,
+		pipeline.resources.freshwater_aquatic_potential,
+		pipeline.resources.coastal_aquatic_potential,
+	])
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -432,7 +509,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 8 test groups passed")
+		print("Final Climate Pipeline: all 9 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
