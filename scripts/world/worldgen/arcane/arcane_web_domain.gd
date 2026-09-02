@@ -1,6 +1,10 @@
 class_name ArcaneWebDomain
 extends RefCounted
 
+## A weighted Power Diagram cell retained for Arcane Web geometry generation
+## and world-space queries. It does not define an area with distinct magical
+## properties.
+
 var id: int = -1
 var nucleus_position := Vector2.ZERO
 var power_weight: float = 0.0

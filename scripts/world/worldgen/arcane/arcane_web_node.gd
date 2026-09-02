@@ -9,7 +9,6 @@ enum Kind {
 var id: int = -1
 var world_position := Vector2.ZERO
 var kind: Kind = Kind.JUNCTION
-var structural_importance: float = 0.0
 
 
 func _init(

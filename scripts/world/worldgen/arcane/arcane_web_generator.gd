@@ -56,9 +56,6 @@ static func generate(
 	_build_nodes_and_edges(layer, segments)
 	layer.power_diagram_time_ms = float(Time.get_ticks_usec() - diagram_started) / 1000.0
 
-	var importance_started := Time.get_ticks_usec()
-	ArcaneWebCentrality.apply(layer)
-	layer.importance_time_ms = float(Time.get_ticks_usec() - importance_started) / 1000.0
 	layer.rebuild_incidence()
 	layer.total_generation_time_ms = float(Time.get_ticks_usec() - total_started) / 1000.0
 

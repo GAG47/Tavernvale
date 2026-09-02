@@ -15,7 +15,6 @@ func _run_all() -> void:
 	_test_power_diagram_correctness_and_weight_effect()
 	_test_boundary_cropping_excludes_world_rectangle()
 	_test_topology()
-	_test_structural_importance()
 	_test_layer_incidence_query()
 	_print_seed_one_statistics()
 	_finish()
@@ -61,7 +60,7 @@ func _test_determinism_and_different_seed() -> void:
 	if first == null or repeat == null or other == null:
 		return
 	_expect(_web_signature(first) == _web_signature(repeat),
-		"same Seed + World Extent must reproduce nuclei/domains/nodes/edges/importance")
+		"same Seed + World Extent must reproduce nuclei/domains/nodes/edges")
 	_expect(_web_signature(first) != _web_signature(other),
 		"different World Seed must change Arcane Web geometry")
 
@@ -193,24 +192,6 @@ func _test_topology() -> void:
 	_expect(stats.cycle_rank > 0, "visible Arcane Web should contain natural closed loops")
 
 
-func _test_structural_importance() -> void:
-	var edges: Array[ArcaneWebEdge] = [
-		ArcaneWebEdge.new(0, 0, 1, 1.0),
-		ArcaneWebEdge.new(1, 1, 2, 1.0),
-		ArcaneWebEdge.new(2, 2, 3, 1.0),
-	]
-	var result := ArcaneWebCentrality.calculate(4, edges)
-	var nodes: PackedFloat64Array = result.nodes
-	var edge_scores: PackedFloat64Array = result.edges
-	_expect(is_equal_approx(nodes[0], 0.0) and is_equal_approx(nodes[3], 0.0),
-		"path endpoints should have zero normalized node betweenness")
-	_expect(is_equal_approx(nodes[1], 2.0 / 3.0) and is_equal_approx(nodes[2], 2.0 / 3.0),
-		"path interior nodes should have standard normalized node betweenness")
-	_expect(is_equal_approx(edge_scores[0], 0.5) and is_equal_approx(edge_scores[2], 0.5)
-			and is_equal_approx(edge_scores[1], 2.0 / 3.0),
-		"path edges should have standard undirected normalized edge betweenness")
-
-
 func _test_layer_incidence_query() -> void:
 	var layer := ArcaneWebGenerator.generate(707, 800.0, 400.0)
 	_expect(layer != null, "incidence query fixture should generate")
@@ -254,11 +235,9 @@ func _web_signature(layer: ArcaneWebLayer) -> Array:
 	for domain in layer.domains:
 		signature.append([domain.id, domain.nucleus_position, domain.power_weight, domain.polygon])
 	for node in layer.nodes:
-		signature.append([node.id, node.world_position, node.kind, node.structural_importance])
+		signature.append([node.id, node.world_position, node.kind])
 	for edge in layer.edges:
-		signature.append([
-			edge.id, edge.node_a_id, edge.node_b_id, edge.length, edge.structural_importance
-		])
+		signature.append([edge.id, edge.node_a_id, edge.node_b_id, edge.length])
 	return signature
 
 
@@ -284,7 +263,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Arcane Web: all 9 test groups passed")
+		print("Arcane Web: all 8 test groups passed")
 		quit(0)
 		return
 	for failure in _failures:

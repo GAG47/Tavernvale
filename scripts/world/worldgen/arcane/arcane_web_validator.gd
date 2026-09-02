@@ -68,8 +68,6 @@ static func validate(layer: ArcaneWebLayer) -> PackedStringArray:
 			errors.append("Boundary Exit %d must lie on the World Extent boundary" % node_id)
 		if node.kind == ArcaneWebNode.Kind.JUNCTION and on_boundary:
 			errors.append("a boundary-clipped node must be a Boundary Exit")
-		if not _importance_is_valid(node.structural_importance):
-			errors.append("node %d structural_importance must be inside [0, 1]" % node_id)
 
 	var edge_pairs := {}
 	var degree := PackedInt32Array()
@@ -112,8 +110,6 @@ static func validate(layer: ArcaneWebLayer) -> PackedStringArray:
 				errors.append("edge %d incorrectly follows the World Rectangle" % edge_id)
 		degree[edge.node_a_id] += 1
 		degree[edge.node_b_id] += 1
-		if not _importance_is_valid(edge.structural_importance):
-			errors.append("edge %d structural_importance must be inside [0, 1]" % edge_id)
 
 	for node_id in layer.nodes.size():
 		var node := layer.nodes[node_id]
@@ -135,16 +131,11 @@ static func statistics(layer: ArcaneWebLayer) -> Dictionary:
 	degree.resize(layer.nodes.size())
 	var total_length := 0.0
 	var edge_lengths := PackedFloat64Array()
-	var edge_importance := PackedFloat64Array()
-	var node_importance := PackedFloat64Array()
 	for edge in layer.edges:
 		degree[edge.node_a_id] += 1
 		degree[edge.node_b_id] += 1
 		total_length += edge.length
 		edge_lengths.append(edge.length)
-		edge_importance.append(edge.structural_importance)
-	for node in layer.nodes:
-		node_importance.append(node.structural_importance)
 	var junction_count := 0
 	var boundary_exit_count := 0
 	var degree_1 := 0
@@ -187,11 +178,8 @@ static func statistics(layer: ArcaneWebLayer) -> Dictionary:
 		"degree_4_plus": degree_4_plus,
 		"total_ley_length": total_length,
 		"edge_length": _range_statistics(edge_lengths),
-		"edge_importance": _range_statistics(edge_importance),
-		"node_importance": _range_statistics(node_importance),
 		"generation_time_ms": layer.generation_time_ms,
 		"power_diagram_time_ms": layer.power_diagram_time_ms,
-		"importance_time_ms": layer.importance_time_ms,
 		"total_time_ms": layer.total_generation_time_ms,
 	}
 
@@ -235,10 +223,6 @@ static func _range_statistics(values: PackedFloat64Array) -> Dictionary:
 
 static func _vector_is_finite(value: Vector2) -> bool:
 	return is_finite(value.x) and is_finite(value.y)
-
-
-static func _importance_is_valid(value: float) -> bool:
-	return is_finite(value) and value >= 0.0 and value <= 1.0
 
 
 static func _position_less(first: Vector2, second: Vector2) -> bool:

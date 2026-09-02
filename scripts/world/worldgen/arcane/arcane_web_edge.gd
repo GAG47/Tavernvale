@@ -5,7 +5,6 @@ var id: int = -1
 var node_a_id: int = -1
 var node_b_id: int = -1
 var length: float = 0.0
-var structural_importance: float = 0.0
 
 
 func _init(

@@ -1,6 +1,9 @@
 class_name ArcaneWebLayer
 extends RefCounted
 
+## Stable world-space geometry for the cyclic Arcane Web skeleton. This layer
+## does not assign Leyline strength, Nexus strength, mana flow, or circulation.
+
 var domains: Array[ArcaneWebDomain] = []
 var nodes: Array[ArcaneWebNode] = []
 var edges: Array[ArcaneWebEdge] = []
@@ -12,7 +15,6 @@ var settings: ArcaneWebSettings
 var generated_nucleus_count: int = 0
 var generation_time_ms: float = 0.0
 var power_diagram_time_ms: float = 0.0
-var importance_time_ms: float = 0.0
 var total_generation_time_ms: float = 0.0
 
 var _incident_edges: Array[PackedInt32Array] = []

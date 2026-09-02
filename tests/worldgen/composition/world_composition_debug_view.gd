@@ -72,8 +72,6 @@ var _show_arcane_domains := false
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
-const _ARCANE_EDGE_IMPORTANCE_REFERENCE := 0.20
-const _ARCANE_NODE_IMPORTANCE_REFERENCE := 0.22
 
 enum DebugPage {
 	WORLD,
@@ -292,28 +290,18 @@ func _draw_arcane_web() -> void:
 				_closed_screen_polygon(domain.polygon), Color(0.28, 0.34, 0.48, 0.45), 0.75, true
 			)
 	for edge in arcane_web.edges:
-		var importance := clampf(edge.structural_importance, 0.0, 1.0)
-		var emphasis := smoothstep(0.0, _ARCANE_EDGE_IMPORTANCE_REFERENCE, importance)
-		var brightness := pow(emphasis, 0.85)
-		var color := Color(0.07, 0.20, 0.36, 0.42).lerp(
-			Color(0.76, 0.98, 1.0, 1.0), brightness
-		)
-		var width := 0.75 + 7.25 * pow(emphasis, 1.35)
 		draw_line(
 			_to_screen(arcane_web.nodes[edge.node_a_id].world_position),
 			_to_screen(arcane_web.nodes[edge.node_b_id].world_position),
-			color,
-			width,
+			Color(0.34, 0.70, 0.86, 0.88),
+			1.5,
 			true
 		)
 	for node in arcane_web.nodes:
-		var importance := clampf(node.structural_importance, 0.0, 1.0)
-		var emphasis := smoothstep(0.0, _ARCANE_NODE_IMPORTANCE_REFERENCE, importance)
-		var radius := 2.0 + 10.5 * pow(emphasis, 1.35)
-		var base_color := Color(1.0, 0.54, 0.24) \
+		var radius := 3.0 if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT else 3.5
+		var color := Color(1.0, 0.54, 0.24) \
 				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
-				else Color(0.42, 0.76, 0.84)
-		var color := base_color.lerp(Color(0.90, 1.0, 1.0), pow(emphasis, 0.70))
+				else Color(0.76, 0.98, 1.0)
 		draw_circle(_to_screen(node.world_position), radius, color)
 
 
@@ -1868,21 +1856,8 @@ func _append_arcane_web_statistics(lines: PackedStringArray, statistics: Diction
 	lines.append("  %.2f / %.2f / %.2f" % [
 		statistics.edge_length.min, statistics.edge_length.mean, statistics.edge_length.max
 	])
-	lines.append("Edge Importance Min/Mean/Max:")
-	lines.append("  %.4f / %.4f / %.4f" % [
-		statistics.edge_importance.min,
-		statistics.edge_importance.mean,
-		statistics.edge_importance.max,
-	])
-	lines.append("Node Importance Min/Mean/Max:")
-	lines.append("  %.4f / %.4f / %.4f" % [
-		statistics.node_importance.min,
-		statistics.node_importance.mean,
-		statistics.node_importance.max,
-	])
 	lines.append("Sampling: %.2f ms" % statistics.generation_time_ms)
 	lines.append("Power Diagram: %.2f ms" % statistics.power_diagram_time_ms)
-	lines.append("Importance: %.2f ms" % statistics.importance_time_ms)
 	lines.append("Total Arcane Web: %.2f ms" % statistics.total_time_ms)
 	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
 
