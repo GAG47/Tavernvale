@@ -8,8 +8,7 @@ const NON_ZERO_FLOW_EPSILON := 0.000001
 
 static func validate(
 		arcane_web: ArcaneWebLayer,
-		circulation: ArcaneCirculationLayer,
-		world_seed: int
+		circulation: ArcaneCirculationLayer
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
 	if arcane_web == null or circulation == null:
@@ -24,7 +23,7 @@ static func validate(
 			errors.append("edge_flow[%d] must be finite" % edge.id)
 			continue
 		var expected := ArcaneCirculationGenerator.expected_flow_for_edge(
-			arcane_web, edge, world_seed
+			arcane_web, edge
 		)
 		if not bool(expected.get("valid", false)):
 			errors.append("Edge %d must resolve exactly two left/right Domains" % edge.id)

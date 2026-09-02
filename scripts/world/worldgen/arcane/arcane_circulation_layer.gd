@@ -1,8 +1,9 @@
 class_name ArcaneCirculationLayer
 extends RefCounted
 
-## Long-term signed mana circulation aligned one-to-one with ArcaneWebLayer.edges.
-## Positive flow follows the canonical node_a_id -> node_b_id direction.
+## Long-term relative Arcane Current in the Arcane Medium, aligned one-to-one
+## with ArcaneWebLayer.edges. Magnitude is relative circulation strength with no
+## absolute mana unit; positive flow follows canonical node_a_id -> node_b_id.
 var edge_flow := PackedFloat32Array()
 
 

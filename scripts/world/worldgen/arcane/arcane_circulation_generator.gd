@@ -1,6 +1,10 @@
 class_name ArcaneCirculationGenerator
 extends RefCounted
 
+## Domain circulation potential models the Arcane Medium's large-scale,
+## long-term circulation potential. It is a transient calculation aid—not a
+## Debug random value, line-width noise, or ArcaneWebDomain magic property.
+
 const CIRCULATION_SEED_SALT := 0x43495243 # "CIRC"
 const CIRCULATION_FEATURE_SCALE := 700.0
 const CIRCULATION_OCTAVES := 3
@@ -8,9 +12,7 @@ const CIRCULATION_LACUNARITY := 2.0
 const CIRCULATION_GAIN := 0.50
 
 
-static func generate(
-		arcane_web: ArcaneWebLayer, world_seed: int
-) -> ArcaneCirculationLayer:
+static func generate(arcane_web: ArcaneWebLayer) -> ArcaneCirculationLayer:
 	if arcane_web == null:
 		push_error("ArcaneCirculationGenerator: ArcaneWebLayer is null")
 		return null
@@ -20,7 +22,7 @@ static func generate(
 		return null
 
 	var noise := _make_circulation_noise(
-		DeterministicRng.stable_mix(world_seed, CIRCULATION_SEED_SALT)
+		DeterministicRng.stable_mix(arcane_web.world_seed, CIRCULATION_SEED_SALT)
 	)
 	var potentials := PackedFloat64Array()
 	potentials.resize(arcane_web.domains.size())
@@ -38,12 +40,14 @@ static func generate(
 				"ArcaneCirculationGenerator: could not resolve domains for Edge %d" % edge.id
 			)
 			return null
+		# Relative long-term Arcane Current: magnitude is relative strength with
+		# no absolute mana unit; sign is canonical node_a -> node_b direction.
 		circulation.edge_flow[edge.id] = float(
 			potentials[int(sides.left_domain_id)] - potentials[int(sides.right_domain_id)]
 		)
 
 	var validation_errors := ArcaneCirculationValidator.validate(
-		arcane_web, circulation, world_seed
+		arcane_web, circulation
 	)
 	if not validation_errors.is_empty():
 		push_error("Arcane Circulation validation failed: " + "; ".join(validation_errors))
@@ -52,16 +56,16 @@ static func generate(
 
 
 static func circulation_potential_for(
-		domain: ArcaneWebDomain, world_seed: int
+		arcane_web: ArcaneWebLayer, domain: ArcaneWebDomain
 ) -> float:
 	var noise := _make_circulation_noise(
-		DeterministicRng.stable_mix(world_seed, CIRCULATION_SEED_SALT)
+		DeterministicRng.stable_mix(arcane_web.world_seed, CIRCULATION_SEED_SALT)
 	)
 	return noise.get_noise_2d(domain.nucleus_position.x, domain.nucleus_position.y)
 
 
 static func expected_flow_for_edge(
-		arcane_web: ArcaneWebLayer, edge: ArcaneWebEdge, world_seed: int
+		arcane_web: ArcaneWebLayer, edge: ArcaneWebEdge
 ) -> Dictionary:
 	var sides := domains_for_edge(arcane_web, edge)
 	if not bool(sides.get("valid", false)):
@@ -72,8 +76,8 @@ static func expected_flow_for_edge(
 		"valid": true,
 		"left_domain_id": left_domain.id,
 		"right_domain_id": right_domain.id,
-		"flow": circulation_potential_for(left_domain, world_seed)
-				- circulation_potential_for(right_domain, world_seed),
+		"flow": circulation_potential_for(arcane_web, left_domain)
+				- circulation_potential_for(arcane_web, right_domain),
 	}
 
 

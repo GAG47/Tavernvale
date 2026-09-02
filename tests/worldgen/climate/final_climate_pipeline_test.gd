@@ -152,7 +152,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		v2_hash_before_web, arcane_field, arcane_web
 	)
 	var arcane_circulation := ArcaneCirculationGenerator.generate(
-		arcane_web, graph.config.seed
+		arcane_web
 	)
 	if arcane_circulation == null:
 		return {}
@@ -441,7 +441,7 @@ func _test_arcane_circulation_follows_web_and_preserves_prior_layers() -> void:
 	_expect(
 		circulation != null
 				and ArcaneCirculationValidator.validate(
-					arcane_web, circulation, graph.config.seed
+					arcane_web, circulation
 				).is_empty(),
 		"Arcane Circulation should validate after Arcane Web in the complete pipeline"
 	)

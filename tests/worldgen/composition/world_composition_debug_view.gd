@@ -303,7 +303,7 @@ func _draw_arcane_circulation() -> void:
 	_draw_arcane_domain_background()
 	for edge in arcane_web.edges:
 		var flow := arcane_circulation.edge_flow[edge.id]
-		var strength := clampf(absf(flow), 0.0, 1.0)
+		var strength := clampf(absf(flow) / 2.0, 0.0, 1.0)
 		var color := Color(0.18, 0.42, 0.62, 0.45).lerp(
 			Color(0.62, 0.96, 1.0, 1.0), strength
 		)
@@ -984,7 +984,7 @@ func _regenerate_composition() -> void:
 	)
 	started = Time.get_ticks_msec()
 	arcane_circulation = null if arcane_web == null else ArcaneCirculationGenerator.generate(
-		arcane_web, seed
+		arcane_web
 	)
 	_arcane_circulation_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)

@@ -11,7 +11,7 @@ func _init() -> void:
 
 func _run_all() -> void:
 	_seed_one_web = ArcaneWebGenerator.generate(1, 2000.0, 1000.0)
-	_seed_one_circulation = ArcaneCirculationGenerator.generate(_seed_one_web, 1) \
+	_seed_one_circulation = ArcaneCirculationGenerator.generate(_seed_one_web) \
 			if _seed_one_web != null else null
 	_expect(_seed_one_web != null and _seed_one_circulation != null,
 		"Seed 1 Arcane Circulation fixture should generate")
@@ -48,7 +48,9 @@ func _test_seed_domain_noise_and_layer_contract() -> void:
 	_expect(not noise.domain_warp_enabled,
 		"circulation potential must not use domain warp")
 	for domain in _seed_one_web.domains:
-		var potential := ArcaneCirculationGenerator.circulation_potential_for(domain, 1)
+		var potential := ArcaneCirculationGenerator.circulation_potential_for(
+			_seed_one_web, domain
+		)
 		_expect(is_finite(potential) and potential >= -1.0 and potential <= 1.0,
 			"raw circulation potential must remain finite inside [-1, 1]")
 	_expect(_seed_one_circulation.edge_count() == _seed_one_web.edges.size(),
@@ -56,16 +58,25 @@ func _test_seed_domain_noise_and_layer_contract() -> void:
 
 
 func _test_determinism_and_different_seed() -> void:
-	var repeat := ArcaneCirculationGenerator.generate(_seed_one_web, 1)
-	var other_seed := ArcaneCirculationGenerator.generate(_seed_one_web, 2)
-	_expect(repeat != null and other_seed != null,
+	var repeat := ArcaneCirculationGenerator.generate(_seed_one_web)
+	var other_web := ArcaneWebGenerator.generate(2, 2000.0, 1000.0)
+	var other_seed := ArcaneCirculationGenerator.generate(other_web) \
+			if other_web != null else null
+	_expect(repeat != null and other_web != null and other_seed != null,
 		"circulation determinism fixtures should generate")
-	if repeat == null or other_seed == null:
+	if repeat == null or other_web == null or other_seed == null:
 		return
 	_expect(_seed_one_circulation.edge_flow == repeat.edge_flow,
-		"same World Seed and Web must reproduce edge_flow exactly")
-	_expect(_seed_one_circulation.edge_flow != other_seed.edge_flow,
-		"different World Seed must change at least part of edge_flow")
+		"same World Seed must reproduce the Web-derived edge_flow exactly")
+	var different := _seed_one_circulation.edge_flow.size() != other_seed.edge_flow.size()
+	for edge_index in mini(
+		_seed_one_circulation.edge_flow.size(), other_seed.edge_flow.size()
+	):
+		if _seed_one_circulation.edge_flow[edge_index] != other_seed.edge_flow[edge_index]:
+			different = true
+			break
+	_expect(different,
+		"different World Seeds must produce at least partially different edge_flow")
 
 
 func _test_edge_alignment_and_signed_direction() -> void:
@@ -78,7 +89,7 @@ func _test_edge_alignment_and_signed_direction() -> void:
 				== _seed_one_circulation.edge_flow[edge_index],
 			"flow query must preserve index alignment")
 		var expected := ArcaneCirculationGenerator.expected_flow_for_edge(
-			_seed_one_web, edge, 1
+			_seed_one_web, edge
 		)
 		_expect(bool(expected.get("valid", false)),
 			"every Edge must resolve a left and right Domain")
@@ -87,7 +98,7 @@ func _test_edge_alignment_and_signed_direction() -> void:
 					<= ArcaneCirculationValidator.FLOW_VALUE_EPSILON,
 				"signed flow must equal left potential minus right potential for node_a -> node_b")
 	_expect(ArcaneCirculationValidator.validate(
-		_seed_one_web, _seed_one_circulation, 1
+		_seed_one_web, _seed_one_circulation
 	).is_empty(), "generated circulation should pass its Validator")
 
 
@@ -122,7 +133,7 @@ func _test_boundary_exit_flow() -> void:
 
 func _test_no_structural_proxy_and_web_preservation() -> void:
 	var before := _web_geometry_signature(_seed_one_web)
-	var repeated := ArcaneCirculationGenerator.generate(_seed_one_web, 1)
+	var repeated := ArcaneCirculationGenerator.generate(_seed_one_web)
 	_expect(repeated != null, "Web preservation fixture should generate")
 	_expect(before == _web_geometry_signature(_seed_one_web),
 		"Arcane Circulation must not change Web geometry, IDs, node count, or edge count")
@@ -132,7 +143,7 @@ func _test_no_structural_proxy_and_web_preservation() -> void:
 		"ArcaneWebEdge must not regain structural importance")
 	for edge in _seed_one_web.edges:
 		var expected := ArcaneCirculationGenerator.expected_flow_for_edge(
-			_seed_one_web, edge, 1
+			_seed_one_web, edge
 		)
 		_expect(absf(_seed_one_circulation.edge_flow[edge.id] - float(expected.flow))
 				<= ArcaneCirculationValidator.FLOW_VALUE_EPSILON,
@@ -148,8 +159,8 @@ func _test_resolution_independence() -> void:
 	var dense_web := ArcaneWebGenerator.generate(
 		dense.seed, dense.world_width, dense.world_height
 	)
-	var coarse_flow := ArcaneCirculationGenerator.generate(coarse_web, coarse.seed)
-	var dense_flow := ArcaneCirculationGenerator.generate(dense_web, dense.seed)
+	var coarse_flow := ArcaneCirculationGenerator.generate(coarse_web)
+	var dense_flow := ArcaneCirculationGenerator.generate(dense_web)
 	_expect(coarse_web != null and dense_web != null
 			and coarse_flow != null and dense_flow != null,
 		"resolution independence fixtures should generate")
@@ -187,14 +198,14 @@ func _test_artificial_left_right_direction() -> void:
 	if bool(sides.get("valid", false)):
 		_expect(sides.left_domain_id == 0 and sides.right_domain_id == 1,
 			"for downward node_a -> node_b, the western Domain must be left")
-	var circulation := ArcaneCirculationGenerator.generate(web, 99)
+	var circulation := ArcaneCirculationGenerator.generate(web)
 	_expect(circulation != null, "artificial signed-direction circulation should generate")
 	if circulation != null:
 		var left_potential := ArcaneCirculationGenerator.circulation_potential_for(
-			web.domains[0], 99
+			web, web.domains[0]
 		)
 		var right_potential := ArcaneCirculationGenerator.circulation_potential_for(
-			web.domains[1], 99
+			web, web.domains[1]
 		)
 		_expect(absf(circulation.edge_flow[0] - (left_potential - right_potential))
 				<= ArcaneCirculationValidator.FLOW_VALUE_EPSILON,
