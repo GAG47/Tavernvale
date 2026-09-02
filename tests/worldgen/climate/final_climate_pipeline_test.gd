@@ -23,6 +23,7 @@ func _run_all() -> void:
 	_test_arcane_field_follows_v1_and_preserves_it()
 	_test_arcane_web_follows_arcane_field_and_preserves_prior_layers()
 	_test_arcane_circulation_follows_web_and_preserves_prior_layers()
+	_test_arcane_environment_follows_circulation_and_preserves_prior_layers()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -156,6 +157,17 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if arcane_circulation == null:
 		return {}
+	var v22_hash_before_environment := _v22_pipeline_hash(
+		v2_hash_before_web, arcane_field, arcane_web, arcane_circulation
+	)
+	var arcane_environment := ArcaneEnvironmentGenerator.generate(
+		graph, arcane_field, arcane_web, arcane_circulation
+	)
+	if arcane_environment == null:
+		return {}
+	var arcane_environment_diagnostics := (
+		ArcaneEnvironmentGenerator.last_generation_diagnostics()
+	)
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -179,9 +191,12 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_field": arcane_field,
 		"arcane_web": arcane_web,
 		"arcane_circulation": arcane_circulation,
+		"arcane_environment": arcane_environment,
+		"arcane_environment_diagnostics": arcane_environment_diagnostics,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
 		"v21_hash_before_circulation": v21_hash_before_circulation,
+		"v22_hash_before_environment": v22_hash_before_environment,
 	}
 
 
@@ -457,6 +472,39 @@ func _test_arcane_circulation_follows_web_and_preserves_prior_layers() -> void:
 	)
 
 
+func _test_arcane_environment_follows_circulation_and_preserves_prior_layers() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
+	var diagnostics: Dictionary = _pipeline.arcane_environment_diagnostics
+	_expect(
+		environment != null
+				and ArcaneEnvironmentValidator.validate(graph, environment).is_empty(),
+		"Arcane Environment should validate after Arcane Circulation in the complete pipeline"
+	)
+	_expect(
+		environment != null
+				and environment.mana_concentration.size() == graph.cell_count()
+				and environment.mana_flowability.size() == graph.cell_count()
+				and environment.mana_stability.size() == graph.cell_count(),
+		"Arcane Environment formal arrays should remain strictly Cell-aligned"
+	)
+	_expect(
+		ArcaneEnvironmentValidator.validate_solver_report(
+			diagnostics.get("solver", {})
+		).is_empty(),
+		"complete-pipeline Arcane Transport Solver must explicitly report convergence"
+	)
+	_expect(
+		_pipeline.v22_hash_before_environment == _v22_pipeline_hash(
+			_pipeline.v2_hash_before_web,
+			_pipeline.arcane_field,
+			_pipeline.arcane_web,
+			_pipeline.arcane_circulation
+		),
+		"Arcane Environment generation must preserve v2.2 Circulation, v2.1 Web, v2.0 Field, and v1"
+	)
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -486,6 +534,23 @@ func _test_determinism() -> void:
 	_expect(first_hydrology.river_network_id == second_hydrology.river_network_id, "River Networks should be deterministic")
 	_expect(first_hydrology.river_order == second_hydrology.river_order, "River Order should be deterministic")
 	_expect(first_hydrology.watershed_id == second_hydrology.watershed_id, "Watersheds should be deterministic")
+	var repeated_environment := ArcaneEnvironmentGenerator.generate(
+		graph,
+		_pipeline.arcane_field,
+		_pipeline.arcane_web,
+		_pipeline.arcane_circulation
+	)
+	_expect(repeated_environment != null, "repeat Arcane Environment pipeline should generate")
+	if repeated_environment != null:
+		_expect(_pipeline.arcane_environment.mana_concentration
+				== repeated_environment.mana_concentration,
+			"Final Mana Concentration should be deterministic")
+		_expect(_pipeline.arcane_environment.mana_flowability
+				== repeated_environment.mana_flowability,
+			"Final Mana Flowability should be deterministic")
+		_expect(_pipeline.arcane_environment.mana_stability
+				== repeated_environment.mana_stability,
+			"Final Mana Stability should be deterministic")
 	var repeated_resources := ResourcePotentialGenerator.generate(
 		graph,
 		conditioned,
@@ -594,6 +659,18 @@ func _v21_pipeline_hash(
 	return hash(signature)
 
 
+func _v22_pipeline_hash(
+		v2_hash_before_web: int,
+		arcane_field: ArcaneFieldLayer,
+		arcane_web: ArcaneWebLayer,
+		arcane_circulation: ArcaneCirculationLayer
+) -> int:
+	return hash([
+		_v21_pipeline_hash(v2_hash_before_web, arcane_field, arcane_web),
+		arcane_circulation.edge_flow,
+	])
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -601,7 +678,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 11 test groups passed")
+		print("Final Climate Pipeline: all 12 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

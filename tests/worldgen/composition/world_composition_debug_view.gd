@@ -25,6 +25,7 @@ var resource_potential: ResourcePotentialLayer
 var arcane_field: ArcaneFieldLayer
 var arcane_web: ArcaneWebLayer
 var arcane_circulation: ArcaneCirculationLayer
+var arcane_environment: ArcaneEnvironmentLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -36,6 +37,7 @@ var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
 var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
+var arcane_environment_settings: ArcaneEnvironmentSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -55,6 +57,7 @@ var _soil_generation_ms := 0
 var _resource_generation_ms := 0
 var _arcane_generation_ms := 0
 var _arcane_circulation_generation_ms := 0
+var _arcane_environment_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -70,6 +73,7 @@ var _ecology_statistics := {}
 var _soil_statistics := {}
 var _resource_statistics := {}
 var _arcane_statistics := {}
+var _arcane_environment_diagnostics := {}
 var _show_arcane_domains := false
 
 const _MARGIN := 24.0
@@ -128,6 +132,9 @@ enum ViewMode {
 	BACKGROUND_STABILITY,
 	ARCANE_WEB,
 	ARCANE_CIRCULATION,
+	MANA_CONCENTRATION,
+	MANA_FLOWABILITY,
+	MANA_STABILITY,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -182,6 +189,9 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.BACKGROUND_STABILITY,
 		ViewMode.ARCANE_WEB,
 		ViewMode.ARCANE_CIRCULATION,
+		ViewMode.MANA_CONCENTRATION,
+		ViewMode.MANA_FLOWABILITY,
+		ViewMode.MANA_STABILITY,
 	],
 ]
 
@@ -258,6 +268,7 @@ func _draw() -> void:
 			or arcane_field == null \
 			or arcane_web == null \
 			or arcane_circulation == null \
+			or arcane_environment == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -490,6 +501,12 @@ func _cell_color(cell_id: int) -> Color:
 			return _background_mana_color(arcane_field.background_mana[cell_id])
 		ViewMode.BACKGROUND_STABILITY:
 			return _background_stability_color(arcane_field.background_stability[cell_id])
+		ViewMode.MANA_CONCENTRATION:
+			return _background_mana_color(arcane_environment.mana_concentration[cell_id])
+		ViewMode.MANA_FLOWABILITY:
+			return _mana_flowability_color(arcane_environment.mana_flowability[cell_id])
+		ViewMode.MANA_STABILITY:
+			return _mana_stability_color(arcane_environment.mana_stability[cell_id])
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		ViewMode.PRECIPITATION_DELTA:
@@ -534,6 +551,28 @@ func _background_stability_color(value: float) -> Color:
 		return Color(0.26, 0.05, 0.12).lerp(Color(0.60, 0.34, 0.24), normalized * 2.0)
 	return Color(0.60, 0.34, 0.24).lerp(
 		Color(0.54, 0.94, 0.72), (normalized - 0.5) * 2.0
+	)
+
+
+func _mana_flowability_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.5:
+		return Color(0.025, 0.035, 0.09).lerp(
+			Color(0.08, 0.42, 0.62), normalized * 2.0
+		)
+	return Color(0.08, 0.42, 0.62).lerp(
+		Color(0.70, 0.98, 1.0), (normalized - 0.5) * 2.0
+	)
+
+
+func _mana_stability_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.5:
+		return Color(0.55, 0.02, 0.12).lerp(
+			Color(0.92, 0.54, 0.18), normalized * 2.0
+		)
+	return Color(0.92, 0.54, 0.18).lerp(
+		Color(0.58, 0.96, 0.76), (normalized - 0.5) * 2.0
 	)
 
 
@@ -870,6 +909,7 @@ func _regenerate_composition() -> void:
 		arcane_field = null
 		arcane_web = null
 		arcane_circulation = null
+		arcane_environment = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -987,6 +1027,20 @@ func _regenerate_composition() -> void:
 		arcane_web
 	)
 	_arcane_circulation_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	arcane_environment_settings = ArcaneEnvironmentSettings.new()
+	arcane_environment = null if arcane_circulation == null else ArcaneEnvironmentGenerator.generate(
+		graph,
+		arcane_field,
+		arcane_web,
+		arcane_circulation,
+		arcane_environment_settings
+	)
+	_arcane_environment_generation_ms = Time.get_ticks_msec() - started
+	_arcane_environment_diagnostics = (
+		ArcaneEnvironmentGenerator.last_generation_diagnostics()
+		if arcane_environment != null else {}
+	)
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -1053,13 +1107,30 @@ func _draw_information() -> void:
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_view():
-			lines.append("Arcane Field")
+			lines.append("Arcane Environment")
 			lines.append(
 				"Background Mana: %.4f" % arcane_field.background_mana[selected_cell_id]
 			)
 			lines.append(
+				"Mana Concentration: %.4f"
+				% arcane_environment.mana_concentration[selected_cell_id]
+			)
+			lines.append(
+				"Concentration Delta: %+.4f"
+				% (arcane_environment.mana_concentration[selected_cell_id]
+						- arcane_field.background_mana[selected_cell_id])
+			)
+			lines.append(
+				"Mana Flowability: %.4f"
+				% arcane_environment.mana_flowability[selected_cell_id]
+			)
+			lines.append(
 				"Background Stability: %.4f"
 				% arcane_field.background_stability[selected_cell_id]
+			)
+			lines.append(
+				"Mana Stability: %.4f"
+				% arcane_environment.mana_stability[selected_cell_id]
 			)
 		elif _is_soil_view():
 			lines.append(
@@ -1305,6 +1376,12 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_arcane_circulation_statistics(
 				lines, _arcane_statistics.get("circulation", {})
 			)
+		ViewMode.MANA_CONCENTRATION:
+			_append_mana_concentration_statistics(lines)
+		ViewMode.MANA_FLOWABILITY:
+			_append_mana_flowability_statistics(lines)
+		ViewMode.MANA_STABILITY:
+			_append_mana_stability_statistics(lines)
 		ViewMode.RAW_COMPOSITION:
 			lines.append(
 				"Min %d | Max %d | Mean %.2f"
@@ -1852,7 +1929,8 @@ func _calculate_resource_statistics() -> Dictionary:
 
 
 func _calculate_arcane_statistics() -> Dictionary:
-	if arcane_field == null or arcane_web == null or arcane_circulation == null:
+	if arcane_field == null or arcane_web == null or arcane_circulation == null \
+			or arcane_environment == null:
 		return {}
 	return {
 		"mana": _arcane_field_statistics(arcane_field.background_mana),
@@ -1960,6 +2038,84 @@ func _append_arcane_circulation_statistics(
 	])
 	lines.append("Generation: %d ms" % _arcane_circulation_generation_ms)
 	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
+
+
+func _append_mana_concentration_statistics(lines: PackedStringArray) -> void:
+	var diagnostics := _arcane_environment_diagnostics
+	if diagnostics.is_empty():
+		lines.append("No Arcane Environment data")
+		return
+	var background: Dictionary = diagnostics.background_mana
+	var concentration: Dictionary = diagnostics.mana_concentration
+	var delta: Dictionary = diagnostics.concentration_delta
+	var absolute_delta: Dictionary = diagnostics.absolute_concentration_delta
+	lines.append("Background Mana Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
+	lines.append("Final Concentration Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		concentration.min, concentration.mean, concentration.max
+	])
+	lines.append("Delta Min/Mean/Max:")
+	lines.append("  %+.4f / %+.6f / %+.4f" % [delta.min, delta.mean, delta.max])
+	lines.append("Absolute Delta Mean/P50/P90/Max:")
+	lines.append("  %.5f / %.5f / %.5f / %.5f" % [
+		absolute_delta.mean, absolute_delta.p50, absolute_delta.p90, absolute_delta.max
+	])
+	lines.append("Enriched > +0.05: %d (%.3f%%)" % [
+		diagnostics.enriched_cells.count, diagnostics.enriched_cells.percentage
+	])
+	lines.append("Depleted < -0.05: %d (%.3f%%)" % [
+		diagnostics.depleted_cells.count, diagnostics.depleted_cells.percentage
+	])
+	lines.append("Generation: %d ms" % _arcane_environment_generation_ms)
+
+
+func _append_mana_flowability_statistics(lines: PackedStringArray) -> void:
+	var diagnostics := _arcane_environment_diagnostics
+	if diagnostics.is_empty():
+		lines.append("No Arcane Environment data")
+		return
+	var flowability: Dictionary = diagnostics.mana_flowability
+	lines.append("Flowability Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		flowability.min, flowability.mean, flowability.max
+	])
+	lines.append("Leyline-influenced: %d (%.2f%%)" % [
+		diagnostics.leyline_influenced_cells.count,
+		diagnostics.leyline_influenced_cells.percentage,
+	])
+	lines.append("Radius: %.2f world units" % diagnostics.parameters.leyline_influence_radius)
+	lines.append("Ambient: %.2f" % diagnostics.parameters.ambient_flowability)
+	lines.append("Web Projection: %.2f ms" % diagnostics.performance.web_projection_ms)
+	lines.append("Drift Projection: %.2f ms" % diagnostics.performance.drift_projection_ms)
+
+
+func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
+	var diagnostics := _arcane_environment_diagnostics
+	if diagnostics.is_empty():
+		lines.append("No Arcane Environment data")
+		return
+	var background: Dictionary = diagnostics.background_stability
+	var stability: Dictionary = diagnostics.mana_stability
+	var stress: Dictionary = diagnostics.arcane_stress
+	var solver: Dictionary = diagnostics.solver
+	lines.append("Background Stability Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
+	lines.append("Final Mana Stability Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [stability.min, stability.mean, stability.max])
+	lines.append("Low Stability < 0.25: %d (%.3f%%)" % [
+		diagnostics.low_mana_stability.count, diagnostics.low_mana_stability.percentage
+	])
+	lines.append("Arcane Stress Mean/P90/Max:")
+	lines.append("  %.5f / %.5f / %.5f" % [stress.mean, stress.p90, stress.max])
+	lines.append("Solver dt: %.6f" % solver.dt)
+	lines.append("Iterations: %d | Delta: %.8f" % [solver.iterations, solver.final_max_delta])
+	lines.append("Converged: %s" % str(solver.converged))
+	lines.append("Solver: %.2f ms | Stability: %.2f ms" % [
+		diagnostics.performance.transport_solver_ms,
+		diagnostics.performance.stability_synthesis_ms,
+	])
+	lines.append("Total v2.3: %.2f ms" % diagnostics.performance.total_ms)
 
 
 func _resource_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
@@ -2235,6 +2391,12 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Arcane Web"
 		ViewMode.ARCANE_CIRCULATION:
 			return "Arcane Circulation"
+		ViewMode.MANA_CONCENTRATION:
+			return "Mana Concentration"
+		ViewMode.MANA_FLOWABILITY:
+			return "Mana Flowability"
+		ViewMode.MANA_STABILITY:
+			return "Mana Stability"
 		_:
 			return "Unknown"
 
@@ -2272,6 +2434,9 @@ func _is_resource_view() -> bool:
 func _is_arcane_view() -> bool:
 	return view_mode == ViewMode.BACKGROUND_MANA \
 			or view_mode == ViewMode.BACKGROUND_STABILITY \
+			or view_mode == ViewMode.MANA_CONCENTRATION \
+			or view_mode == ViewMode.MANA_FLOWABILITY \
+			or view_mode == ViewMode.MANA_STABILITY \
 			or _is_arcane_network_view()
 
 
