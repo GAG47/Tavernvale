@@ -2,7 +2,7 @@ class_name ArcaneWebSettings
 extends RefCounted
 
 var web_generation_margin: float = 300.0
-var web_nucleus_min_separation: float = 170.0
+var web_nucleus_min_separation: float = 210.0
 
 
 func validate() -> PackedStringArray:

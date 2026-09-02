@@ -72,6 +72,8 @@ var _show_arcane_domains := false
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
+const _ARCANE_EDGE_IMPORTANCE_REFERENCE := 0.20
+const _ARCANE_NODE_IMPORTANCE_REFERENCE := 0.22
 
 enum DebugPage {
 	WORLD,
@@ -291,8 +293,12 @@ func _draw_arcane_web() -> void:
 			)
 	for edge in arcane_web.edges:
 		var importance := clampf(edge.structural_importance, 0.0, 1.0)
-		var color := Color(0.20, 0.48, 0.72).lerp(Color(0.72, 0.96, 1.0), sqrt(importance))
-		var width := 1.1 + 5.0 * sqrt(importance)
+		var emphasis := smoothstep(0.0, _ARCANE_EDGE_IMPORTANCE_REFERENCE, importance)
+		var brightness := pow(emphasis, 0.85)
+		var color := Color(0.07, 0.20, 0.36, 0.42).lerp(
+			Color(0.76, 0.98, 1.0, 1.0), brightness
+		)
+		var width := 0.75 + 7.25 * pow(emphasis, 1.35)
 		draw_line(
 			_to_screen(arcane_web.nodes[edge.node_a_id].world_position),
 			_to_screen(arcane_web.nodes[edge.node_b_id].world_position),
@@ -302,10 +308,12 @@ func _draw_arcane_web() -> void:
 		)
 	for node in arcane_web.nodes:
 		var importance := clampf(node.structural_importance, 0.0, 1.0)
-		var radius := 2.5 + 9.0 * sqrt(importance)
-		var color := Color(1.0, 0.54, 0.24) \
+		var emphasis := smoothstep(0.0, _ARCANE_NODE_IMPORTANCE_REFERENCE, importance)
+		var radius := 2.0 + 10.5 * pow(emphasis, 1.35)
+		var base_color := Color(1.0, 0.54, 0.24) \
 				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
-				else Color(0.76, 0.98, 1.0)
+				else Color(0.42, 0.76, 0.84)
+		var color := base_color.lerp(Color(0.90, 1.0, 1.0), pow(emphasis, 0.70))
 		draw_circle(_to_screen(node.world_position), radius, color)
 
 

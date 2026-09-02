@@ -26,14 +26,19 @@ func _test_settings_seed_domain_and_generated_validity() -> void:
 		"Arcane Web must use the stable AWEB seed salt")
 	_expect(ArcaneWebGenerator.BRIDSON_CANDIDATES == 30,
 		"Bridson sampling must use fixed k=30")
-	_expect(ArcaneWebGenerator.WEIGHT_RADIUS_MIN_FACTOR == 0.15
-			and ArcaneWebGenerator.WEIGHT_RADIUS_MAX_FACTOR == 1.00,
-		"Power weight radius factors must remain fixed at 0.15..1.00")
+	_expect(ArcaneWebGenerator.LARGE_DOMAIN_PROBABILITY == 0.15,
+		"Large Domain probability must remain fixed at 0.15")
+	_expect(ArcaneWebGenerator.NORMAL_WEIGHT_RADIUS_MIN_FACTOR == 0.25
+			and ArcaneWebGenerator.NORMAL_WEIGHT_RADIUS_MAX_FACTOR == 0.70,
+		"normal Power weight radius factors must remain fixed at 0.25..0.70")
+	_expect(ArcaneWebGenerator.LARGE_WEIGHT_RADIUS_MIN_FACTOR == 0.90
+			and ArcaneWebGenerator.LARGE_WEIGHT_RADIUS_MAX_FACTOR == 1.20,
+		"Large Power weight radius factors must remain fixed at 0.90..1.20")
 	var settings := ArcaneWebSettings.new()
 	_expect(settings.web_generation_margin == 300.0,
 		"default generation margin must be 300 world units")
-	_expect(settings.web_nucleus_min_separation == 170.0,
-		"default nucleus separation must be 170 world units")
+	_expect(settings.web_nucleus_min_separation == 210.0,
+		"default nucleus separation must be 210 world units")
 	_expect(settings.validate().is_empty(), "default Arcane Web settings should validate")
 	settings.web_generation_margin = NAN
 	settings.web_nucleus_min_separation = 0.0
@@ -92,16 +97,21 @@ func _test_poisson_separation() -> void:
 			_expect(
 				nuclei[first_index].position.distance_to(nuclei[second_index].position)
 						>= settings.web_nucleus_min_separation - 0.0001,
-				"all generated nuclei must satisfy the 170-unit Poisson separation"
+				"all generated nuclei must satisfy the 210-unit Poisson separation"
 			)
 		if first_index > 0:
 			var previous: Vector2 = nuclei[first_index - 1].position
 			var current: Vector2 = nuclei[first_index].position
 			_expect(previous.x < current.x or (previous.x == current.x and previous.y <= current.y),
 				"nuclei must use stable x/y ordering")
-		var radius := sqrt(float(nuclei[first_index].weight))
-		_expect(radius >= 170.0 * 0.15 and radius < 170.0 * 1.00,
-			"nucleus weight radius must use the fixed deterministic range")
+		var radius_factor := sqrt(float(nuclei[first_index].weight)) \
+				/ settings.web_nucleus_min_separation
+		if bool(nuclei[first_index].is_large):
+			_expect(radius_factor >= 0.90 and radius_factor < 1.20,
+				"Large nucleus radius factor must use the fixed 0.90..1.20 range")
+		else:
+			_expect(radius_factor >= 0.25 and radius_factor < 0.70,
+				"normal nucleus radius factor must use the fixed 0.25..0.70 range")
 
 
 func _test_power_diagram_correctness_and_weight_effect() -> void:
@@ -219,6 +229,23 @@ func _print_seed_one_statistics() -> void:
 	if layer == null:
 		return
 	var stats := ArcaneWebValidator.statistics(layer)
+	var settings := ArcaneWebSettings.new()
+	var nuclei := ArcaneWebGenerator.sample_weighted_nuclei(
+		1,
+		Rect2(
+			Vector2(-settings.web_generation_margin, -settings.web_generation_margin),
+			Vector2(
+				2000.0 + settings.web_generation_margin * 2.0,
+				1000.0 + settings.web_generation_margin * 2.0
+			)
+		),
+		settings.web_nucleus_min_separation
+	)
+	var large_nucleus_count := 0
+	for nucleus in nuclei:
+		if bool(nucleus.is_large):
+			large_nucleus_count += 1
+	stats["large_nucleus_count"] = large_nucleus_count
 	print("Arcane Web Seed 1 statistics: ", stats)
 
 

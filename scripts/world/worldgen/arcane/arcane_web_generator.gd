@@ -3,8 +3,11 @@ extends RefCounted
 
 const ARCANE_WEB_SEED_SALT := 0x41574542 # "AWEB"
 const BRIDSON_CANDIDATES := 30
-const WEIGHT_RADIUS_MIN_FACTOR := 0.15
-const WEIGHT_RADIUS_MAX_FACTOR := 1.00
+const LARGE_DOMAIN_PROBABILITY := 0.15
+const NORMAL_WEIGHT_RADIUS_MIN_FACTOR := 0.25
+const NORMAL_WEIGHT_RADIUS_MAX_FACTOR := 0.70
+const LARGE_WEIGHT_RADIUS_MIN_FACTOR := 0.90
+const LARGE_WEIGHT_RADIUS_MAX_FACTOR := 1.20
 const _TWO_PI := PI * 2.0
 const _LINE_EPSILON := 1.0e-10
 
@@ -115,10 +118,18 @@ static func sample_weighted_nuclei(
 	sorted_positions.sort_custom(_position_less)
 	var result: Array[Dictionary] = []
 	for position in sorted_positions:
-		var radius := minimum_separation * lerpf(
-			WEIGHT_RADIUS_MIN_FACTOR, WEIGHT_RADIUS_MAX_FACTOR, rng.next_float()
+		var is_large := rng.next_float() < LARGE_DOMAIN_PROBABILITY
+		var radius_factor := lerpf(
+			LARGE_WEIGHT_RADIUS_MIN_FACTOR if is_large else NORMAL_WEIGHT_RADIUS_MIN_FACTOR,
+			LARGE_WEIGHT_RADIUS_MAX_FACTOR if is_large else NORMAL_WEIGHT_RADIUS_MAX_FACTOR,
+			rng.next_float()
 		)
-		result.append({"position": position, "weight": radius * radius})
+		var radius := minimum_separation * radius_factor
+		result.append({
+			"position": position,
+			"weight": radius * radius,
+			"is_large": is_large,
+		})
 	return result
 
 
