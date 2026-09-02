@@ -24,6 +24,7 @@ var soil: SoilLayer
 var resource_potential: ResourcePotentialLayer
 var arcane_field: ArcaneFieldLayer
 var arcane_web: ArcaneWebLayer
+var arcane_circulation: ArcaneCirculationLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -53,6 +54,7 @@ var _ecology_generation_ms := 0
 var _soil_generation_ms := 0
 var _resource_generation_ms := 0
 var _arcane_generation_ms := 0
+var _arcane_circulation_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -125,6 +127,7 @@ enum ViewMode {
 	BACKGROUND_MANA,
 	BACKGROUND_STABILITY,
 	ARCANE_WEB,
+	ARCANE_CIRCULATION,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -178,6 +181,7 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.BACKGROUND_MANA,
 		ViewMode.BACKGROUND_STABILITY,
 		ViewMode.ARCANE_WEB,
+		ViewMode.ARCANE_CIRCULATION,
 	],
 ]
 
@@ -204,7 +208,7 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if event.keycode == KEY_TAB:
 			_change_debug_page(-1 if event.shift_pressed else 1)
-		elif event.keycode == KEY_D and view_mode == ViewMode.ARCANE_WEB:
+		elif event.keycode == KEY_D and _is_arcane_network_view():
 			_show_arcane_domains = not _show_arcane_domains
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_current_page_view(int(event.keycode - KEY_1))
@@ -253,17 +257,20 @@ func _draw() -> void:
 			or resource_potential == null \
 			or arcane_field == null \
 			or arcane_web == null \
+			or arcane_circulation == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
 	if view_mode == ViewMode.ARCANE_WEB:
 		_draw_arcane_web()
+	elif view_mode == ViewMode.ARCANE_CIRCULATION:
+		_draw_arcane_circulation()
 	else:
 		for cell_id in graph.cell_count():
 			var color := _cell_color(cell_id)
 			_draw_cell_triangle_fan(cell_id, color)
-	if selected_cell_id >= 0 and view_mode != ViewMode.ARCANE_WEB:
+	if selected_cell_id >= 0 and not _is_arcane_network_view():
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
 			Color(1.0, 0.72, 0.12),
@@ -275,20 +282,7 @@ func _draw() -> void:
 
 
 func _draw_arcane_web() -> void:
-	var map_rect := Rect2(
-		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
-	)
-	draw_rect(map_rect, Color(0.012, 0.016, 0.035))
-	if _show_arcane_domains:
-		for domain in arcane_web.domains:
-			var screen_polygon := PackedVector2Array()
-			for point in domain.polygon:
-				screen_polygon.append(_to_screen(point))
-			var hue := fmod(float(domain.id) * 0.61803398875, 1.0)
-			draw_colored_polygon(screen_polygon, Color.from_hsv(hue, 0.30, 0.22, 0.24))
-			draw_polyline(
-				_closed_screen_polygon(domain.polygon), Color(0.28, 0.34, 0.48, 0.45), 0.75, true
-			)
+	_draw_arcane_domain_background()
 	for edge in arcane_web.edges:
 		draw_line(
 			_to_screen(arcane_web.nodes[edge.node_a_id].world_position),
@@ -303,6 +297,69 @@ func _draw_arcane_web() -> void:
 				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
 				else Color(0.76, 0.98, 1.0)
 		draw_circle(_to_screen(node.world_position), radius, color)
+
+
+func _draw_arcane_circulation() -> void:
+	_draw_arcane_domain_background()
+	for edge in arcane_web.edges:
+		var flow := arcane_circulation.edge_flow[edge.id]
+		var strength := clampf(absf(flow), 0.0, 1.0)
+		var color := Color(0.18, 0.42, 0.62, 0.45).lerp(
+			Color(0.62, 0.96, 1.0, 1.0), strength
+		)
+		var start := _to_screen(arcane_web.nodes[edge.node_a_id].world_position)
+		var end := _to_screen(arcane_web.nodes[edge.node_b_id].world_position)
+		draw_line(start, end, color, lerpf(0.75, 6.0, strength), true)
+		_draw_arcane_flow_arrow(start, end, flow, strength, color)
+	for node in arcane_web.nodes:
+		var radius := 3.0 if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT else 3.5
+		var color := Color(1.0, 0.54, 0.24) \
+				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
+				else Color(0.76, 0.98, 1.0)
+		draw_circle(_to_screen(node.world_position), radius, color)
+
+
+func _draw_arcane_flow_arrow(
+		start: Vector2,
+		end: Vector2,
+		flow: float,
+		strength: float,
+		color: Color
+) -> void:
+	if absf(flow) <= ArcaneCirculationValidator.NON_ZERO_FLOW_EPSILON:
+		return
+	var direction := (end - start).normalized()
+	if flow < 0.0:
+		direction = -direction
+	var normal := Vector2(-direction.y, direction.x)
+	var center := (start + end) * 0.5
+	var half_length := lerpf(3.0, 5.5, strength)
+	var half_width := lerpf(2.0, 3.5, strength)
+	var tip := center + direction * half_length
+	var base := center - direction * half_length
+	draw_polyline(
+		PackedVector2Array([base + normal * half_width, tip, base - normal * half_width]),
+		color,
+		lerpf(1.0, 2.0, strength),
+		true
+	)
+
+
+func _draw_arcane_domain_background() -> void:
+	var map_rect := Rect2(
+		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
+	)
+	draw_rect(map_rect, Color(0.012, 0.016, 0.035))
+	if _show_arcane_domains:
+		for domain in arcane_web.domains:
+			var screen_polygon := PackedVector2Array()
+			for point in domain.polygon:
+				screen_polygon.append(_to_screen(point))
+			var hue := fmod(float(domain.id) * 0.61803398875, 1.0)
+			draw_colored_polygon(screen_polygon, Color.from_hsv(hue, 0.30, 0.22, 0.24))
+			draw_polyline(
+				_closed_screen_polygon(domain.polygon), Color(0.28, 0.34, 0.48, 0.45), 0.75, true
+			)
 
 
 func _draw_cell_triangle_fan(cell_id: int, color: Color) -> void:
@@ -812,6 +869,7 @@ func _regenerate_composition() -> void:
 		resource_potential = null
 		arcane_field = null
 		arcane_web = null
+		arcane_circulation = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -924,6 +982,11 @@ func _regenerate_composition() -> void:
 	arcane_web = null if arcane_field == null else ArcaneWebGenerator.generate(
 		seed, graph.config.world_width, graph.config.world_height, arcane_web_settings
 	)
+	started = Time.get_ticks_msec()
+	arcane_circulation = null if arcane_web == null else ArcaneCirculationGenerator.generate(
+		arcane_web, seed
+	)
+	_arcane_circulation_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -965,7 +1028,7 @@ func _draw_information() -> void:
 	lines.append("B          Hold Biome Reference")
 	lines.append("T          Template")
 	lines.append("R          Seed +1")
-	if view_mode == ViewMode.ARCANE_WEB:
+	if _is_arcane_network_view():
 		lines.append("D          Toggle Domains")
 	lines.append("Click      Inspect Cell")
 	lines.append("")
@@ -1238,6 +1301,10 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_arcane_statistics(lines, _arcane_statistics.get("stability", {}))
 		ViewMode.ARCANE_WEB:
 			_append_arcane_web_statistics(lines, _arcane_statistics.get("web", {}))
+		ViewMode.ARCANE_CIRCULATION:
+			_append_arcane_circulation_statistics(
+				lines, _arcane_statistics.get("circulation", {})
+			)
 		ViewMode.RAW_COMPOSITION:
 			lines.append(
 				"Min %d | Max %d | Mean %.2f"
@@ -1785,12 +1852,13 @@ func _calculate_resource_statistics() -> Dictionary:
 
 
 func _calculate_arcane_statistics() -> Dictionary:
-	if arcane_field == null or arcane_web == null:
+	if arcane_field == null or arcane_web == null or arcane_circulation == null:
 		return {}
 	return {
 		"mana": _arcane_field_statistics(arcane_field.background_mana),
 		"stability": _arcane_field_statistics(arcane_field.background_stability),
 		"web": ArcaneWebValidator.statistics(arcane_web),
+		"circulation": ArcaneCirculationValidator.statistics(arcane_web, arcane_circulation),
 	}
 
 
@@ -1859,6 +1927,38 @@ func _append_arcane_web_statistics(lines: PackedStringArray, statistics: Diction
 	lines.append("Sampling: %.2f ms" % statistics.generation_time_ms)
 	lines.append("Power Diagram: %.2f ms" % statistics.power_diagram_time_ms)
 	lines.append("Total Arcane Web: %.2f ms" % statistics.total_time_ms)
+	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
+
+
+func _append_arcane_circulation_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Circulation data")
+		return
+	lines.append("Edges: %d | Non-zero: %d" % [
+		statistics.edge_count, statistics.non_zero_flow_edges
+	])
+	lines.append("Absolute Flow Min/Mean/Max:")
+	lines.append("  %.6f / %.6f / %.6f" % [
+		statistics.absolute_flow_min,
+		statistics.absolute_flow_mean,
+		statistics.absolute_flow_max,
+	])
+	lines.append("Signed Flow Min/Max:")
+	lines.append("  %.6f / %.6f" % [
+		statistics.signed_flow_min, statistics.signed_flow_max
+	])
+	lines.append("Junction Error Mean/Max:")
+	lines.append("  %.9f / %.9f" % [
+		statistics.junction_conservation_error_mean,
+		statistics.junction_conservation_error_max,
+	])
+	lines.append("Boundary Inflow/Outflow:")
+	lines.append("  %.6f / %.6f" % [
+		statistics.boundary_inflow, statistics.boundary_outflow
+	])
+	lines.append("Generation: %d ms" % _arcane_circulation_generation_ms)
 	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
 
 
@@ -2048,7 +2148,7 @@ func _select_current_page_view(view_index: int) -> void:
 	if view_index < 0 or view_index >= page_views.size():
 		return
 	view_mode = page_views[view_index]
-	if view_mode == ViewMode.ARCANE_WEB:
+	if _is_arcane_network_view():
 		selected_cell_id = -1
 
 
@@ -2133,6 +2233,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Background Stability"
 		ViewMode.ARCANE_WEB:
 			return "Arcane Web"
+		ViewMode.ARCANE_CIRCULATION:
+			return "Arcane Circulation"
 		_:
 			return "Unknown"
 
@@ -2170,11 +2272,16 @@ func _is_resource_view() -> bool:
 func _is_arcane_view() -> bool:
 	return view_mode == ViewMode.BACKGROUND_MANA \
 			or view_mode == ViewMode.BACKGROUND_STABILITY \
-			or view_mode == ViewMode.ARCANE_WEB
+			or _is_arcane_network_view()
+
+
+func _is_arcane_network_view() -> bool:
+	return view_mode == ViewMode.ARCANE_WEB \
+			or view_mode == ViewMode.ARCANE_CIRCULATION
 
 
 func _select_cell_at(world_position: Vector2) -> void:
-	if view_mode == ViewMode.ARCANE_WEB:
+	if _is_arcane_network_view():
 		selected_cell_id = -1
 		queue_redraw()
 		return

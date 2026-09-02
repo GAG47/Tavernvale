@@ -22,6 +22,7 @@ func _run_all() -> void:
 	_test_resource_potential_uses_final_pipeline_outputs()
 	_test_arcane_field_follows_v1_and_preserves_it()
 	_test_arcane_web_follows_arcane_field_and_preserves_prior_layers()
+	_test_arcane_circulation_follows_web_and_preserves_prior_layers()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -147,6 +148,14 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if arcane_web == null:
 		return {}
+	var v21_hash_before_circulation := _v21_pipeline_hash(
+		v2_hash_before_web, arcane_field, arcane_web
+	)
+	var arcane_circulation := ArcaneCirculationGenerator.generate(
+		arcane_web, graph.config.seed
+	)
+	if arcane_circulation == null:
+		return {}
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -169,8 +178,10 @@ func _build_fixed_pipeline() -> Dictionary:
 		"resources": resources,
 		"arcane_field": arcane_field,
 		"arcane_web": arcane_web,
+		"arcane_circulation": arcane_circulation,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
+		"v21_hash_before_circulation": v21_hash_before_circulation,
 	}
 
 
@@ -423,6 +434,29 @@ func _test_arcane_web_follows_arcane_field_and_preserves_prior_layers() -> void:
 	]), "Arcane Web generation must preserve v2.0 Arcane Field and every v1 Layer")
 
 
+func _test_arcane_circulation_follows_web_and_preserves_prior_layers() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var arcane_web: ArcaneWebLayer = _pipeline.arcane_web
+	var circulation: ArcaneCirculationLayer = _pipeline.arcane_circulation
+	_expect(
+		circulation != null
+				and ArcaneCirculationValidator.validate(
+					arcane_web, circulation, graph.config.seed
+				).is_empty(),
+		"Arcane Circulation should validate after Arcane Web in the complete pipeline"
+	)
+	_expect(
+		circulation != null and circulation.edge_flow.size() == arcane_web.edges.size(),
+		"Arcane Circulation edge_flow should be index-aligned with Arcane Web edges"
+	)
+	_expect(
+		_pipeline.v21_hash_before_circulation == _v21_pipeline_hash(
+			_pipeline.v2_hash_before_web, _pipeline.arcane_field, arcane_web
+		),
+		"Arcane Circulation generation must preserve v2.1 Web, v2.0 Field, and every v1 Layer"
+	)
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -533,6 +567,33 @@ func _v1_pipeline_hash(pipeline: Dictionary) -> int:
 	])
 
 
+func _v21_pipeline_hash(
+		v2_hash_before_web: int,
+		arcane_field: ArcaneFieldLayer,
+		arcane_web: ArcaneWebLayer
+) -> int:
+	var signature: Array = [
+		v2_hash_before_web,
+		arcane_field.background_mana,
+		arcane_field.background_stability,
+		arcane_web.world_seed,
+		arcane_web.world_width,
+		arcane_web.world_height,
+		arcane_web.generated_nucleus_count,
+		arcane_web.settings.web_generation_margin,
+		arcane_web.settings.web_nucleus_min_separation,
+	]
+	for domain in arcane_web.domains:
+		signature.append([
+			domain.id, domain.nucleus_position, domain.power_weight, domain.polygon
+		])
+	for node in arcane_web.nodes:
+		signature.append([node.id, node.world_position, node.kind])
+	for edge in arcane_web.edges:
+		signature.append([edge.id, edge.node_a_id, edge.node_b_id, edge.length])
+	return hash(signature)
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -540,7 +601,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 10 test groups passed")
+		print("Final Climate Pipeline: all 11 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
