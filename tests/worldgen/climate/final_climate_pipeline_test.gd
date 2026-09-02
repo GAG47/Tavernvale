@@ -21,6 +21,7 @@ func _run_all() -> void:
 	_test_soil_uses_final_pipeline_outputs()
 	_test_resource_potential_uses_final_pipeline_outputs()
 	_test_arcane_field_follows_v1_and_preserves_it()
+	_test_arcane_web_follows_arcane_field_and_preserves_prior_layers()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -136,6 +137,16 @@ func _build_fixed_pipeline() -> Dictionary:
 	var arcane_field := ArcaneFieldGenerator.generate(graph, graph.config.seed)
 	if arcane_field == null:
 		return {}
+	var v2_hash_before_web := hash([
+		v1_hash_before_arcane,
+		arcane_field.background_mana,
+		arcane_field.background_stability,
+	])
+	var arcane_web := ArcaneWebGenerator.generate(
+		graph.config.seed, graph.config.world_width, graph.config.world_height
+	)
+	if arcane_web == null:
+		return {}
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -157,7 +168,9 @@ func _build_fixed_pipeline() -> Dictionary:
 		"resource_settings": resource_settings,
 		"resources": resources,
 		"arcane_field": arcane_field,
+		"arcane_web": arcane_web,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
+		"v2_hash_before_web": v2_hash_before_web,
 	}
 
 
@@ -392,6 +405,24 @@ func _test_arcane_field_follows_v1_and_preserves_it() -> void:
 		"Arcane Field generation must leave every existing v1 Layer unchanged")
 
 
+func _test_arcane_web_follows_arcane_field_and_preserves_prior_layers() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var arcane_web: ArcaneWebLayer = _pipeline.arcane_web
+	_expect(arcane_web != null and ArcaneWebValidator.validate(arcane_web).is_empty(),
+		"Arcane Web should validate after Arcane Field in the complete pipeline")
+	_expect(
+		arcane_web.world_seed == graph.config.seed
+				and arcane_web.world_width == graph.config.world_width
+				and arcane_web.world_height == graph.config.world_height,
+		"Arcane Web formal inputs should be World Seed and World Extent"
+	)
+	_expect(_pipeline.v2_hash_before_web == hash([
+		_v1_pipeline_hash(_pipeline),
+		_pipeline.arcane_field.background_mana,
+		_pipeline.arcane_field.background_stability,
+	]), "Arcane Web generation must preserve v2.0 Arcane Field and every v1 Layer")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -509,7 +540,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 9 test groups passed")
+		print("Final Climate Pipeline: all 10 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

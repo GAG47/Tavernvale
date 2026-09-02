@@ -23,6 +23,7 @@ var ecology: EcologyLayer
 var soil: SoilLayer
 var resource_potential: ResourcePotentialLayer
 var arcane_field: ArcaneFieldLayer
+var arcane_web: ArcaneWebLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -33,6 +34,7 @@ var ecology_settings: EcologySettings
 var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
 var arcane_settings: ArcaneFieldSettings
+var arcane_web_settings: ArcaneWebSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -66,6 +68,7 @@ var _ecology_statistics := {}
 var _soil_statistics := {}
 var _resource_statistics := {}
 var _arcane_statistics := {}
+var _show_arcane_domains := false
 
 const _MARGIN := 24.0
 const _INFO_WIDTH := 350.0
@@ -121,6 +124,7 @@ enum ViewMode {
 	COASTAL_AQUATIC_POTENTIAL,
 	BACKGROUND_MANA,
 	BACKGROUND_STABILITY,
+	ARCANE_WEB,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -173,6 +177,7 @@ const DEBUG_PAGE_VIEWS := [
 	[
 		ViewMode.BACKGROUND_MANA,
 		ViewMode.BACKGROUND_STABILITY,
+		ViewMode.ARCANE_WEB,
 	],
 ]
 
@@ -199,6 +204,8 @@ func _unhandled_input(event: InputEvent) -> void:
 			return
 		if event.keycode == KEY_TAB:
 			_change_debug_page(-1 if event.shift_pressed else 1)
+		elif event.keycode == KEY_D and view_mode == ViewMode.ARCANE_WEB:
+			_show_arcane_domains = not _show_arcane_domains
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_current_page_view(int(event.keycode - KEY_1))
 		elif event.keycode == KEY_T:
@@ -245,14 +252,18 @@ func _draw() -> void:
 			or soil == null \
 			or resource_potential == null \
 			or arcane_field == null \
+			or arcane_web == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
-	for cell_id in graph.cell_count():
-		var color := _cell_color(cell_id)
-		_draw_cell_triangle_fan(cell_id, color)
-	if selected_cell_id >= 0:
+	if view_mode == ViewMode.ARCANE_WEB:
+		_draw_arcane_web()
+	else:
+		for cell_id in graph.cell_count():
+			var color := _cell_color(cell_id)
+			_draw_cell_triangle_fan(cell_id, color)
+	if selected_cell_id >= 0 and view_mode != ViewMode.ARCANE_WEB:
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
 			Color(1.0, 0.72, 0.12),
@@ -261,6 +272,41 @@ func _draw() -> void:
 		)
 	_mask_outside_logical_world()
 	_draw_information()
+
+
+func _draw_arcane_web() -> void:
+	var map_rect := Rect2(
+		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
+	)
+	draw_rect(map_rect, Color(0.012, 0.016, 0.035))
+	if _show_arcane_domains:
+		for domain in arcane_web.domains:
+			var screen_polygon := PackedVector2Array()
+			for point in domain.polygon:
+				screen_polygon.append(_to_screen(point))
+			var hue := fmod(float(domain.id) * 0.61803398875, 1.0)
+			draw_colored_polygon(screen_polygon, Color.from_hsv(hue, 0.30, 0.22, 0.24))
+			draw_polyline(
+				_closed_screen_polygon(domain.polygon), Color(0.28, 0.34, 0.48, 0.45), 0.75, true
+			)
+	for edge in arcane_web.edges:
+		var importance := clampf(edge.structural_importance, 0.0, 1.0)
+		var color := Color(0.20, 0.48, 0.72).lerp(Color(0.72, 0.96, 1.0), sqrt(importance))
+		var width := 1.1 + 5.0 * sqrt(importance)
+		draw_line(
+			_to_screen(arcane_web.nodes[edge.node_a_id].world_position),
+			_to_screen(arcane_web.nodes[edge.node_b_id].world_position),
+			color,
+			width,
+			true
+		)
+	for node in arcane_web.nodes:
+		var importance := clampf(node.structural_importance, 0.0, 1.0)
+		var radius := 2.5 + 9.0 * sqrt(importance)
+		var color := Color(1.0, 0.54, 0.24) \
+				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
+				else Color(0.76, 0.98, 1.0)
+		draw_circle(_to_screen(node.world_position), radius, color)
 
 
 func _draw_cell_triangle_fan(cell_id: int, color: Color) -> void:
@@ -769,6 +815,7 @@ func _regenerate_composition() -> void:
 		soil = null
 		resource_potential = null
 		arcane_field = null
+		arcane_web = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -877,6 +924,10 @@ func _regenerate_composition() -> void:
 		graph, seed, arcane_settings
 	)
 	_arcane_generation_ms = Time.get_ticks_msec() - started
+	arcane_web_settings = ArcaneWebSettings.new()
+	arcane_web = null if arcane_field == null else ArcaneWebGenerator.generate(
+		seed, graph.config.world_width, graph.config.world_height, arcane_web_settings
+	)
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -918,6 +969,8 @@ func _draw_information() -> void:
 	lines.append("B          Hold Biome Reference")
 	lines.append("T          Template")
 	lines.append("R          Seed +1")
+	if view_mode == ViewMode.ARCANE_WEB:
+		lines.append("D          Toggle Domains")
 	lines.append("Click      Inspect Cell")
 	lines.append("")
 	_append_mode_statistics(lines)
@@ -1187,6 +1240,8 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_arcane_statistics(lines, _arcane_statistics.get("mana", {}))
 		ViewMode.BACKGROUND_STABILITY:
 			_append_arcane_statistics(lines, _arcane_statistics.get("stability", {}))
+		ViewMode.ARCANE_WEB:
+			_append_arcane_web_statistics(lines, _arcane_statistics.get("web", {}))
 		ViewMode.RAW_COMPOSITION:
 			lines.append(
 				"Min %d | Max %d | Mean %.2f"
@@ -1734,11 +1789,12 @@ func _calculate_resource_statistics() -> Dictionary:
 
 
 func _calculate_arcane_statistics() -> Dictionary:
-	if arcane_field == null:
+	if arcane_field == null or arcane_web == null:
 		return {}
 	return {
 		"mana": _arcane_field_statistics(arcane_field.background_mana),
 		"stability": _arcane_field_statistics(arcane_field.background_stability),
+		"web": ArcaneWebValidator.statistics(arcane_web),
 	}
 
 
@@ -1777,6 +1833,50 @@ func _append_arcane_statistics(lines: PackedStringArray, statistics: Dictionary)
 	lines.append("Max: %.4f" % statistics.max)
 	lines.append("Mean Neighbor Delta: %.5f" % statistics.mean_neighbor_delta)
 	lines.append("Generation: %d ms" % _arcane_generation_ms)
+
+
+func _append_arcane_web_statistics(lines: PackedStringArray, statistics: Dictionary) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Web data")
+		return
+	lines.append("Nuclei: %d | Domains: %d" % [
+		statistics.generated_nucleus_count, statistics.visible_domain_count
+	])
+	lines.append("Nodes: %d | Edges: %d" % [statistics.node_count, statistics.edge_count])
+	lines.append("Junctions: %d | Exits: %d" % [
+		statistics.junction_count, statistics.boundary_exit_count
+	])
+	lines.append("Components: %d | Cycle Rank: %d" % [
+		statistics.connected_component_count, statistics.cycle_rank
+	])
+	lines.append("Degree Avg / Max: %.3f / %d" % [
+		statistics.average_degree, statistics.max_degree
+	])
+	lines.append("Degree 1/2/3/4+: %d / %d / %d / %d" % [
+		statistics.degree_1, statistics.degree_2, statistics.degree_3, statistics.degree_4_plus
+	])
+	lines.append("Total Ley Length: %.2f" % statistics.total_ley_length)
+	lines.append("Edge Length Min/Mean/Max:")
+	lines.append("  %.2f / %.2f / %.2f" % [
+		statistics.edge_length.min, statistics.edge_length.mean, statistics.edge_length.max
+	])
+	lines.append("Edge Importance Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		statistics.edge_importance.min,
+		statistics.edge_importance.mean,
+		statistics.edge_importance.max,
+	])
+	lines.append("Node Importance Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		statistics.node_importance.min,
+		statistics.node_importance.mean,
+		statistics.node_importance.max,
+	])
+	lines.append("Sampling: %.2f ms" % statistics.generation_time_ms)
+	lines.append("Power Diagram: %.2f ms" % statistics.power_diagram_time_ms)
+	lines.append("Importance: %.2f ms" % statistics.importance_time_ms)
+	lines.append("Total Arcane Web: %.2f ms" % statistics.total_time_ms)
+	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
 
 
 func _resource_continuous_statistics(values: PackedFloat32Array) -> Dictionary:
@@ -1965,6 +2065,8 @@ func _select_current_page_view(view_index: int) -> void:
 	if view_index < 0 or view_index >= page_views.size():
 		return
 	view_mode = page_views[view_index]
+	if view_mode == ViewMode.ARCANE_WEB:
+		selected_cell_id = -1
 
 
 func _ensure_valid_page_view() -> void:
@@ -2046,6 +2148,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Background Mana"
 		ViewMode.BACKGROUND_STABILITY:
 			return "Background Stability"
+		ViewMode.ARCANE_WEB:
+			return "Arcane Web"
 		_:
 			return "Unknown"
 
@@ -2082,10 +2186,15 @@ func _is_resource_view() -> bool:
 
 func _is_arcane_view() -> bool:
 	return view_mode == ViewMode.BACKGROUND_MANA \
-			or view_mode == ViewMode.BACKGROUND_STABILITY
+			or view_mode == ViewMode.BACKGROUND_STABILITY \
+			or view_mode == ViewMode.ARCANE_WEB
 
 
 func _select_cell_at(world_position: Vector2) -> void:
+	if view_mode == ViewMode.ARCANE_WEB:
+		selected_cell_id = -1
+		queue_redraw()
+		return
 	if graph == null or not SpatialGeometry.point_in_world(
 		world_position, graph.config.world_width, graph.config.world_height, 0.0
 	):
