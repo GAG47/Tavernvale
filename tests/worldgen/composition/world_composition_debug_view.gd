@@ -2173,9 +2173,21 @@ func _append_mana_concentration_statistics(lines: PackedStringArray) -> void:
 		diagnostics.strong_depleted_cells.count,
 		diagnostics.strong_depleted_cells.percentage,
 	])
+	lines.append("Directly forced: %d (%.3f%%)" % [
+		diagnostics.directly_forced_cells.count,
+		diagnostics.directly_forced_cells.percentage,
+	])
 	lines.append("Anomalous outside cores: %d (%.3f%%)" % [
 		diagnostics.significantly_anomalous_outside_forcing_cores.count,
 		diagnostics.significantly_anomalous_outside_forcing_cores.percentage,
+	])
+	lines.append("Significant within Leyline influence: %d (%.3f%%)" % [
+		diagnostics.significant_anomaly_within_leyline_influence.count,
+		diagnostics.significant_anomaly_within_leyline_influence.percentage,
+	])
+	lines.append("Significant outside Leyline influence: %d (%.3f%%)" % [
+		diagnostics.significant_anomaly_outside_leyline_influence.count,
+		diagnostics.significant_anomaly_outside_leyline_influence.percentage,
 	])
 	lines.append("Generation: %d ms" % _arcane_environment_generation_ms)
 
@@ -2196,8 +2208,27 @@ func _append_mana_flowability_statistics(lines: PackedStringArray) -> void:
 	])
 	lines.append("Radius: %.2f world units" % diagnostics.parameters.leyline_influence_radius)
 	lines.append("Ambient: %.2f" % diagnostics.parameters.ambient_flowability)
-	lines.append("Web Projection: %.2f ms" % diagnostics.performance.web_projection_ms)
-	lines.append("Drift Projection: %.2f ms" % diagnostics.performance.drift_projection_ms)
+	var tensor: Dictionary = diagnostics.transport_tensor_max_eigenvalue
+	var diffusivity: Dictionary = diagnostics.face_diffusivity
+	var drift: Dictionary = diagnostics.drift_velocity_magnitude
+	lines.append("Tensor max-lambda Mean/Max: %.5f / %.5f" % [
+		tensor.mean, tensor.max,
+	])
+	lines.append("Face D Min/Mean/P90/Max:")
+	lines.append("  %.2f / %.2f / %.2f / %.2f" % [
+		diffusivity.min, diffusivity.mean, diffusivity.p90, diffusivity.max,
+	])
+	lines.append("Drift |V| Min/Mean/P90/Max:")
+	lines.append("  %.3f / %.3f / %.3f / %.3f" % [
+		drift.min, drift.mean, drift.p90, drift.max,
+	])
+	lines.append("Maximum abs edge_flow: %.5f" % diagnostics.maximum_abs_edge_flow)
+	lines.append("Leyline Transport Projection: %.2f ms" % (
+		diagnostics.performance.leyline_transport_projection_ms
+	))
+	lines.append("Face Transport Precompute: %.2f ms" % (
+		diagnostics.performance.face_transport_precompute_ms
+	))
 
 
 func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
@@ -2228,8 +2259,14 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 	lines.append("Arcane Stress Mean/P90/Max:")
 	lines.append("  %.5f / %.5f / %.5f" % [stress.mean, stress.p90, stress.max])
 	lines.append("Solver dt: %.6f" % solver.dt)
+	lines.append("Max local rate: %.6f" % solver.max_rate)
 	lines.append("Iterations: %d | Delta: %.8f" % [solver.iterations, solver.final_max_delta])
-	lines.append("Converged: %s" % str(solver.converged))
+	lines.append("Converged: %s | Hit cap: %s" % [
+		str(solver.converged), str(solver.hit_iteration_cap),
+	])
+	lines.append("Raw Min/Max: %.5f / %.5f | In range: %s" % [
+		solver.raw_min, solver.raw_max, str(solver.within_expected_range),
+	])
 	lines.append("Solver: %.2f ms | Stability: %.2f ms" % [
 		diagnostics.performance.transport_solver_ms,
 		diagnostics.performance.stability_synthesis_ms,

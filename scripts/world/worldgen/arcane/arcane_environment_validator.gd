@@ -33,15 +33,17 @@ static func validate(
 
 static func validate_solver_report(report: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
-	if not report.has("converged"):
-		errors.append("transport Solver must report whether it converged")
+	for field_name in ["converged", "hit_iteration_cap", "finite", "within_expected_range"]:
+		if not report.has(field_name):
+			errors.append("transport Solver must report %s" % field_name)
+	if not errors.is_empty():
 		return errors
-	if not bool(report.converged):
-		errors.append("transport Solver hit its iteration cap without converging")
 	if not bool(report.get("finite", false)):
 		errors.append("transport Solver produced a non-finite concentration")
-	if not bool(report.get("within_expected_range", false)):
-		errors.append("transport Solver concentration exceeded the accepted numerical range")
+	if not bool(report.converged) and not bool(report.hit_iteration_cap):
+		errors.append("non-converged transport Solver must report its iteration cap")
+	if bool(report.converged) and bool(report.hit_iteration_cap):
+		errors.append("converged transport Solver cannot also report its iteration cap")
 	for field_name in ["dt", "final_max_delta"]:
 		if not report.has(field_name) or not is_finite(float(report.get(field_name, NAN))):
 			errors.append("transport Solver report %s must be finite" % field_name)

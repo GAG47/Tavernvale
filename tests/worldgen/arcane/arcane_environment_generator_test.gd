@@ -36,17 +36,20 @@ func _test_settings_and_formal_layer_contract() -> void:
 	_expect(settings.validate().is_empty(), "default Arcane Environment settings should validate")
 	_expect(settings.leyline_influence_radius == 55.0, "Leyline influence radius must be 55")
 	_expect(settings.ambient_flowability == 0.15, "ambient Flowability must be 0.15")
-	_expect(settings.diffusion_rate == 1.0, "diffusion rate must be 1.0")
-	_expect(settings.arcane_drift_speed == 0.75,
-		"calibrated Arcane Drift speed must be 0.75")
+	_expect(settings.ambient_mana_diffusivity == 56.0,
+		"ambient Mana diffusivity must be 56 world-units squared per solver time")
+	_expect(settings.leyline_parallel_diffusivity_multiplier == 9.0,
+		"Leyline parallel diffusivity multiplier must be 9")
+	_expect(settings.arcane_drift_speed_per_flow == 90.0,
+		"Arcane Drift speed per unit edge flow must be 90 world units per solver time")
 	_expect(settings.background_restoration_min_rate == 0.03
 			and settings.background_restoration_max_rate == 0.15,
 		"background restoration rates must be 0.03..0.15")
 	_expect(settings.solver_cfl_safety == 0.40 and settings.solver_max_dt == 1.0,
 		"Solver CFL safety/max dt must be 0.40/1.0")
-	_expect(settings.solver_max_iterations == 400
+	_expect(settings.solver_max_iterations == 1200
 			and settings.solver_convergence_epsilon == 0.00001,
-		"Solver iteration cap/epsilon must be 400/1e-5")
+		"Solver iteration cap/epsilon must be 1200/1e-5")
 	_expect(settings.stability_min_resistance == 0.15
 			and settings.stability_stress_response == 2.0,
 		"stability resistance/response must be 0.15/2.0")
@@ -54,6 +57,7 @@ func _test_settings_and_formal_layer_contract() -> void:
 	for forbidden in [
 		"web_influence", "mana_disequilibrium", "drift_vector", "restoration_rate",
 		"arcane_stress", "gradient_stress", "resistance", "iteration_delta",
+		"transport_tensor", "parallel_flowability", "perpendicular_flowability",
 	]:
 		_expect(not _object_has_property(layer, StringName(forbidden)),
 			"ArcaneEnvironmentLayer must not formally store %s" % forbidden)
@@ -64,12 +68,11 @@ func _test_background_equilibrium_invariant() -> void:
 	var background := PackedFloat32Array([0.15, 0.85])
 	var stability := PackedFloat32Array([0.0, 1.0])
 	var settings := ArcaneEnvironmentSettings.new()
-	settings.arcane_drift_speed = 0.0
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		background,
 		stability,
-		PackedFloat64Array([1.0, 1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -100,8 +103,8 @@ func _test_no_stress_means_high_final_stability() -> void:
 func _test_background_stability_controls_restoration() -> void:
 	var graph := _two_cell_graph()
 	var settings := ArcaneEnvironmentSettings.new()
-	settings.diffusion_rate = 0.0
-	settings.arcane_drift_speed = 0.0
+	settings.ambient_mana_diffusivity = 0.0
+	settings.arcane_drift_speed_per_flow = 0.0
 	settings.solver_max_iterations = 1
 	settings.solver_convergence_epsilon = 0.000000000001
 	var background := PackedFloat32Array([0.2, 0.2])
@@ -109,7 +112,7 @@ func _test_background_stability_controls_restoration() -> void:
 		graph,
 		background,
 		PackedFloat32Array([1.0, 0.0]),
-		PackedFloat64Array([0.15, 0.15]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -130,7 +133,7 @@ func _test_natural_disequilibrium_diffusion_and_mass_conservation() -> void:
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -148,7 +151,11 @@ func _test_leyline_flowability_and_flow_independence() -> void:
 	var graph := _projection_graph()
 	var web := _single_leyline_web()
 	var settings := ArcaneEnvironmentSettings.new()
-	var projection := ArcaneEnvironmentGenerator.project_flowability(graph, web, settings)
+	var zero_circulation := ArcaneCirculationLayer.new()
+	zero_circulation.edge_flow = PackedFloat32Array([0.0])
+	var projection := ArcaneEnvironmentGenerator.project_leyline_transport(
+		graph, web, zero_circulation, settings
+	)
 	_expect(projection.flowability[0] > projection.flowability[1],
 		"a Cell on a Leyline must have higher Flowability than a far Cell")
 	_expect(absf(projection.flowability[0] - 1.0) < 0.000001,
@@ -159,9 +166,14 @@ func _test_leyline_flowability_and_flow_independence() -> void:
 	positive.edge_flow = PackedFloat32Array([2.0])
 	var negative := ArcaneCirculationLayer.new()
 	negative.edge_flow = PackedFloat32Array([-2.0])
-	var repeated := ArcaneEnvironmentGenerator.project_flowability(graph, web, settings)
+	var repeated := ArcaneEnvironmentGenerator.project_leyline_transport(
+		graph, web, positive, settings
+	)
+	var reversed := ArcaneEnvironmentGenerator.project_leyline_transport(
+		graph, web, negative, settings
+	)
 	_expect(projection.flowability == repeated.flowability
-			and positive.edge_flow != negative.edge_flow,
+			and projection.flowability == reversed.flowability,
 		"Flowability must depend on Web geometry and remain independent of edge_flow")
 
 
@@ -170,27 +182,28 @@ func _test_arcane_drift_direction_and_actual_mana_transport() -> void:
 	var web := _single_leyline_web()
 	var circulation := ArcaneCirculationLayer.new()
 	circulation.edge_flow = PackedFloat32Array([2.0])
-	var drift := ArcaneEnvironmentGenerator.project_drift_field(
+	var projection := ArcaneEnvironmentGenerator.project_leyline_transport(
 		graph, web, circulation, ArcaneEnvironmentSettings.new()
 	)
-	_expect(drift[0].x > 0.0 and absf(drift[0].y) < 0.000001,
+	_expect(projection.drift_field[0].x > 0.0
+			and absf(projection.drift_field[0].y) < 0.000001,
 		"positive edge_flow must project along canonical node_a -> node_b")
 	circulation.edge_flow[0] = -2.0
-	var reversed := ArcaneEnvironmentGenerator.project_drift_field(
+	var reversed := ArcaneEnvironmentGenerator.project_leyline_transport(
 		graph, web, circulation, ArcaneEnvironmentSettings.new()
 	)
-	_expect(reversed[0].x < 0.0,
+	_expect(reversed.drift_field[0].x < 0.0,
 		"negative edge_flow must reverse the concentration-independent Drift direction")
 
 	var transport_graph := _two_cell_graph()
 	var settings := _pure_transport_settings(1)
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var initial := PackedFloat64Array([0.7, 0.1])
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		transport_graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0]),
+		_zero_tensor(transport_graph),
 		PackedVector2Array([Vector2(0.5, 0.0), Vector2(0.5, 0.0)]),
 		_zero_rates(transport_graph),
 		_zero_rates(transport_graph),
@@ -205,13 +218,13 @@ func _test_arcane_drift_direction_and_actual_mana_transport() -> void:
 func _test_internal_drift_conservation() -> void:
 	var graph := _two_cell_graph(1.0, 3.0)
 	var settings := _pure_transport_settings(20)
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var initial := PackedFloat64Array([0.9, 0.1])
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2(0.4, 0.0), Vector2(0.4, 0.0)]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -226,12 +239,12 @@ func _test_internal_drift_conservation() -> void:
 func _test_open_boundary() -> void:
 	var graph := _boundary_cell_graph()
 	var settings := _pure_transport_settings(1)
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var outward := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
-		PackedFloat64Array([1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2(0.4, 0.0)]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -243,7 +256,7 @@ func _test_open_boundary() -> void:
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
-		PackedFloat64Array([1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2(-0.4, 0.0)]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -255,12 +268,12 @@ func _test_open_boundary() -> void:
 		"outward boundary Drift must allow actual Mana to leave the world")
 	_expect(inward.concentration[0] > 0.2,
 		"inward boundary Drift must use local Background Mana as the ghost inflow state")
-	settings.diffusion_rate = 1.0
+	settings.ambient_mana_diffusivity = 56.0
 	var diffusion_out := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
-		PackedFloat64Array([1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -272,7 +285,7 @@ func _test_open_boundary() -> void:
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
-		PackedFloat64Array([1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO]),
 		_zero_rates(graph),
 		_zero_rates(graph),
@@ -330,7 +343,7 @@ func _test_resolution_behavior() -> void:
 			graph,
 			background,
 			PackedFloat32Array([0.5, 0.5]),
-			PackedFloat64Array([0.15, 0.15]),
+			_zero_tensor(graph),
 			PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 			_zero_rates(graph),
 			_zero_rates(graph),
@@ -380,7 +393,11 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 	).is_empty(), "Seed 1 Arcane Environment should pass its Validator")
 	_expect(ArcaneEnvironmentValidator.validate_solver_report(
 		first_diagnostics.solver
-	).is_empty(), "Seed 1 Solver must converge and report a finite accepted result")
+	).is_empty(), "Seed 1 Solver must provide a complete finite diagnostic report")
+	_expect(first_diagnostics.solver.hit_iteration_cap
+			and not first_diagnostics.solver.converged
+			and first_diagnostics.solver.iterations == 1200,
+		"Seed 1 must transparently report the strict-parameter explicit Solver cap")
 	_expect(input_hash == _arcane_input_hash(),
 		"v2.3 generation must preserve SpatialGraph and all v2.0-v2.2 formal data")
 	var repeat := ArcaneEnvironmentGenerator.generate(
@@ -466,6 +483,12 @@ func _zero_rates(graph: SpatialGraph) -> PackedFloat64Array:
 	var rates := PackedFloat64Array()
 	rates.resize(graph.cell_count())
 	return rates
+
+
+func _zero_tensor(graph: SpatialGraph) -> PackedVector3Array:
+	var tensor := PackedVector3Array()
+	tensor.resize(graph.cell_count())
+	return tensor
 
 
 func _empty_forcing_layer(graph: SpatialGraph) -> ArcaneForcingLayer:

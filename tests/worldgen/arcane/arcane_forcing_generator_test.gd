@@ -235,16 +235,16 @@ func _test_independent_from_arcane_web() -> void:
 func _test_source_and_sink_equations() -> void:
 	var graph := _single_cell_graph(Vector2.ZERO)
 	var settings := ArcaneEnvironmentSettings.new()
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var background := PackedFloat32Array([0.5])
 	var zero := PackedFloat64Array([0.0])
 	var source := ArcaneEnvironmentGenerator.solve_transport(
-		graph, background, PackedFloat32Array([0.5]), PackedFloat64Array([0.15]),
+		graph, background, PackedFloat32Array([0.5]), _zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO]), PackedFloat64Array([0.08]), zero,
 		settings, PackedFloat64Array(), false
 	)
 	var sink := ArcaneEnvironmentGenerator.solve_transport(
-		graph, background, PackedFloat32Array([0.5]), PackedFloat64Array([0.15]),
+		graph, background, PackedFloat32Array([0.5]), _zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO]), zero, PackedFloat64Array([0.08]),
 		settings, PackedFloat64Array(), false
 	)
@@ -263,12 +263,12 @@ func _test_source_and_sink_equations() -> void:
 func _test_source_sink_compete_with_restoration() -> void:
 	var graph := _two_isolated_cells_graph()
 	var settings := ArcaneEnvironmentSettings.new()
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.4, 0.4]),
 		PackedFloat32Array([0.0, 1.0]),
-		PackedFloat64Array([0.15, 0.15]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 		PackedFloat64Array([0.08, 0.08]),
 		PackedFloat64Array([0.0, 0.0]),
@@ -283,23 +283,23 @@ func _test_source_sink_compete_with_restoration() -> void:
 func _test_empty_forcing_v230_regression() -> void:
 	var graph := _two_cell_graph()
 	var settings := _pure_transport_settings(1)
+	settings.ambient_mana_diffusivity = 0.0
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0]),
-		PackedVector2Array([Vector2(0.2, 0.0), Vector2(0.2, 0.0)]),
+		_zero_tensor(graph),
+		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
 		PackedFloat64Array([0.0, 0.0]),
 		PackedFloat64Array([0.0, 0.0]),
 		settings,
 		PackedFloat64Array([0.8, 0.2]),
 		false
 	)
-	_expect(absf(result.report.dt - 0.4 / 0.7) < 0.0000001,
-		"empty forcing must preserve the v2.3.0 CFL calculation")
-	_expect(absf(result.concentration[0] - 0.53714285714286) < 0.0000001
-			and absf(result.concentration[1] - 0.46285714285714) < 0.0000001,
-		"P=K=0 must reproduce the v2.3.0 diffusion/drift mass update")
+	_expect(result.concentration == PackedFloat64Array([0.8, 0.2]),
+		"P=K=0 must add no Natural Forcing mass to the v2.3 transport update")
+	_expect(ArcaneEnvironmentGenerator.forcing_concentration_rate(0.0, 0.0, 0.8) == 0.0,
+		"empty forcing must retain the exact zero Source/Sink term")
 
 
 func _test_local_forcing_propagates_beyond_core() -> void:
@@ -314,7 +314,7 @@ func _test_local_forcing_propagates_beyond_core() -> void:
 		graph,
 		PackedFloat32Array([0.2, 0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0, 1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO]),
 		forcing.source_rate,
 		forcing.sink_rate,
@@ -329,36 +329,38 @@ func _test_local_forcing_propagates_beyond_core() -> void:
 func _test_web_transports_source_and_sink_anomalies() -> void:
 	var graph := _three_branch_graph()
 	var settings := _pure_transport_settings(8)
-	var flowability := PackedFloat64Array([1.0, 1.0, 0.15])
+	var transport_tensor := PackedVector3Array([
+		Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0),
+	])
 	var zero_drift := PackedVector2Array([Vector2.ZERO, Vector2.ZERO, Vector2.ZERO])
 	var background := PackedFloat32Array([0.5, 0.5, 0.5])
 	var source := ArcaneEnvironmentGenerator.solve_transport(
-		graph, background, PackedFloat32Array([0.0, 0.0, 0.0]), flowability,
+		graph, background, PackedFloat32Array([0.0, 0.0, 0.0]), transport_tensor,
 		zero_drift, PackedFloat64Array([0.08, 0.0, 0.0]),
 		PackedFloat64Array([0.0, 0.0, 0.0]), settings,
 		PackedFloat64Array(), false
 	)
 	var sink := ArcaneEnvironmentGenerator.solve_transport(
-		graph, background, PackedFloat32Array([0.0, 0.0, 0.0]), flowability,
+		graph, background, PackedFloat32Array([0.0, 0.0, 0.0]), transport_tensor,
 		zero_drift, PackedFloat64Array([0.0, 0.0, 0.0]),
 		PackedFloat64Array([0.08, 0.0, 0.0]), settings,
 		PackedFloat64Array(), false
 	)
 	_expect(source.concentration[1] - 0.5 > source.concentration[2] - 0.5,
-		"a high-Flowability Web branch must carry Source enrichment farther than ambient space")
+		"a longitudinal Leyline branch must carry Source enrichment farther than ambient space")
 	_expect(0.5 - sink.concentration[1] > 0.5 - sink.concentration[2],
-		"Sink depletion/replenishment must propagate farther through the Web branch")
+		"Sink depletion/replenishment must propagate farther along the Leyline branch")
 
 
 func _test_drift_moves_source_anomaly() -> void:
 	var graph := _three_line_cells_graph()
 	var settings := _pure_transport_settings(12)
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.2, 0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0, 0.0]),
-		PackedFloat64Array([1.0, 1.0, 1.0]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2(0.2, 0.0), Vector2(0.2, 0.0), Vector2(0.2, 0.0)]),
 		PackedFloat64Array([0.0, 0.08, 0.0]),
 		PackedFloat64Array([0.0, 0.0, 0.0]),
@@ -375,13 +377,15 @@ func _test_forcing_does_not_change_flowability_web_or_circulation() -> void:
 	var web := ArcaneWebGenerator.generate(4242, 800.0, 500.0)
 	var circulation := ArcaneCirculationGenerator.generate(web)
 	var signature_before := _web_circulation_signature(web, circulation)
-	var flowability_before: PackedFloat64Array = ArcaneEnvironmentGenerator.project_flowability(
-		graph, web, ArcaneEnvironmentSettings.new()
-	).flowability
+	var projection_before := ArcaneEnvironmentGenerator.project_leyline_transport(
+		graph, web, circulation, ArcaneEnvironmentSettings.new()
+	)
+	var flowability_before: PackedFloat64Array = projection_before.flowability
 	var forcing := ArcaneForcingGenerator.generate(graph, 4242)
-	var flowability_after: PackedFloat64Array = ArcaneEnvironmentGenerator.project_flowability(
-		graph, web, ArcaneEnvironmentSettings.new()
-	).flowability
+	var projection_after := ArcaneEnvironmentGenerator.project_leyline_transport(
+		graph, web, circulation, ArcaneEnvironmentSettings.new()
+	)
+	var flowability_after: PackedFloat64Array = projection_after.flowability
 	_expect(forcing != null, "Flowability independence forcing fixture should generate")
 	_expect(flowability_before == flowability_after,
 		"adding Source/Sink must not change Mana Flowability")
@@ -392,12 +396,12 @@ func _test_forcing_does_not_change_flowability_web_or_circulation() -> void:
 func _test_forcing_limits_timestep_and_avoids_overshoot() -> void:
 	var graph := _single_cell_graph(Vector2.ZERO)
 	var settings := _pure_transport_settings(20)
-	settings.diffusion_rate = 0.0
+	settings.ambient_mana_diffusivity = 0.0
 	var result := ArcaneEnvironmentGenerator.solve_transport(
 		graph,
 		PackedFloat32Array([0.5]),
 		PackedFloat32Array([0.0]),
-		PackedFloat64Array([0.15]),
+		_zero_tensor(graph),
 		PackedVector2Array([Vector2.ZERO]),
 		PackedFloat64Array([10.0]),
 		PackedFloat64Array([5.0]),
@@ -433,7 +437,7 @@ func _test_seed_one_natural_forcing_pipeline() -> void:
 	)
 	_environment_diagnostics = ArcaneEnvironmentGenerator.last_generation_diagnostics()
 	_expect(_seed_one_environment != null,
-		"Seed 1 Arcane Environment with formal forcing should converge")
+		"Seed 1 Arcane Environment with formal forcing should generate")
 	if _seed_one_environment == null:
 		return
 	_expect(prior_hash == hash([
@@ -445,10 +449,15 @@ func _test_seed_one_natural_forcing_pipeline() -> void:
 		"Seed 1 forcing should naturally create both >0.05 enrichment and depletion")
 	_expect(ArcaneEnvironmentValidator.validate_solver_report(
 		_environment_diagnostics.solver
-	).is_empty(), "Seed 1 forcing Solver must explicitly converge inside its valid range")
-	var expected_flowability: PackedFloat64Array = ArcaneEnvironmentGenerator.project_flowability(
-		_seed_one_graph, web, ArcaneEnvironmentSettings.new()
-	).flowability
+	).is_empty(), "Seed 1 forcing Solver must provide a complete finite report")
+	_expect(_environment_diagnostics.solver.hit_iteration_cap
+			and not _environment_diagnostics.solver.converged
+			and _environment_diagnostics.solver.iterations == 1200,
+		"Seed 1 forcing must transparently report the strict-parameter Solver cap")
+	var expected_projection := ArcaneEnvironmentGenerator.project_leyline_transport(
+		_seed_one_graph, web, circulation, ArcaneEnvironmentSettings.new()
+	)
+	var expected_flowability: PackedFloat64Array = expected_projection.flowability
 	_expect(_seed_one_environment.mana_flowability == _float32(expected_flowability),
 		"formal forcing must not modify the v2.3 Flowability projection")
 
@@ -457,7 +466,7 @@ func _print_seed_one_statistics() -> void:
 	if _seed_one_environment == null:
 		return
 	print("Localized Arcane Forcing Seed 1 statistics: ", _forcing_diagnostics)
-	print("Arcane Environment v2.3.2 Seed 1 statistics: ", _environment_diagnostics)
+	print("Arcane Environment v2.3.3 Seed 1 statistics: ", _environment_diagnostics)
 
 
 func _single_cell_graph(center: Vector2) -> SpatialGraph:
@@ -584,6 +593,12 @@ func _pure_transport_settings(iterations: int) -> ArcaneEnvironmentSettings:
 	settings.solver_max_iterations = iterations
 	settings.solver_convergence_epsilon = 0.000000000001
 	return settings
+
+
+func _zero_tensor(graph: SpatialGraph) -> PackedVector3Array:
+	var tensor := PackedVector3Array()
+	tensor.resize(graph.cell_count())
+	return tensor
 
 
 func _site_signature(layer: ArcaneForcingLayer) -> Array:

@@ -27,23 +27,32 @@ static func generate(
 
 	var total_started := Time.get_ticks_usec()
 	var stage_started := Time.get_ticks_usec()
-	var web_projection := project_flowability(spatial_graph, arcane_web, actual_settings)
-	var web_projection_ms := _elapsed_ms(stage_started)
-	stage_started = Time.get_ticks_usec()
-	var drift_field := project_drift_field(
+	var transport_projection := project_leyline_transport(
 		spatial_graph, arcane_web, arcane_circulation, actual_settings
 	)
-	var drift_projection_ms := _elapsed_ms(stage_started)
+	var leyline_transport_projection_ms := _elapsed_ms(stage_started)
+	stage_started = Time.get_ticks_usec()
+	var transport_faces := build_transport_faces(
+		spatial_graph,
+		transport_projection.transport_tensor,
+		transport_projection.drift_field,
+		actual_settings,
+		true
+	)
+	var face_transport_precompute_ms := _elapsed_ms(stage_started)
 	stage_started = Time.get_ticks_usec()
 	var solver_result := solve_transport(
 		spatial_graph,
 		arcane_field.background_mana,
 		arcane_field.background_stability,
-		web_projection.flowability,
-		drift_field,
+		transport_projection.transport_tensor,
+		transport_projection.drift_field,
 		arcane_forcing.source_rate,
 		arcane_forcing.sink_rate,
-		actual_settings
+		actual_settings,
+		PackedFloat64Array(),
+		true,
+		transport_faces
 	)
 	var solver_ms := _elapsed_ms(stage_started)
 	var solver_report: Dictionary = solver_result.report
@@ -52,8 +61,8 @@ static func generate(
 		_last_generation_diagnostics = {
 			"solver": solver_report,
 			"performance": {
-				"web_projection_ms": web_projection_ms,
-				"drift_projection_ms": drift_projection_ms,
+				"leyline_transport_projection_ms": leyline_transport_projection_ms,
+				"face_transport_precompute_ms": face_transport_precompute_ms,
 				"transport_solver_ms": solver_ms,
 				"stability_synthesis_ms": 0.0,
 				"total_ms": _elapsed_ms(total_started),
@@ -64,7 +73,7 @@ static func generate(
 
 	var environment := ArcaneEnvironmentLayer.new()
 	environment.mana_concentration = _clamped_float32(solver_result.concentration)
-	environment.mana_flowability = _clamped_float32(web_projection.flowability)
+	environment.mana_flowability = _clamped_float32(transport_projection.flowability)
 	stage_started = Time.get_ticks_usec()
 	var stability_result := synthesize_stability(
 		spatial_graph,
@@ -81,13 +90,14 @@ static func generate(
 		arcane_field,
 		environment,
 		arcane_forcing,
-		web_projection.web_influence,
+		transport_projection,
+		transport_faces,
 		stability_result.arcane_stress,
 		solver_report,
 		actual_settings,
 		{
-			"web_projection_ms": web_projection_ms,
-			"drift_projection_ms": drift_projection_ms,
+			"leyline_transport_projection_ms": leyline_transport_projection_ms,
+			"face_transport_precompute_ms": face_transport_precompute_ms,
 			"transport_solver_ms": solver_ms,
 			"stability_synthesis_ms": stability_ms,
 			"total_ms": total_ms,
@@ -104,16 +114,27 @@ static func last_generation_diagnostics() -> Dictionary:
 	return _last_generation_diagnostics.duplicate(true)
 
 
-static func project_flowability(
+static func project_leyline_transport(
 		graph: SpatialGraph,
 		web: ArcaneWebLayer,
+		circulation: ArcaneCirculationLayer,
 		settings: ArcaneEnvironmentSettings
 ) -> Dictionary:
 	var web_influence := PackedFloat64Array()
 	web_influence.resize(graph.cell_count())
+	var transport_tensor := PackedVector3Array()
+	transport_tensor.resize(graph.cell_count())
+	var drift_field := PackedVector2Array()
+	drift_field.resize(graph.cell_count())
 	for edge in web.edges:
 		var segment_start := web.nodes[edge.node_a_id].world_position
 		var segment_end := web.nodes[edge.node_b_id].world_position
+		var tangent := (segment_end - segment_start).normalized()
+		var tensor_contribution := Vector3(
+			tangent.x * tangent.x, tangent.x * tangent.y, tangent.y * tangent.y
+		)
+		var signed_velocity := float(circulation.edge_flow[edge.id]) \
+				* settings.arcane_drift_speed_per_flow
 		for cell_id in graph.cell_count():
 			var distance := point_segment_distance(
 				graph.cell_centers[cell_id], segment_start, segment_end
@@ -121,55 +142,51 @@ static func project_flowability(
 			var influence := leyline_influence(distance, settings.leyline_influence_radius)
 			if influence > web_influence[cell_id]:
 				web_influence[cell_id] = influence
+			if influence > 0.0:
+				transport_tensor[cell_id] += influence * tensor_contribution
+				drift_field[cell_id] += influence * signed_velocity * tangent
 	var flowability := PackedFloat64Array()
 	flowability.resize(graph.cell_count())
+	var maximum_eigenvalues := PackedFloat64Array()
+	maximum_eigenvalues.resize(graph.cell_count())
+	var drift_magnitudes := PackedFloat64Array()
+	drift_magnitudes.resize(graph.cell_count())
 	for cell_id in graph.cell_count():
+		transport_tensor[cell_id] = normalize_transport_tensor(transport_tensor[cell_id])
+		maximum_eigenvalues[cell_id] = tensor_max_eigenvalue(transport_tensor[cell_id])
+		drift_magnitudes[cell_id] = drift_field[cell_id].length()
 		flowability[cell_id] = clampf(
 			settings.ambient_flowability
 					+ (1.0 - settings.ambient_flowability) * web_influence[cell_id],
 			0.0,
 			1.0
 		)
-	return {"web_influence": web_influence, "flowability": flowability}
-
-
-static func project_drift_field(
-		graph: SpatialGraph,
-		web: ArcaneWebLayer,
-		circulation: ArcaneCirculationLayer,
-		settings: ArcaneEnvironmentSettings
-) -> PackedVector2Array:
-	var drift_field := PackedVector2Array()
-	drift_field.resize(graph.cell_count())
-	for edge in web.edges:
-		var segment_start := web.nodes[edge.node_a_id].world_position
-		var segment_end := web.nodes[edge.node_b_id].world_position
-		var direction := (segment_end - segment_start).normalized()
-		var signed_drive := clampf(circulation.edge_flow[edge.id] / 2.0, -1.0, 1.0)
-		var contribution := signed_drive * direction
-		for cell_id in graph.cell_count():
-			var distance := point_segment_distance(
-				graph.cell_centers[cell_id], segment_start, segment_end
-			)
-			var influence := leyline_influence(distance, settings.leyline_influence_radius)
-			if influence > 0.0:
-				drift_field[cell_id] += (
-					settings.arcane_drift_speed * influence * contribution
-				)
-	return drift_field
+	var maximum_abs_edge_flow := 0.0
+	for edge_flow in circulation.edge_flow:
+		maximum_abs_edge_flow = maxf(maximum_abs_edge_flow, absf(float(edge_flow)))
+	return {
+		"web_influence": web_influence,
+		"flowability": flowability,
+		"transport_tensor": transport_tensor,
+		"drift_field": drift_field,
+		"tensor_max_eigenvalue": _statistics(maximum_eigenvalues),
+		"drift_velocity_magnitude": _statistics(drift_magnitudes, [0.90]),
+		"maximum_abs_edge_flow": maximum_abs_edge_flow,
+	}
 
 
 static func solve_transport(
 		graph: SpatialGraph,
 		background_mana: PackedFloat32Array,
 		background_stability: PackedFloat32Array,
-		flowability,
+		transport_tensor: PackedVector3Array,
 		drift_field: PackedVector2Array,
 		source_rate,
 		sink_rate,
 		settings: ArcaneEnvironmentSettings,
 		initial_concentration = PackedFloat64Array(),
-		include_boundary: bool = true
+		include_boundary: bool = true,
+		precomputed_faces: Dictionary = {}
 ) -> Dictionary:
 	var count := graph.cell_count()
 	var concentration := PackedFloat64Array()
@@ -193,8 +210,8 @@ static func solve_transport(
 		removal_rate[cell_id] = restoration_rate[cell_id] \
 				+ float(source_rate[cell_id]) + float(sink_rate[cell_id])
 
-	var faces := _build_transport_faces(
-		graph, flowability, drift_field, settings, include_boundary
+	var faces := precomputed_faces if not precomputed_faces.is_empty() else build_transport_faces(
+		graph, transport_tensor, drift_field, settings, include_boundary
 	)
 	for face_index in faces.internal_a.size():
 		var cell_a: int = faces.internal_a[face_index]
@@ -397,9 +414,40 @@ static func point_segment_distance(point: Vector2, start: Vector2, end: Vector2)
 	return point.distance_to(start + segment * t)
 
 
-static func _build_transport_faces(
+static func tensor_max_eigenvalue(tensor: Vector3) -> float:
+	var trace := tensor.x + tensor.z
+	var discriminant := sqrt(maxf(
+		0.0, (tensor.x - tensor.z) * (tensor.x - tensor.z) + 4.0 * tensor.y * tensor.y
+	))
+	return 0.5 * (trace + discriminant)
+
+
+static func normalize_transport_tensor(tensor: Vector3) -> Vector3:
+	var maximum_eigenvalue := tensor_max_eigenvalue(tensor)
+	return tensor / maximum_eigenvalue if maximum_eigenvalue > 1.0 else tensor
+
+
+static func tensor_alignment(tensor: Vector3, direction: Vector2) -> float:
+	var normalized_direction := direction.normalized()
+	var transformed := Vector2(
+		tensor.x * normalized_direction.x + tensor.y * normalized_direction.y,
+		tensor.y * normalized_direction.x + tensor.z * normalized_direction.y
+	)
+	return clampf(normalized_direction.dot(transformed), 0.0, 1.0)
+
+
+static func directional_diffusivity(
+		tensor: Vector3, direction: Vector2, settings: ArcaneEnvironmentSettings
+) -> float:
+	var alignment := tensor_alignment(tensor, direction)
+	return settings.ambient_mana_diffusivity * (
+		1.0 + (settings.leyline_parallel_diffusivity_multiplier - 1.0) * alignment
+	)
+
+
+static func build_transport_faces(
 		graph: SpatialGraph,
-		flowability,
+		transport_tensor: PackedVector3Array,
 		drift_field: PackedVector2Array,
 		settings: ArcaneEnvironmentSettings,
 		include_boundary: bool
@@ -411,6 +459,7 @@ static func _build_transport_faces(
 	var boundary_cell := PackedInt32Array()
 	var boundary_diffusion := PackedFloat64Array()
 	var boundary_velocity_length := PackedFloat64Array()
+	var face_diffusivity := PackedFloat64Array()
 	for edge_id in graph.edge_count():
 		var cells: PackedInt32Array = graph.edge_cells[edge_id]
 		var vertices: Vector2i = graph.edge_vertex_ids[edge_id]
@@ -426,19 +475,21 @@ static func _build_transport_faces(
 			var center_distance := center_delta.length()
 			if center_distance <= NUMERICAL_EPSILON:
 				continue
-			var face_flowability := 0.5 * (
-				float(flowability[cell_a]) + float(flowability[cell_b])
-			)
 			var normal := center_delta / center_distance
+			var face_tensor := 0.5 * (
+				transport_tensor[cell_a] + transport_tensor[cell_b]
+			)
+			var diffusivity := directional_diffusivity(face_tensor, normal, settings)
 			var normal_velocity := 0.5 * (
 				drift_field[cell_a] + drift_field[cell_b]
 			).dot(normal)
 			internal_a.append(cell_a)
 			internal_b.append(cell_b)
 			internal_diffusion.append(
-				settings.diffusion_rate * face_flowability * face_length / center_distance
+				diffusivity * face_length / center_distance
 			)
 			internal_velocity_length.append(normal_velocity * face_length)
+			face_diffusivity.append(diffusivity)
 		elif include_boundary and cells.size() == 1:
 			var cell_id := cells[0]
 			var midpoint := (first_vertex + second_vertex) * 0.5
@@ -447,14 +498,17 @@ static func _build_transport_faces(
 			if boundary_distance <= NUMERICAL_EPSILON:
 				continue
 			var outward_normal := outward_delta / boundary_distance
+			var diffusivity := directional_diffusivity(
+				transport_tensor[cell_id], outward_normal, settings
+			)
 			boundary_cell.append(cell_id)
 			boundary_diffusion.append(
-				settings.diffusion_rate * float(flowability[cell_id])
-						* face_length / boundary_distance
+				diffusivity * face_length / boundary_distance
 			)
 			boundary_velocity_length.append(
 				drift_field[cell_id].dot(outward_normal) * face_length
 			)
+			face_diffusivity.append(diffusivity)
 	return {
 		"internal_a": internal_a,
 		"internal_b": internal_b,
@@ -463,6 +517,8 @@ static func _build_transport_faces(
 		"boundary_cell": boundary_cell,
 		"boundary_diffusion": boundary_diffusion,
 		"boundary_velocity_length": boundary_velocity_length,
+		"face_diffusivity": face_diffusivity,
+		"face_diffusivity_statistics": _statistics(face_diffusivity, [0.90]),
 	}
 
 
@@ -518,7 +574,8 @@ static func _build_diagnostics(
 		field: ArcaneFieldLayer,
 		environment: ArcaneEnvironmentLayer,
 		forcing: ArcaneForcingLayer,
-		web_influence,
+		transport_projection: Dictionary,
+		transport_faces: Dictionary,
 		arcane_stress,
 		solver_report: Dictionary,
 		settings: ArcaneEnvironmentSettings,
@@ -539,6 +596,8 @@ static func _build_diagnostics(
 	var directly_forced_count := 0
 	var significantly_anomalous_count := 0
 	var significant_outside_forcing_count := 0
+	var significant_within_leyline_count := 0
+	var significant_outside_leyline_count := 0
 	for cell_id in environment.cell_count():
 		var delta := environment.mana_concentration[cell_id] - field.background_mana[cell_id]
 		var directly_forced := forcing.source_rate[cell_id] > 0.0 \
@@ -560,7 +619,11 @@ static func _build_diagnostics(
 			significantly_anomalous_count += 1
 			if not directly_forced:
 				significant_outside_forcing_count += 1
-		if float(web_influence[cell_id]) > 0.0:
+			if float(transport_projection.web_influence[cell_id]) > 0.0:
+				significant_within_leyline_count += 1
+			else:
+				significant_outside_leyline_count += 1
+		if float(transport_projection.web_influence[cell_id]) > 0.0:
 			influenced_count += 1
 		if environment.mana_stability[cell_id] < 0.75:
 			below_75_count += 1
@@ -586,6 +649,12 @@ static func _build_diagnostics(
 		"significantly_anomalous_outside_forcing_cores": _count_statistics(
 			significant_outside_forcing_count, count
 		),
+		"significant_anomaly_within_leyline_influence": _count_statistics(
+			significant_within_leyline_count, count
+		),
+		"significant_anomaly_outside_leyline_influence": _count_statistics(
+			significant_outside_leyline_count, count
+		),
 		"mana_flowability": _statistics(environment.mana_flowability),
 		"leyline_influenced_cells": _count_statistics(influenced_count, count),
 		"background_stability": _statistics(field.background_stability),
@@ -595,6 +664,14 @@ static func _build_diagnostics(
 		"mana_stability_below_25": _count_statistics(below_25_count, count),
 		"low_mana_stability": _count_statistics(below_25_count, count),
 		"arcane_stress": _statistics(arcane_stress, [0.90]),
+		"transport_tensor_max_eigenvalue": (
+			transport_projection.tensor_max_eigenvalue.duplicate(true)
+		),
+		"face_diffusivity": transport_faces.face_diffusivity_statistics.duplicate(true),
+		"drift_velocity_magnitude": (
+			transport_projection.drift_velocity_magnitude.duplicate(true)
+		),
+		"maximum_abs_edge_flow": transport_projection.maximum_abs_edge_flow,
 		"solver": solver_report.duplicate(true),
 		"performance": performance.duplicate(true),
 		"parameters": _settings_dictionary(settings),
@@ -647,8 +724,11 @@ static func _settings_dictionary(settings: ArcaneEnvironmentSettings) -> Diction
 	return {
 		"leyline_influence_radius": settings.leyline_influence_radius,
 		"ambient_flowability": settings.ambient_flowability,
-		"diffusion_rate": settings.diffusion_rate,
-		"arcane_drift_speed": settings.arcane_drift_speed,
+		"ambient_mana_diffusivity": settings.ambient_mana_diffusivity,
+		"leyline_parallel_diffusivity_multiplier": (
+			settings.leyline_parallel_diffusivity_multiplier
+		),
+		"arcane_drift_speed_per_flow": settings.arcane_drift_speed_per_flow,
 		"background_restoration_min_rate": settings.background_restoration_min_rate,
 		"background_restoration_max_rate": settings.background_restoration_max_rate,
 		"solver_cfl_safety": settings.solver_cfl_safety,

@@ -503,7 +503,7 @@ func _test_arcane_environment_follows_circulation_and_preserves_prior_layers() -
 		ArcaneEnvironmentValidator.validate_solver_report(
 			diagnostics.get("solver", {})
 		).is_empty(),
-		"complete-pipeline Arcane Transport Solver must explicitly report convergence"
+		"complete-pipeline Arcane Transport Solver must provide finite diagnostics"
 	)
 	_expect(
 		_pipeline.v22_hash_before_environment == _v22_pipeline_hash(

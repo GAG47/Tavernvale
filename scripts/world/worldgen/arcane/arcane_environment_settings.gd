@@ -3,16 +3,14 @@ extends RefCounted
 
 var leyline_influence_radius: float = 55.0
 var ambient_flowability: float = 0.15
-var diffusion_rate: float = 1.0
-# Seed 1 at 0.60 converged cleanly but never reached a +/-0.05 visible
-# enrichment/depletion. The single v2.3 calibration raises only the physical
-# Drift strength; all transport, restoration, and stability equations stay fixed.
-var arcane_drift_speed: float = 0.75
+var ambient_mana_diffusivity: float = 56.0
+var leyline_parallel_diffusivity_multiplier: float = 9.0
+var arcane_drift_speed_per_flow: float = 90.0
 var background_restoration_min_rate: float = 0.03
 var background_restoration_max_rate: float = 0.15
 var solver_cfl_safety: float = 0.40
 var solver_max_dt: float = 1.0
-var solver_max_iterations: int = 400
+var solver_max_iterations: int = 1200
 var solver_convergence_epsilon: float = 0.00001
 var stability_min_resistance: float = 0.15
 var stability_stress_response: float = 2.0
@@ -25,10 +23,15 @@ func validate() -> PackedStringArray:
 	if not is_finite(ambient_flowability) \
 			or ambient_flowability < 0.0 or ambient_flowability > 1.0:
 		errors.append("ambient_flowability must be finite and inside [0, 1]")
-	if not is_finite(diffusion_rate) or diffusion_rate < 0.0:
-		errors.append("diffusion_rate must be finite and non-negative")
-	if not is_finite(arcane_drift_speed) or arcane_drift_speed < 0.0:
-		errors.append("arcane_drift_speed must be finite and non-negative")
+	if not is_finite(ambient_mana_diffusivity) or ambient_mana_diffusivity < 0.0:
+		errors.append("ambient_mana_diffusivity must be finite and non-negative")
+	if not is_finite(leyline_parallel_diffusivity_multiplier) \
+			or leyline_parallel_diffusivity_multiplier < 1.0:
+		errors.append(
+			"leyline_parallel_diffusivity_multiplier must be finite and at least one"
+		)
+	if not is_finite(arcane_drift_speed_per_flow) or arcane_drift_speed_per_flow < 0.0:
+		errors.append("arcane_drift_speed_per_flow must be finite and non-negative")
 	if not is_finite(background_restoration_min_rate) \
 			or background_restoration_min_rate < 0.0:
 		errors.append("background_restoration_min_rate must be finite and non-negative")
@@ -59,8 +62,9 @@ func duplicate_settings() -> ArcaneEnvironmentSettings:
 	var result := ArcaneEnvironmentSettings.new()
 	result.leyline_influence_radius = leyline_influence_radius
 	result.ambient_flowability = ambient_flowability
-	result.diffusion_rate = diffusion_rate
-	result.arcane_drift_speed = arcane_drift_speed
+	result.ambient_mana_diffusivity = ambient_mana_diffusivity
+	result.leyline_parallel_diffusivity_multiplier = leyline_parallel_diffusivity_multiplier
+	result.arcane_drift_speed_per_flow = arcane_drift_speed_per_flow
 	result.background_restoration_min_rate = background_restoration_min_rate
 	result.background_restoration_max_rate = background_restoration_max_rate
 	result.solver_cfl_safety = solver_cfl_safety
