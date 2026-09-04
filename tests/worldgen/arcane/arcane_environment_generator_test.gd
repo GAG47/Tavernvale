@@ -5,6 +5,7 @@ var _seed_one_graph: SpatialGraph
 var _seed_one_field: ArcaneFieldLayer
 var _seed_one_web: ArcaneWebLayer
 var _seed_one_circulation: ArcaneCirculationLayer
+var _seed_one_empty_forcing: ArcaneForcingLayer
 var _seed_one_environment: ArcaneEnvironmentLayer
 
 
@@ -70,6 +71,8 @@ func _test_background_equilibrium_invariant() -> void:
 		stability,
 		PackedFloat64Array([1.0, 1.0]),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array(),
 		false
@@ -108,6 +111,8 @@ func _test_background_stability_controls_restoration() -> void:
 		PackedFloat32Array([1.0, 0.0]),
 		PackedFloat64Array([0.15, 0.15]),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array([0.8, 0.8]),
 		false
@@ -127,6 +132,8 @@ func _test_natural_disequilibrium_diffusion_and_mass_conservation() -> void:
 		PackedFloat32Array([0.0, 0.0]),
 		PackedFloat64Array([1.0, 1.0]),
 		PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		initial,
 		false
@@ -185,6 +192,8 @@ func _test_arcane_drift_direction_and_actual_mana_transport() -> void:
 		PackedFloat32Array([0.0, 0.0]),
 		PackedFloat64Array([1.0, 1.0]),
 		PackedVector2Array([Vector2(0.5, 0.0), Vector2(0.5, 0.0)]),
+		_zero_rates(transport_graph),
+		_zero_rates(transport_graph),
 		settings,
 		initial,
 		false
@@ -204,6 +213,8 @@ func _test_internal_drift_conservation() -> void:
 		PackedFloat32Array([0.0, 0.0]),
 		PackedFloat64Array([1.0, 1.0]),
 		PackedVector2Array([Vector2(0.4, 0.0), Vector2(0.4, 0.0)]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		initial,
 		false
@@ -222,6 +233,8 @@ func _test_open_boundary() -> void:
 		PackedFloat32Array([0.0]),
 		PackedFloat64Array([1.0]),
 		PackedVector2Array([Vector2(0.4, 0.0)]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array([0.8]),
 		true
@@ -232,6 +245,8 @@ func _test_open_boundary() -> void:
 		PackedFloat32Array([0.0]),
 		PackedFloat64Array([1.0]),
 		PackedVector2Array([Vector2(-0.4, 0.0)]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array([0.2]),
 		true
@@ -247,6 +262,8 @@ func _test_open_boundary() -> void:
 		PackedFloat32Array([0.0]),
 		PackedFloat64Array([1.0]),
 		PackedVector2Array([Vector2.ZERO]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array([0.8]),
 		true
@@ -257,6 +274,8 @@ func _test_open_boundary() -> void:
 		PackedFloat32Array([0.0]),
 		PackedFloat64Array([1.0]),
 		PackedVector2Array([Vector2.ZERO]),
+		_zero_rates(graph),
+		_zero_rates(graph),
 		settings,
 		PackedFloat64Array([0.4]),
 		true
@@ -313,6 +332,8 @@ func _test_resolution_behavior() -> void:
 			PackedFloat32Array([0.5, 0.5]),
 			PackedFloat64Array([0.15, 0.15]),
 			PackedVector2Array([Vector2.ZERO, Vector2.ZERO]),
+			_zero_rates(graph),
+			_zero_rates(graph),
 			settings,
 			PackedFloat64Array(),
 			false
@@ -338,6 +359,8 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 			if _seed_one_field != null else null
 	_seed_one_circulation = ArcaneCirculationGenerator.generate(_seed_one_web) \
 			if _seed_one_web != null else null
+	_seed_one_empty_forcing = _empty_forcing_layer(_seed_one_graph) \
+			if _seed_one_graph != null else null
 	_expect(_seed_one_graph != null and _seed_one_field != null
 			and _seed_one_web != null and _seed_one_circulation != null,
 		"Seed 1 v2.2.1 fixture should generate")
@@ -345,7 +368,8 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 		return
 	var input_hash := _arcane_input_hash()
 	_seed_one_environment = ArcaneEnvironmentGenerator.generate(
-		_seed_one_graph, _seed_one_field, _seed_one_web, _seed_one_circulation
+		_seed_one_graph, _seed_one_field, _seed_one_web, _seed_one_circulation,
+		_seed_one_empty_forcing
 	)
 	var first_diagnostics := ArcaneEnvironmentGenerator.last_generation_diagnostics()
 	_expect(_seed_one_environment != null, "Seed 1 Arcane Environment should generate")
@@ -360,7 +384,8 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 	_expect(input_hash == _arcane_input_hash(),
 		"v2.3 generation must preserve SpatialGraph and all v2.0-v2.2 formal data")
 	var repeat := ArcaneEnvironmentGenerator.generate(
-		_seed_one_graph, _seed_one_field, _seed_one_web, _seed_one_circulation
+		_seed_one_graph, _seed_one_field, _seed_one_web, _seed_one_circulation,
+		_seed_one_empty_forcing
 	)
 	_expect(repeat != null, "repeat Seed 1 Arcane Environment should generate")
 	if repeat != null:
@@ -435,6 +460,19 @@ func _total_mass(graph: SpatialGraph, concentrations) -> float:
 	for cell_id in graph.cell_count():
 		total += float(concentrations[cell_id]) * graph.cell_areas[cell_id]
 	return total
+
+
+func _zero_rates(graph: SpatialGraph) -> PackedFloat64Array:
+	var rates := PackedFloat64Array()
+	rates.resize(graph.cell_count())
+	return rates
+
+
+func _empty_forcing_layer(graph: SpatialGraph) -> ArcaneForcingLayer:
+	var forcing := ArcaneForcingLayer.new()
+	forcing.source_rate.resize(graph.cell_count())
+	forcing.sink_rate.resize(graph.cell_count())
+	return forcing
 
 
 func _arrays_approximately_equal(first, second, tolerance: float) -> bool:

@@ -12,12 +12,14 @@ static func generate(
 		arcane_field: ArcaneFieldLayer,
 		arcane_web: ArcaneWebLayer,
 		arcane_circulation: ArcaneCirculationLayer,
+		arcane_forcing: ArcaneForcingLayer,
 		settings: ArcaneEnvironmentSettings = null
 ) -> ArcaneEnvironmentLayer:
 	_last_generation_diagnostics = {}
 	var actual_settings := settings if settings != null else ArcaneEnvironmentSettings.new()
 	var input_errors := _validate_inputs(
-		spatial_graph, arcane_field, arcane_web, arcane_circulation, actual_settings
+		spatial_graph, arcane_field, arcane_web, arcane_circulation,
+		arcane_forcing, actual_settings
 	)
 	if not input_errors.is_empty():
 		push_error("ArcaneEnvironmentGenerator: invalid inputs:\n" + "\n".join(input_errors))
@@ -39,6 +41,8 @@ static func generate(
 		arcane_field.background_stability,
 		web_projection.flowability,
 		drift_field,
+		arcane_forcing.source_rate,
+		arcane_forcing.sink_rate,
 		actual_settings
 	)
 	var solver_ms := _elapsed_ms(stage_started)
@@ -76,6 +80,7 @@ static func generate(
 	_last_generation_diagnostics = _build_diagnostics(
 		arcane_field,
 		environment,
+		arcane_forcing,
 		web_projection.web_influence,
 		stability_result.arcane_stress,
 		solver_report,
@@ -160,6 +165,8 @@ static func solve_transport(
 		background_stability: PackedFloat32Array,
 		flowability,
 		drift_field: PackedVector2Array,
+		source_rate,
+		sink_rate,
 		settings: ArcaneEnvironmentSettings,
 		initial_concentration = PackedFloat64Array(),
 		include_boundary: bool = true
@@ -183,7 +190,8 @@ static func solve_transport(
 			settings.background_restoration_max_rate,
 			background_stability[cell_id]
 		)
-		removal_rate[cell_id] = restoration_rate[cell_id]
+		removal_rate[cell_id] = restoration_rate[cell_id] \
+				+ float(source_rate[cell_id]) + float(sink_rate[cell_id])
 
 	var faces := _build_transport_faces(
 		graph, flowability, drift_field, settings, include_boundary
@@ -254,10 +262,18 @@ static func solve_transport(
 				diffusion_flux + velocity_length * upwind_concentration
 			) * dt
 		for cell_id in count:
+			var forcing_rate := forcing_concentration_rate(
+				float(source_rate[cell_id]),
+				float(sink_rate[cell_id]),
+				concentration[cell_id]
+			)
 			delta_mass[cell_id] += (
 				graph.cell_areas[cell_id]
-				* restoration_rate[cell_id]
-				* (float(background_mana[cell_id]) - concentration[cell_id])
+				* (
+					restoration_rate[cell_id]
+							* (float(background_mana[cell_id]) - concentration[cell_id])
+					+ forcing_rate
+				)
 				* dt
 			)
 		final_max_delta = 0.0
@@ -296,6 +312,12 @@ static func solve_transport(
 				and raw_maximum <= 1.0 + ACCEPTED_RANGE_EPSILON,
 	}
 	return {"concentration": concentration, "report": report}
+
+
+static func forcing_concentration_rate(
+		source_rate: float, sink_rate: float, concentration: float
+) -> float:
+	return source_rate * (1.0 - concentration) - sink_rate * concentration
 
 
 static func synthesize_stability(
@@ -449,6 +471,7 @@ static func _validate_inputs(
 		field: ArcaneFieldLayer,
 		web: ArcaneWebLayer,
 		circulation: ArcaneCirculationLayer,
+		forcing: ArcaneForcingLayer,
 		settings: ArcaneEnvironmentSettings
 ) -> PackedStringArray:
 	var errors := PackedStringArray()
@@ -468,6 +491,10 @@ static func _validate_inputs(
 		errors.append_array(ArcaneCirculationValidator.validate(web, circulation))
 	elif circulation == null:
 		errors.append("Arcane Circulation is null")
+	if graph != null:
+		errors.append_array(ArcaneForcingValidator.validate(graph, forcing))
+	elif forcing == null:
+		errors.append("Arcane Forcing is null")
 	if settings == null:
 		errors.append("Arcane Environment settings are null")
 	else:
@@ -490,6 +517,7 @@ static func _clamped_float32(values) -> PackedFloat32Array:
 static func _build_diagnostics(
 		field: ArcaneFieldLayer,
 		environment: ArcaneEnvironmentLayer,
+		forcing: ArcaneForcingLayer,
 		web_influence,
 		arcane_stress,
 		solver_report: Dictionary,
@@ -502,20 +530,44 @@ static func _build_diagnostics(
 	absolute_delta.resize(environment.cell_count())
 	var enriched_count := 0
 	var depleted_count := 0
+	var strong_enriched_count := 0
+	var strong_depleted_count := 0
 	var influenced_count := 0
-	var low_stability_count := 0
+	var below_75_count := 0
+	var below_50_count := 0
+	var below_25_count := 0
+	var directly_forced_count := 0
+	var significantly_anomalous_count := 0
+	var significant_outside_forcing_count := 0
 	for cell_id in environment.cell_count():
 		var delta := environment.mana_concentration[cell_id] - field.background_mana[cell_id]
+		var directly_forced := forcing.source_rate[cell_id] > 0.0 \
+				or forcing.sink_rate[cell_id] > 0.0
+		var significantly_anomalous := absf(delta) > 0.05
 		concentration_delta[cell_id] = delta
 		absolute_delta[cell_id] = absf(delta)
 		if delta > 0.05:
 			enriched_count += 1
 		if delta < -0.05:
 			depleted_count += 1
+		if delta > 0.10:
+			strong_enriched_count += 1
+		if delta < -0.10:
+			strong_depleted_count += 1
+		if directly_forced:
+			directly_forced_count += 1
+		if significantly_anomalous:
+			significantly_anomalous_count += 1
+			if not directly_forced:
+				significant_outside_forcing_count += 1
 		if float(web_influence[cell_id]) > 0.0:
 			influenced_count += 1
+		if environment.mana_stability[cell_id] < 0.75:
+			below_75_count += 1
+		if environment.mana_stability[cell_id] < 0.50:
+			below_50_count += 1
 		if environment.mana_stability[cell_id] < 0.25:
-			low_stability_count += 1
+			below_25_count += 1
 	var count := environment.cell_count()
 	var absolute_statistics := _statistics(absolute_delta, [0.50, 0.90])
 	return {
@@ -525,11 +577,23 @@ static func _build_diagnostics(
 		"absolute_concentration_delta": absolute_statistics,
 		"enriched_cells": _count_statistics(enriched_count, count),
 		"depleted_cells": _count_statistics(depleted_count, count),
+		"strong_enriched_cells": _count_statistics(strong_enriched_count, count),
+		"strong_depleted_cells": _count_statistics(strong_depleted_count, count),
+		"directly_forced_cells": _count_statistics(directly_forced_count, count),
+		"significantly_anomalous_cells": _count_statistics(
+			significantly_anomalous_count, count
+		),
+		"significantly_anomalous_outside_forcing_cores": _count_statistics(
+			significant_outside_forcing_count, count
+		),
 		"mana_flowability": _statistics(environment.mana_flowability),
 		"leyline_influenced_cells": _count_statistics(influenced_count, count),
 		"background_stability": _statistics(field.background_stability),
 		"mana_stability": _statistics(environment.mana_stability),
-		"low_mana_stability": _count_statistics(low_stability_count, count),
+		"mana_stability_below_75": _count_statistics(below_75_count, count),
+		"mana_stability_below_50": _count_statistics(below_50_count, count),
+		"mana_stability_below_25": _count_statistics(below_25_count, count),
+		"low_mana_stability": _count_statistics(below_25_count, count),
 		"arcane_stress": _statistics(arcane_stress, [0.90]),
 		"solver": solver_report.duplicate(true),
 		"performance": performance.duplicate(true),

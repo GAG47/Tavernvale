@@ -25,6 +25,7 @@ var resource_potential: ResourcePotentialLayer
 var arcane_field: ArcaneFieldLayer
 var arcane_web: ArcaneWebLayer
 var arcane_circulation: ArcaneCirculationLayer
+var arcane_forcing: ArcaneForcingLayer
 var arcane_environment: ArcaneEnvironmentLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
@@ -37,6 +38,7 @@ var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
 var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
+var arcane_forcing_settings: ArcaneForcingSettings
 var arcane_environment_settings: ArcaneEnvironmentSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
@@ -57,6 +59,7 @@ var _soil_generation_ms := 0
 var _resource_generation_ms := 0
 var _arcane_generation_ms := 0
 var _arcane_circulation_generation_ms := 0
+var _arcane_forcing_generation_ms := 0
 var _arcane_environment_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
@@ -74,6 +77,7 @@ var _soil_statistics := {}
 var _resource_statistics := {}
 var _arcane_statistics := {}
 var _arcane_environment_diagnostics := {}
+var _arcane_forcing_diagnostics := {}
 var _show_arcane_domains := false
 
 const _MARGIN := 24.0
@@ -132,6 +136,7 @@ enum ViewMode {
 	BACKGROUND_STABILITY,
 	ARCANE_WEB,
 	ARCANE_CIRCULATION,
+	ARCANE_FORCING,
 	MANA_CONCENTRATION,
 	MANA_FLOWABILITY,
 	MANA_STABILITY,
@@ -189,6 +194,7 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.BACKGROUND_STABILITY,
 		ViewMode.ARCANE_WEB,
 		ViewMode.ARCANE_CIRCULATION,
+		ViewMode.ARCANE_FORCING,
 		ViewMode.MANA_CONCENTRATION,
 		ViewMode.MANA_FLOWABILITY,
 		ViewMode.MANA_STABILITY,
@@ -268,6 +274,7 @@ func _draw() -> void:
 			or arcane_field == null \
 			or arcane_web == null \
 			or arcane_circulation == null \
+			or arcane_forcing == null \
 			or arcane_environment == null \
 			or preliminary_climate == null \
 			or climate == null:
@@ -277,11 +284,13 @@ func _draw() -> void:
 		_draw_arcane_web()
 	elif view_mode == ViewMode.ARCANE_CIRCULATION:
 		_draw_arcane_circulation()
+	elif view_mode == ViewMode.ARCANE_FORCING:
+		_draw_arcane_forcing()
 	else:
 		for cell_id in graph.cell_count():
 			var color := _cell_color(cell_id)
 			_draw_cell_triangle_fan(cell_id, color)
-	if selected_cell_id >= 0 and not _is_arcane_network_view():
+	if selected_cell_id >= 0 and not _is_arcane_overlay_view():
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
 			Color(1.0, 0.72, 0.12),
@@ -328,6 +337,30 @@ func _draw_arcane_circulation() -> void:
 				if node.kind == ArcaneWebNode.Kind.BOUNDARY_EXIT \
 				else Color(0.76, 0.98, 1.0)
 		draw_circle(_to_screen(node.world_position), radius, color)
+
+
+func _draw_arcane_forcing() -> void:
+	var map_rect := Rect2(
+		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
+	)
+	draw_rect(map_rect, Color(0.018, 0.022, 0.045))
+	for site in arcane_forcing.sites:
+		var center := _to_screen(site.world_position)
+		var radius := site.core_radius * _view_scale
+		var color := Color(0.22, 0.94, 0.58) \
+				if site.kind == ArcaneForcingSite.Kind.SOURCE \
+				else Color(0.94, 0.24, 0.32)
+		draw_circle(center, radius, Color(color.r, color.g, color.b, 0.09))
+		draw_arc(center, radius, 0.0, TAU, 64, Color(color.r, color.g, color.b, 0.42), 1.0, true)
+		if site.kind == ArcaneForcingSite.Kind.SOURCE:
+			draw_circle(center, 5.0, color)
+			draw_line(center + Vector2(-8.0, 0.0), center + Vector2(8.0, 0.0), color, 2.0)
+			draw_line(center + Vector2(0.0, -8.0), center + Vector2(0.0, 8.0), color, 2.0)
+		else:
+			draw_colored_polygon(PackedVector2Array([
+				center + Vector2(0.0, -7.0), center + Vector2(7.0, 0.0),
+				center + Vector2(0.0, 7.0), center + Vector2(-7.0, 0.0),
+			]), color)
 
 
 func _draw_arcane_flow_arrow(
@@ -909,6 +942,7 @@ func _regenerate_composition() -> void:
 		arcane_field = null
 		arcane_web = null
 		arcane_circulation = null
+		arcane_forcing = null
 		arcane_environment = null
 		preliminary_climate = null
 		climate = null
@@ -1028,12 +1062,23 @@ func _regenerate_composition() -> void:
 	)
 	_arcane_circulation_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
+	arcane_forcing_settings = ArcaneForcingSettings.new()
+	arcane_forcing = ArcaneForcingGenerator.generate(
+		graph, seed, arcane_forcing_settings
+	)
+	_arcane_forcing_generation_ms = Time.get_ticks_msec() - started
+	_arcane_forcing_diagnostics = (
+		ArcaneForcingGenerator.last_generation_diagnostics()
+		if arcane_forcing != null else {}
+	)
+	started = Time.get_ticks_msec()
 	arcane_environment_settings = ArcaneEnvironmentSettings.new()
-	arcane_environment = null if arcane_circulation == null else ArcaneEnvironmentGenerator.generate(
+	arcane_environment = null if arcane_forcing == null else ArcaneEnvironmentGenerator.generate(
 		graph,
 		arcane_field,
 		arcane_web,
 		arcane_circulation,
+		arcane_forcing,
 		arcane_environment_settings
 	)
 	_arcane_environment_generation_ms = Time.get_ticks_msec() - started
@@ -1376,6 +1421,8 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_arcane_circulation_statistics(
 				lines, _arcane_statistics.get("circulation", {})
 			)
+		ViewMode.ARCANE_FORCING:
+			_append_arcane_forcing_statistics(lines)
 		ViewMode.MANA_CONCENTRATION:
 			_append_mana_concentration_statistics(lines)
 		ViewMode.MANA_FLOWABILITY:
@@ -1937,6 +1984,7 @@ func _calculate_arcane_statistics() -> Dictionary:
 		"stability": _arcane_field_statistics(arcane_field.background_stability),
 		"web": ArcaneWebValidator.statistics(arcane_web),
 		"circulation": ArcaneCirculationValidator.statistics(arcane_web, arcane_circulation),
+		"forcing": ArcaneForcingValidator.statistics(graph, arcane_forcing),
 	}
 
 
@@ -2040,6 +2088,56 @@ func _append_arcane_circulation_statistics(
 	lines.append("Debug Domains: %s" % ("On" if _show_arcane_domains else "Off"))
 
 
+func _append_arcane_forcing_statistics(lines: PackedStringArray) -> void:
+	var statistics := _arcane_forcing_diagnostics
+	if statistics.is_empty():
+		lines.append("No Natural Arcane Forcing data")
+		return
+	lines.append("Sites: %d | Sources: %d | Sinks: %d" % [
+		statistics.total_sites, statistics.sources, statistics.sinks,
+	])
+	lines.append("Centers inside: %d | Outside influencing: %d" % [
+		statistics.inside_world, statistics.outside_influencing_world,
+	])
+	lines.append("Core Radius: %.1f | Total Power: %.1f" % [
+		statistics.core_radius, statistics.total_power,
+	])
+	lines.append("Source Rate Min/Mean/Max:")
+	lines.append("  %.6f / %.6f / %.6f" % [
+		statistics.source_rate.min, statistics.source_rate.mean, statistics.source_rate.max,
+	])
+	lines.append("Sink Rate Min/Mean/Max:")
+	lines.append("  %.6f / %.6f / %.6f" % [
+		statistics.sink_rate.min, statistics.sink_rate.mean, statistics.sink_rate.max,
+	])
+	lines.append("Source affected: %d (%.2f%%)" % [
+		statistics.source_affected_cells.count,
+		statistics.source_affected_cells.percentage,
+	])
+	lines.append("Sink affected: %d (%.2f%%)" % [
+		statistics.sink_affected_cells.count,
+		statistics.sink_affected_cells.percentage,
+	])
+	lines.append("Both affected: %d (%.2f%%)" % [
+		statistics.both_affected_cells.count,
+		statistics.both_affected_cells.percentage,
+	])
+	lines.append("Directly forced: %d (%.3f%%)" % [
+		statistics.directly_forced_cells.count,
+		statistics.directly_forced_cells.percentage,
+	])
+	if not statistics.fully_inside_site_power.is_empty():
+		var projected: Dictionary = statistics.fully_inside_site_power[0]
+		lines.append("Site %d Power: %.3f / %.3f (%+.2f%%)" % [
+			projected.site_id, projected.projected_base_power, projected.total_power,
+			projected.relative_error * 100.0,
+		])
+	lines.append("Sampling: %.3f ms | Projection: %.3f ms" % [
+		statistics.performance.sampling_ms, statistics.performance.projection_ms,
+	])
+	lines.append("Generation: %d ms" % _arcane_forcing_generation_ms)
+
+
 func _append_mana_concentration_statistics(lines: PackedStringArray) -> void:
 	var diagnostics := _arcane_environment_diagnostics
 	if diagnostics.is_empty():
@@ -2066,6 +2164,18 @@ func _append_mana_concentration_statistics(lines: PackedStringArray) -> void:
 	])
 	lines.append("Depleted < -0.05: %d (%.3f%%)" % [
 		diagnostics.depleted_cells.count, diagnostics.depleted_cells.percentage
+	])
+	lines.append("Strong Enriched > +0.10: %d (%.3f%%)" % [
+		diagnostics.strong_enriched_cells.count,
+		diagnostics.strong_enriched_cells.percentage,
+	])
+	lines.append("Strong Depleted < -0.10: %d (%.3f%%)" % [
+		diagnostics.strong_depleted_cells.count,
+		diagnostics.strong_depleted_cells.percentage,
+	])
+	lines.append("Anomalous outside cores: %d (%.3f%%)" % [
+		diagnostics.significantly_anomalous_outside_forcing_cores.count,
+		diagnostics.significantly_anomalous_outside_forcing_cores.percentage,
 	])
 	lines.append("Generation: %d ms" % _arcane_environment_generation_ms)
 
@@ -2103,8 +2213,17 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
 	lines.append("Final Mana Stability Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [stability.min, stability.mean, stability.max])
-	lines.append("Low Stability < 0.25: %d (%.3f%%)" % [
-		diagnostics.low_mana_stability.count, diagnostics.low_mana_stability.percentage
+	lines.append("Stability < 0.75: %d (%.3f%%)" % [
+		diagnostics.mana_stability_below_75.count,
+		diagnostics.mana_stability_below_75.percentage,
+	])
+	lines.append("Stability < 0.50: %d (%.3f%%)" % [
+		diagnostics.mana_stability_below_50.count,
+		diagnostics.mana_stability_below_50.percentage,
+	])
+	lines.append("Stability < 0.25: %d (%.3f%%)" % [
+		diagnostics.mana_stability_below_25.count,
+		diagnostics.mana_stability_below_25.percentage,
 	])
 	lines.append("Arcane Stress Mean/P90/Max:")
 	lines.append("  %.5f / %.5f / %.5f" % [stress.mean, stress.p90, stress.max])
@@ -2304,7 +2423,7 @@ func _select_current_page_view(view_index: int) -> void:
 	if view_index < 0 or view_index >= page_views.size():
 		return
 	view_mode = page_views[view_index]
-	if _is_arcane_network_view():
+	if _is_arcane_overlay_view():
 		selected_cell_id = -1
 
 
@@ -2391,6 +2510,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Arcane Web"
 		ViewMode.ARCANE_CIRCULATION:
 			return "Arcane Circulation"
+		ViewMode.ARCANE_FORCING:
+			return "Arcane Forcing"
 		ViewMode.MANA_CONCENTRATION:
 			return "Mana Concentration"
 		ViewMode.MANA_FLOWABILITY:
@@ -2437,7 +2558,7 @@ func _is_arcane_view() -> bool:
 			or view_mode == ViewMode.MANA_CONCENTRATION \
 			or view_mode == ViewMode.MANA_FLOWABILITY \
 			or view_mode == ViewMode.MANA_STABILITY \
-			or _is_arcane_network_view()
+			or _is_arcane_overlay_view()
 
 
 func _is_arcane_network_view() -> bool:
@@ -2445,8 +2566,12 @@ func _is_arcane_network_view() -> bool:
 			or view_mode == ViewMode.ARCANE_CIRCULATION
 
 
+func _is_arcane_overlay_view() -> bool:
+	return _is_arcane_network_view() or view_mode == ViewMode.ARCANE_FORCING
+
+
 func _select_cell_at(world_position: Vector2) -> void:
-	if _is_arcane_network_view():
+	if _is_arcane_overlay_view():
 		selected_cell_id = -1
 		queue_redraw()
 		return

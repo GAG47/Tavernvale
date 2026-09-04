@@ -157,11 +157,15 @@ func _build_fixed_pipeline() -> Dictionary:
 	)
 	if arcane_circulation == null:
 		return {}
+	var arcane_forcing := ArcaneForcingGenerator.generate(graph, graph.config.seed)
+	if arcane_forcing == null:
+		return {}
+	var arcane_forcing_diagnostics := ArcaneForcingGenerator.last_generation_diagnostics()
 	var v22_hash_before_environment := _v22_pipeline_hash(
 		v2_hash_before_web, arcane_field, arcane_web, arcane_circulation
 	)
 	var arcane_environment := ArcaneEnvironmentGenerator.generate(
-		graph, arcane_field, arcane_web, arcane_circulation
+		graph, arcane_field, arcane_web, arcane_circulation, arcane_forcing
 	)
 	if arcane_environment == null:
 		return {}
@@ -191,6 +195,8 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_field": arcane_field,
 		"arcane_web": arcane_web,
 		"arcane_circulation": arcane_circulation,
+		"arcane_forcing": arcane_forcing,
+		"arcane_forcing_diagnostics": arcane_forcing_diagnostics,
 		"arcane_environment": arcane_environment,
 		"arcane_environment_diagnostics": arcane_environment_diagnostics,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
@@ -475,7 +481,12 @@ func _test_arcane_circulation_follows_web_and_preserves_prior_layers() -> void:
 func _test_arcane_environment_follows_circulation_and_preserves_prior_layers() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
+	var forcing: ArcaneForcingLayer = _pipeline.arcane_forcing
 	var diagnostics: Dictionary = _pipeline.arcane_environment_diagnostics
+	_expect(
+		forcing != null and ArcaneForcingValidator.validate(graph, forcing).is_empty(),
+		"Natural Arcane Forcing should validate as an independent formal pipeline input"
+	)
 	_expect(
 		environment != null
 				and ArcaneEnvironmentValidator.validate(graph, environment).is_empty(),
@@ -538,7 +549,8 @@ func _test_determinism() -> void:
 		graph,
 		_pipeline.arcane_field,
 		_pipeline.arcane_web,
-		_pipeline.arcane_circulation
+		_pipeline.arcane_circulation,
+		_pipeline.arcane_forcing
 	)
 	_expect(repeated_environment != null, "repeat Arcane Environment pipeline should generate")
 	if repeated_environment != null:
@@ -551,6 +563,15 @@ func _test_determinism() -> void:
 		_expect(_pipeline.arcane_environment.mana_stability
 				== repeated_environment.mana_stability,
 			"Final Mana Stability should be deterministic")
+	var repeated_forcing := ArcaneForcingGenerator.generate(graph, graph.config.seed)
+	_expect(repeated_forcing != null, "repeat Arcane Forcing pipeline should generate")
+	if repeated_forcing != null:
+		_expect(_forcing_signature(_pipeline.arcane_forcing)
+				== _forcing_signature(repeated_forcing),
+			"Natural Arcane Forcing Sites should be deterministic")
+		_expect(_pipeline.arcane_forcing.source_rate == repeated_forcing.source_rate
+				and _pipeline.arcane_forcing.sink_rate == repeated_forcing.sink_rate,
+			"Natural Arcane Forcing projected rates should be deterministic")
 	var repeated_resources := ResourcePotentialGenerator.generate(
 		graph,
 		conditioned,
@@ -669,6 +690,15 @@ func _v22_pipeline_hash(
 		_v21_pipeline_hash(v2_hash_before_web, arcane_field, arcane_web),
 		arcane_circulation.edge_flow,
 	])
+
+
+func _forcing_signature(forcing: ArcaneForcingLayer) -> Array:
+	var signature := []
+	for site in forcing.sites:
+		signature.append([
+			site.id, site.world_position, site.kind, site.core_radius, site.total_power,
+		])
+	return signature
 
 
 func _expect(condition: bool, message: String) -> void:
