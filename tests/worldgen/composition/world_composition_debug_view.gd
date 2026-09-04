@@ -2253,7 +2253,10 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 		return
 	var background: Dictionary = diagnostics.background_stability
 	var stability: Dictionary = diagnostics.mana_stability
-	var stress: Dictionary = diagnostics.arcane_stress
+	var forcing: Dictionary = diagnostics.forcing_disturbance
+	var transport: Dictionary = diagnostics.transport_imbalance
+	var persistent: Dictionary = diagnostics.persistent_disturbance
+	var restoration: Dictionary = diagnostics.restoration_rate
 	var solver: Dictionary = diagnostics.solver
 	lines.append("Background Stability Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
@@ -2271,9 +2274,45 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 		diagnostics.mana_stability_below_25.count,
 		diagnostics.mana_stability_below_25.percentage,
 	])
-	lines.append("Arcane Stress Mean/P90/Max:")
-	lines.append("  %.5f / %.5f / %.5f" % [stress.mean, stress.p90, stress.max])
-	lines.append("Stability calculation source: Raw Concentration")
+	lines.append("Forcing Disturbance Min/Mean/P90/Max:")
+	lines.append("  %.5f / %.5f / %.5f / %.5f" % [
+		forcing.min, forcing.mean, forcing.p90, forcing.max,
+	])
+	lines.append("Transport Imbalance Min/Mean/P90/Max:")
+	lines.append("  %.5f / %.5f / %.5f / %.5f" % [
+		transport.min, transport.mean, transport.p90, transport.max,
+	])
+	lines.append("Persistent Disturbance Min/Mean/P90/Max:")
+	lines.append("  %.5f / %.5f / %.5f / %.5f" % [
+		persistent.min, persistent.mean, persistent.p90, persistent.max,
+	])
+	lines.append("Restoration Rate Min/Mean/Max:")
+	lines.append("  %.5f / %.5f / %.5f" % [
+		restoration.min, restoration.mean, restoration.max,
+	])
+	lines.append("Flowability x Stability:")
+	lines.append("  Low/High: %d (%.2f%%) | Low/Low: %d (%.2f%%)" % [
+		diagnostics.low_flow_high_stability.count,
+		diagnostics.low_flow_high_stability.percentage,
+		diagnostics.low_flow_low_stability.count,
+		diagnostics.low_flow_low_stability.percentage,
+	])
+	lines.append("  High/High: %d (%.2f%%) | High/Low: %d (%.2f%%)" % [
+		diagnostics.high_flow_high_stability.count,
+		diagnostics.high_flow_high_stability.percentage,
+		diagnostics.high_flow_low_stability.count,
+		diagnostics.high_flow_low_stability.percentage,
+	])
+	lines.append("Flowability/Stability Pearson: %.5f" % (
+		diagnostics.flowability_stability_pearson
+	))
+	lines.append("Stability source: Persistent Disturbance vs Restoration")
+	for site in diagnostics.forcing_sites:
+		lines.append("Site %d %s F/B/D/S: %.2f / %.2f / %.4f / %.3f" % [
+			site.site_id, site.kind, site.center_flowability,
+			site.center_background_stability, site.center_forcing_disturbance,
+			site.center_mana_stability,
+		])
 	lines.append("BiCGSTAB iterations: %d" % solver.iterations)
 	lines.append("Relative / L-inf residual: %.9f / %.9f" % [
 		solver.relative_residual, solver.l_inf_residual,

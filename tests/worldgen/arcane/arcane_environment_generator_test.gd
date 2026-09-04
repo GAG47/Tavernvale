@@ -53,9 +53,11 @@ func _test_settings_and_formal_layer_contract() -> void:
 	]:
 		_expect(not _object_has_property(settings, StringName(removed_solver_setting)),
 			"explicit runtime setting %s must not remain public" % removed_solver_setting)
-	_expect(settings.stability_min_resistance == 0.15
-			and settings.stability_stress_response == 2.0,
-		"stability resistance/response must be 0.15/2.0")
+	for removed_stability_setting in [
+		"stability_min_resistance", "stability_stress_response",
+	]:
+		_expect(not _object_has_property(settings, StringName(removed_stability_setting)),
+			"obsolete Stability setting %s must be removed" % removed_stability_setting)
 	var layer := ArcaneEnvironmentLayer.new()
 	for forbidden in [
 		"web_influence", "mana_disequilibrium", "drift_vector", "restoration_rate",
@@ -95,8 +97,9 @@ func _test_no_stress_means_high_final_stability() -> void:
 		graph,
 		background,
 		PackedFloat32Array([0.0, 0.0]),
+		_empty_forcing_layer(graph),
 		background,
-		PackedFloat64Array([1.0, 1.0]),
+		_empty_faces(),
 		ArcaneEnvironmentSettings.new()
 	)
 	_expect(result.stability[0] == 1.0 and result.stability[1] == 1.0,
@@ -309,26 +312,29 @@ func _test_stability_response_and_natural_background_gradient() -> void:
 		graph,
 		background,
 		PackedFloat32Array([0.0, 1.0]),
+		_empty_forcing_layer(graph),
 		background,
-		PackedFloat64Array([1.0, 1.0]),
+		_empty_faces(),
 		settings
 	)
-	_expect(equilibrium.arcane_stress[0] == 0.0 and equilibrium.arcane_stress[1] == 0.0,
-		"a natural Background gradient must not count as Arcane Stress")
 	_expect(equilibrium.stability[0] == 1.0 and equilibrium.stability[1] == 1.0,
-		"C=B must remain fully stable regardless of Background gradient or resistance")
+		"C=B must remain fully stable regardless of Background Mana")
+	var forcing := ArcaneForcingLayer.new()
+	forcing.source_rate = PackedFloat32Array([0.08, 0.08])
+	forcing.sink_rate = PackedFloat32Array([0.0, 0.0])
 	var disturbed := ArcaneEnvironmentGenerator.synthesize_stability(
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 1.0]),
+		forcing,
 		PackedFloat64Array([0.7, 0.7]),
-		PackedFloat64Array([0.5, 0.5]),
+		_empty_faces(),
 		settings
 	)
-	_expect(disturbed.stability[0] < 0.25,
-		"strong excess Mana against low resistance must produce low Final Mana Stability")
+	_expect(disturbed.stability[0] < 1.0,
+		"persistent Source forcing must lower Final Mana Stability")
 	_expect(disturbed.stability[1] > disturbed.stability[0],
-		"higher Background Stability must resist the same Arcane Stress better")
+		"higher Background Stability must restore the same disturbance better")
 
 
 func _test_raw_public_mapping_and_stability_semantics() -> void:
@@ -340,17 +346,18 @@ func _test_raw_public_mapping_and_stability_semantics() -> void:
 	var graph := _two_cell_graph()
 	var background := PackedFloat32Array([0.2, 0.2])
 	var background_stability := PackedFloat32Array([0.5, 0.5])
-	var flowability := PackedFloat64Array([0.15, 0.15])
 	var light_overload := ArcaneEnvironmentGenerator.synthesize_stability(
 		graph, background, background_stability,
-		PackedFloat64Array([1.01, 1.01]), flowability, ArcaneEnvironmentSettings.new()
+		_empty_forcing_layer(graph), PackedFloat64Array([1.01, 1.01]),
+		_empty_faces(), ArcaneEnvironmentSettings.new()
 	)
 	var heavy_overload := ArcaneEnvironmentGenerator.synthesize_stability(
 		graph, background, background_stability,
-		PackedFloat64Array([1.45, 1.45]), flowability, ArcaneEnvironmentSettings.new()
+		_empty_forcing_layer(graph), PackedFloat64Array([1.45, 1.45]),
+		_empty_faces(), ArcaneEnvironmentSettings.new()
 	)
-	_expect(heavy_overload.stability[0] < light_overload.stability[0],
-		"Long-term Mana Stability must distinguish Raw 1.45 from Raw 1.01")
+	_expect(heavy_overload.stability == light_overload.stability,
+		"Raw Concentration must not directly change Mana Stability")
 
 
 func _test_sparse_solver_report_validation() -> void:
@@ -550,6 +557,18 @@ func _empty_forcing_layer(graph: SpatialGraph) -> ArcaneForcingLayer:
 	forcing.source_rate.resize(graph.cell_count())
 	forcing.sink_rate.resize(graph.cell_count())
 	return forcing
+
+
+func _empty_faces() -> Dictionary:
+	return {
+		"internal_a": PackedInt32Array(),
+		"internal_b": PackedInt32Array(),
+		"internal_diffusion": PackedFloat64Array(),
+		"internal_velocity_length": PackedFloat64Array(),
+		"boundary_cell": PackedInt32Array(),
+		"boundary_diffusion": PackedFloat64Array(),
+		"boundary_velocity_length": PackedFloat64Array(),
+	}
 
 
 func _arrays_approximately_equal(first, second, tolerance: float) -> bool:

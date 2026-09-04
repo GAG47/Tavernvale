@@ -8,8 +8,6 @@ var leyline_parallel_diffusivity_multiplier: float = 9.0
 var arcane_drift_speed_per_flow: float = 90.0
 var background_restoration_min_rate: float = 0.03
 var background_restoration_max_rate: float = 0.15
-var stability_min_resistance: float = 0.15
-var stability_stress_response: float = 2.0
 
 
 func validate() -> PackedStringArray:
@@ -36,11 +34,6 @@ func validate() -> PackedStringArray:
 		errors.append(
 			"background_restoration_max_rate must be finite and at least the minimum rate"
 		)
-	if not is_finite(stability_min_resistance) \
-			or stability_min_resistance <= 0.0 or stability_min_resistance > 1.0:
-		errors.append("stability_min_resistance must be finite and inside (0, 1]")
-	if not is_finite(stability_stress_response) or stability_stress_response < 0.0:
-		errors.append("stability_stress_response must be finite and non-negative")
 	return errors
 
 
@@ -53,6 +46,4 @@ func duplicate_settings() -> ArcaneEnvironmentSettings:
 	result.arcane_drift_speed_per_flow = arcane_drift_speed_per_flow
 	result.background_restoration_min_rate = background_restoration_min_rate
 	result.background_restoration_max_rate = background_restoration_max_rate
-	result.stability_min_resistance = stability_min_resistance
-	result.stability_stress_response = stability_stress_response
 	return result

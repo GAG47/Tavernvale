@@ -117,21 +117,23 @@ static func generate(
 		spatial_graph,
 		arcane_field.background_mana,
 		arcane_field.background_stability,
+		arcane_forcing,
 		solver_result.concentration,
-		environment.mana_flowability,
+		transport_faces,
 		actual_settings
 	)
 	environment.mana_stability = stability_result.stability
 	var stability_ms := _elapsed_ms(stage_started)
 	var total_ms := _elapsed_ms(total_started)
 	_last_generation_diagnostics = _build_diagnostics(
+		spatial_graph,
 		arcane_field,
 		environment,
 		arcane_forcing,
 		transport_projection,
 		transport_faces,
 		solver_result.concentration,
-		stability_result.arcane_stress,
+		stability_result,
 		solver_report,
 		actual_settings,
 		{
@@ -220,64 +222,95 @@ static func synthesize_stability(
 		graph: SpatialGraph,
 		background_mana: PackedFloat32Array,
 		background_stability: PackedFloat32Array,
-		concentration,
-		flowability,
+		forcing: ArcaneForcingLayer,
+		raw_concentration,
+		transport_faces: Dictionary,
 		settings: ArcaneEnvironmentSettings
 ) -> Dictionary:
-	## Long-term regional stability is derived from the internal raw steady state.
-	## Values above the public scale remain meaningful overload and must not be
-	## clamped before raw anomaly, excess, or anomaly-gradient stress is computed.
+	## Long-term Stability compares persistent forcing/transport imbalance with
+	## Background restoration ability. Concentration and Flowability are not direct
+	## Stability inputs; Raw C is used only to evaluate the existing physical fluxes.
 	var count := graph.cell_count()
-	var anomalies := PackedFloat64Array()
-	anomalies.resize(count)
-	var gradient_numerator := PackedFloat64Array()
-	gradient_numerator.resize(count)
-	var gradient_denominator := PackedFloat64Array()
-	gradient_denominator.resize(count)
-	for cell_id in count:
-		anomalies[cell_id] = float(concentration[cell_id]) - float(background_mana[cell_id])
-	for edge_id in graph.edge_count():
-		var cells: PackedInt32Array = graph.edge_cells[edge_id]
-		if cells.size() != 2:
-			continue
-		var cell_a := cells[0]
-		var cell_b := cells[1]
-		var vertices: Vector2i = graph.edge_vertex_ids[edge_id]
-		var face_length := graph.vertex_positions[vertices.x].distance_to(
-			graph.vertex_positions[vertices.y]
-		)
-		var center_distance := graph.cell_centers[cell_a].distance_to(
-			graph.cell_centers[cell_b]
-		)
-		if face_length <= NUMERICAL_EPSILON or center_distance <= NUMERICAL_EPSILON:
-			continue
-		var numerator := face_length * absf(anomalies[cell_a] - anomalies[cell_b]) \
-				/ center_distance
-		gradient_numerator[cell_a] += numerator
-		gradient_numerator[cell_b] += numerator
-		gradient_denominator[cell_a] += face_length
-		gradient_denominator[cell_b] += face_length
+	var transport_net_amount := compute_transport_net_amount(
+		graph, background_mana, raw_concentration, transport_faces
+	)
 	var stability := PackedFloat32Array()
 	stability.resize(count)
-	var arcane_stress := PackedFloat64Array()
-	arcane_stress.resize(count)
+	var forcing_disturbance := PackedFloat64Array()
+	forcing_disturbance.resize(count)
+	var transport_imbalance := PackedFloat64Array()
+	transport_imbalance.resize(count)
+	var persistent_disturbance := PackedFloat64Array()
+	persistent_disturbance.resize(count)
+	var restoration_rate := PackedFloat64Array()
+	restoration_rate.resize(count)
 	for cell_id in count:
-		var local_gradient := 0.0
-		if gradient_denominator[cell_id] > NUMERICAL_EPSILON:
-			local_gradient = gradient_numerator[cell_id] / gradient_denominator[cell_id]
-		var gradient_stress := clampf(
-			sqrt(graph.cell_areas[cell_id]) * local_gradient, 0.0, 1.0
+		forcing_disturbance[cell_id] = (
+			float(forcing.source_rate[cell_id]) + float(forcing.sink_rate[cell_id])
 		)
-		var excess := maxf(anomalies[cell_id], 0.0)
-		var raw_stress := excess + float(flowability[cell_id]) * gradient_stress
-		arcane_stress[cell_id] = settings.stability_stress_response * raw_stress
-		var resistance := settings.stability_min_resistance + (
-			1.0 - settings.stability_min_resistance
-		) * background_stability[cell_id]
-		stability[cell_id] = clampf(
-			resistance / (resistance + arcane_stress[cell_id]), 0.0, 1.0
+		transport_imbalance[cell_id] = (
+			absf(transport_net_amount[cell_id]) / graph.cell_areas[cell_id]
 		)
-	return {"stability": stability, "arcane_stress": arcane_stress}
+		persistent_disturbance[cell_id] = (
+			forcing_disturbance[cell_id] + transport_imbalance[cell_id]
+		)
+		restoration_rate[cell_id] = lerpf(
+			settings.background_restoration_min_rate,
+			settings.background_restoration_max_rate,
+			background_stability[cell_id]
+		)
+		var competition := restoration_rate[cell_id] + persistent_disturbance[cell_id]
+		stability[cell_id] = (
+			clampf(restoration_rate[cell_id] / competition, 0.0, 1.0)
+			if competition > NUMERICAL_EPSILON else 1.0
+		)
+	return {
+		"stability": stability,
+		"forcing_disturbance": forcing_disturbance,
+		"transport_net_amount": transport_net_amount,
+		"transport_imbalance": transport_imbalance,
+		"persistent_disturbance": persistent_disturbance,
+		"restoration_rate": restoration_rate,
+	}
+
+
+static func compute_transport_net_amount(
+		graph: SpatialGraph,
+		background_mana: PackedFloat32Array,
+		raw_concentration,
+		faces: Dictionary
+) -> PackedFloat64Array:
+	var transport_net_amount := PackedFloat64Array()
+	transport_net_amount.resize(graph.cell_count())
+	for face_index in faces.internal_a.size():
+		var cell_a: int = faces.internal_a[face_index]
+		var cell_b: int = faces.internal_b[face_index]
+		var anomaly_a := float(raw_concentration[cell_a]) - float(background_mana[cell_a])
+		var anomaly_b := float(raw_concentration[cell_b]) - float(background_mana[cell_b])
+		var diffusion_flux: float = faces.internal_diffusion[face_index] * (
+			anomaly_a - anomaly_b
+		)
+		var velocity_length: float = faces.internal_velocity_length[face_index]
+		var upwind_concentration := (
+			float(raw_concentration[cell_a])
+			if velocity_length >= 0.0 else float(raw_concentration[cell_b])
+		)
+		var total_face_flux := diffusion_flux + velocity_length * upwind_concentration
+		transport_net_amount[cell_a] -= total_face_flux
+		transport_net_amount[cell_b] += total_face_flux
+	for face_index in faces.boundary_cell.size():
+		var cell_id: int = faces.boundary_cell[face_index]
+		var background := float(background_mana[cell_id])
+		var anomaly := float(raw_concentration[cell_id]) - background
+		var diffusion_flux: float = faces.boundary_diffusion[face_index] * anomaly
+		var velocity_length: float = faces.boundary_velocity_length[face_index]
+		var upwind_concentration := (
+			float(raw_concentration[cell_id]) if velocity_length > 0.0 else background
+		)
+		transport_net_amount[cell_id] -= (
+			diffusion_flux + velocity_length * upwind_concentration
+		)
+	return transport_net_amount
 
 
 static func leyline_influence(distance: float, radius: float) -> float:
@@ -580,13 +613,14 @@ static func _raw_concentration_report(raw_concentration) -> Dictionary:
 
 
 static func _build_diagnostics(
+		graph: SpatialGraph,
 		field: ArcaneFieldLayer,
 		environment: ArcaneEnvironmentLayer,
 		forcing: ArcaneForcingLayer,
 		transport_projection: Dictionary,
 		transport_faces: Dictionary,
 		raw_concentration,
-		arcane_stress,
+		stability_result: Dictionary,
 		solver_report: Dictionary,
 		settings: ArcaneEnvironmentSettings,
 		performance: Dictionary
@@ -608,7 +642,10 @@ static func _build_diagnostics(
 	var significant_outside_forcing_count := 0
 	var significant_within_leyline_count := 0
 	var significant_outside_leyline_count := 0
-	var overload_stability := PackedFloat64Array()
+	var low_flow_high_stability_count := 0
+	var low_flow_low_stability_count := 0
+	var high_flow_high_stability_count := 0
+	var high_flow_low_stability_count := 0
 	for cell_id in environment.cell_count():
 		var delta := float(raw_concentration[cell_id]) - field.background_mana[cell_id]
 		var directly_forced := forcing.source_rate[cell_id] > 0.0 \
@@ -642,8 +679,16 @@ static func _build_diagnostics(
 			below_50_count += 1
 		if environment.mana_stability[cell_id] < 0.25:
 			below_25_count += 1
-		if float(raw_concentration[cell_id]) > 1.0:
-			overload_stability.append(environment.mana_stability[cell_id])
+		var low_flow := environment.mana_flowability[cell_id] < 0.50
+		var low_stability := environment.mana_stability[cell_id] < 0.75
+		if low_flow and not low_stability:
+			low_flow_high_stability_count += 1
+		elif low_flow and low_stability:
+			low_flow_low_stability_count += 1
+		elif not low_flow and not low_stability:
+			high_flow_high_stability_count += 1
+		else:
+			high_flow_low_stability_count += 1
 	var count := environment.cell_count()
 	var absolute_statistics := _statistics(absolute_delta, [0.50, 0.90])
 	return {
@@ -655,7 +700,6 @@ static func _build_diagnostics(
 		"raw_above_1_10": solver_report.raw_above_1_10.duplicate(true),
 		"raw_above_1_25": solver_report.raw_above_1_25.duplicate(true),
 		"maximum_overload": solver_report.maximum_overload,
-		"overload_mana_stability": _statistics(overload_stability),
 		"concentration_delta": _statistics(concentration_delta),
 		"absolute_concentration_delta": absolute_statistics,
 		"enriched_cells": _count_statistics(enriched_count, count),
@@ -683,7 +727,30 @@ static func _build_diagnostics(
 		"mana_stability_below_50": _count_statistics(below_50_count, count),
 		"mana_stability_below_25": _count_statistics(below_25_count, count),
 		"low_mana_stability": _count_statistics(below_25_count, count),
-		"arcane_stress": _statistics(arcane_stress, [0.90]),
+		"forcing_disturbance": _statistics(
+			stability_result.forcing_disturbance, [0.90]
+		),
+		"transport_imbalance": _statistics(
+			stability_result.transport_imbalance, [0.90]
+		),
+		"persistent_disturbance": _statistics(
+			stability_result.persistent_disturbance, [0.90]
+		),
+		"restoration_rate": _statistics(stability_result.restoration_rate),
+		"low_flow_high_stability": _count_statistics(
+			low_flow_high_stability_count, count
+		),
+		"low_flow_low_stability": _count_statistics(low_flow_low_stability_count, count),
+		"high_flow_high_stability": _count_statistics(
+			high_flow_high_stability_count, count
+		),
+		"high_flow_low_stability": _count_statistics(high_flow_low_stability_count, count),
+		"flowability_stability_pearson": _pearson_correlation(
+			environment.mana_flowability, environment.mana_stability
+		),
+		"forcing_sites": _forcing_site_diagnostics(
+			graph, field, environment, forcing, stability_result.forcing_disturbance
+		),
 		"transport_tensor_max_eigenvalue": (
 			transport_projection.tensor_max_eigenvalue.duplicate(true)
 		),
@@ -740,6 +807,59 @@ static func _count_statistics(count: int, total: int) -> Dictionary:
 	}
 
 
+static func _pearson_correlation(first, second) -> float:
+	if first.size() == 0 or first.size() != second.size():
+		return 0.0
+	var first_mean := float(_statistics(first).mean)
+	var second_mean := float(_statistics(second).mean)
+	var covariance := 0.0
+	var first_square := 0.0
+	var second_square := 0.0
+	for index in first.size():
+		var first_delta := float(first[index]) - first_mean
+		var second_delta := float(second[index]) - second_mean
+		covariance += first_delta * second_delta
+		first_square += first_delta * first_delta
+		second_square += second_delta * second_delta
+	var denominator := sqrt(first_square * second_square)
+	return covariance / denominator if denominator > NUMERICAL_EPSILON else 0.0
+
+
+static func _forcing_site_diagnostics(
+		graph: SpatialGraph,
+		field: ArcaneFieldLayer,
+		environment: ArcaneEnvironmentLayer,
+		forcing: ArcaneForcingLayer,
+		forcing_disturbance
+) -> Array:
+	var result := []
+	for site in forcing.sites:
+		var center_cell_id := _nearest_cell(graph, site.world_position)
+		if center_cell_id < 0:
+			continue
+		result.append({
+			"site_id": site.id,
+			"kind": site.kind_name(),
+			"center_cell_id": center_cell_id,
+			"center_flowability": environment.mana_flowability[center_cell_id],
+			"center_background_stability": field.background_stability[center_cell_id],
+			"center_forcing_disturbance": forcing_disturbance[center_cell_id],
+			"center_mana_stability": environment.mana_stability[center_cell_id],
+		})
+	return result
+
+
+static func _nearest_cell(graph: SpatialGraph, position: Vector2) -> int:
+	var nearest_cell_id := -1
+	var nearest_distance_squared := INF
+	for cell_id in graph.cell_count():
+		var distance_squared := graph.cell_centers[cell_id].distance_squared_to(position)
+		if distance_squared < nearest_distance_squared:
+			nearest_distance_squared = distance_squared
+			nearest_cell_id = cell_id
+	return nearest_cell_id
+
+
 static func _settings_dictionary(settings: ArcaneEnvironmentSettings) -> Dictionary:
 	return {
 		"leyline_influence_radius": settings.leyline_influence_radius,
@@ -751,8 +871,6 @@ static func _settings_dictionary(settings: ArcaneEnvironmentSettings) -> Diction
 		"arcane_drift_speed_per_flow": settings.arcane_drift_speed_per_flow,
 		"background_restoration_min_rate": settings.background_restoration_min_rate,
 		"background_restoration_max_rate": settings.background_restoration_max_rate,
-		"stability_min_resistance": settings.stability_min_resistance,
-		"stability_stress_response": settings.stability_stress_response,
 	}
 
 
