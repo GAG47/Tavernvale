@@ -1157,11 +1157,11 @@ func _draw_information() -> void:
 				"Background Mana: %.4f" % arcane_field.background_mana[selected_cell_id]
 			)
 			lines.append(
-				"Mana Concentration: %.4f"
+				"Public Mana Concentration: %.4f"
 				% arcane_environment.mana_concentration[selected_cell_id]
 			)
 			lines.append(
-				"Concentration Delta: %+.4f"
+				"Public Concentration Delta: %+.4f"
 				% (arcane_environment.mana_concentration[selected_cell_id]
 						- arcane_field.background_mana[selected_cell_id])
 			)
@@ -1174,7 +1174,7 @@ func _draw_information() -> void:
 				% arcane_field.background_stability[selected_cell_id]
 			)
 			lines.append(
-				"Mana Stability: %.4f"
+				"Long-term Mana Stability: %.4f"
 				% arcane_environment.mana_stability[selected_cell_id]
 			)
 		elif _is_soil_view():
@@ -2144,16 +2144,31 @@ func _append_mana_concentration_statistics(lines: PackedStringArray) -> void:
 		lines.append("No Arcane Environment data")
 		return
 	var background: Dictionary = diagnostics.background_mana
-	var concentration: Dictionary = diagnostics.mana_concentration
+	var public_concentration: Dictionary = diagnostics.public_mana_concentration
+	var raw_concentration: Dictionary = diagnostics.raw_concentration
 	var delta: Dictionary = diagnostics.concentration_delta
 	var absolute_delta: Dictionary = diagnostics.absolute_concentration_delta
 	lines.append("Background Mana Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
-	lines.append("Final Concentration Min/Mean/Max:")
+	lines.append("Public Concentration Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [
-		concentration.min, concentration.mean, concentration.max
+		public_concentration.min, public_concentration.mean, public_concentration.max
 	])
-	lines.append("Delta Min/Mean/Max:")
+	lines.append("Raw Concentration Min/Mean/Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		raw_concentration.min, raw_concentration.mean, raw_concentration.max
+	])
+	lines.append("Raw > 1.00: %d (%.3f%%)" % [
+		diagnostics.raw_above_1.count, diagnostics.raw_above_1.percentage,
+	])
+	lines.append("Raw > 1.10: %d (%.3f%%)" % [
+		diagnostics.raw_above_1_10.count, diagnostics.raw_above_1_10.percentage,
+	])
+	lines.append("Raw > 1.25: %d (%.3f%%)" % [
+		diagnostics.raw_above_1_25.count, diagnostics.raw_above_1_25.percentage,
+	])
+	lines.append("Maximum Overload: %.5f" % diagnostics.maximum_overload)
+	lines.append("Raw Delta Min/Mean/Max:")
 	lines.append("  %+.4f / %+.6f / %+.4f" % [delta.min, delta.mean, delta.max])
 	lines.append("Absolute Delta Mean/P50/P90/Max:")
 	lines.append("  %.5f / %.5f / %.5f / %.5f" % [
@@ -2242,7 +2257,7 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 	var solver: Dictionary = diagnostics.solver
 	lines.append("Background Stability Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [background.min, background.mean, background.max])
-	lines.append("Final Mana Stability Min/Mean/Max:")
+	lines.append("Long-term Mana Stability Min/Mean/Max:")
 	lines.append("  %.4f / %.4f / %.4f" % [stability.min, stability.mean, stability.max])
 	lines.append("Stability < 0.75: %d (%.3f%%)" % [
 		diagnostics.mana_stability_below_75.count,
@@ -2258,17 +2273,23 @@ func _append_mana_stability_statistics(lines: PackedStringArray) -> void:
 	])
 	lines.append("Arcane Stress Mean/P90/Max:")
 	lines.append("  %.5f / %.5f / %.5f" % [stress.mean, stress.p90, stress.max])
-	lines.append("Solver dt: %.6f" % solver.dt)
-	lines.append("Max local rate: %.6f" % solver.max_rate)
-	lines.append("Iterations: %d | Delta: %.8f" % [solver.iterations, solver.final_max_delta])
-	lines.append("Converged: %s | Hit cap: %s" % [
-		str(solver.converged), str(solver.hit_iteration_cap),
+	lines.append("Stability calculation source: Raw Concentration")
+	lines.append("BiCGSTAB iterations: %d" % solver.iterations)
+	lines.append("Relative / L-inf residual: %.9f / %.9f" % [
+		solver.relative_residual, solver.l_inf_residual,
 	])
-	lines.append("Raw Min/Max: %.5f / %.5f | In range: %s" % [
-		solver.raw_min, solver.raw_max, str(solver.within_expected_range),
+	lines.append("Converged: %s | Breakdown: %s" % [
+		str(solver.converged), str(solver.breakdown),
 	])
-	lines.append("Solver: %.2f ms | Stability: %.2f ms" % [
-		diagnostics.performance.transport_solver_ms,
+	lines.append("Raw Min/Max: %.5f / %.5f | Significant negatives: %d" % [
+		solver.raw_min, solver.raw_max, solver.raw_significantly_negative_count,
+	])
+	lines.append("Operator Build: %.2f ms | BiCGSTAB: %.2f ms" % [
+		diagnostics.performance.linear_operator_build_ms,
+		diagnostics.performance.bicgstab_solve_ms,
+	])
+	lines.append("Finalization: %.2f ms | Stability: %.2f ms" % [
+		diagnostics.performance.concentration_finalization_ms,
 		diagnostics.performance.stability_synthesis_ms,
 	])
 	lines.append("Total v2.3: %.2f ms" % diagnostics.performance.total_ms)
@@ -2554,7 +2575,7 @@ func _view_mode_name(mode: int = -1) -> String:
 		ViewMode.MANA_FLOWABILITY:
 			return "Mana Flowability"
 		ViewMode.MANA_STABILITY:
-			return "Mana Stability"
+			return "Long-term Mana Stability"
 		_:
 			return "Unknown"
 

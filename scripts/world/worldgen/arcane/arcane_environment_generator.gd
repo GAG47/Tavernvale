@@ -2,7 +2,8 @@ class_name ArcaneEnvironmentGenerator
 extends RefCounted
 
 const NUMERICAL_EPSILON := 0.000000001
-const ACCEPTED_RANGE_EPSILON := 0.0001
+const OPERATOR_DIAGONAL_THRESHOLD := 1.0e-18
+const RAW_NEGATIVE_TOLERANCE := 1.0e-6
 
 static var _last_generation_diagnostics := {}
 
@@ -41,21 +42,52 @@ static func generate(
 	)
 	var face_transport_precompute_ms := _elapsed_ms(stage_started)
 	stage_started = Time.get_ticks_usec()
-	var solver_result := solve_transport(
+	var operator_result := build_steady_state_operator(
 		spatial_graph,
 		arcane_field.background_mana,
 		arcane_field.background_stability,
-		transport_projection.transport_tensor,
-		transport_projection.drift_field,
 		arcane_forcing.source_rate,
 		arcane_forcing.sink_rate,
 		actual_settings,
-		PackedFloat64Array(),
-		true,
 		transport_faces
 	)
+	var operator_build_ms := _elapsed_ms(stage_started)
+	if not operator_result.errors.is_empty():
+		_last_generation_diagnostics = {
+			"operator_errors": operator_result.errors,
+			"performance": {
+				"leyline_transport_projection_ms": leyline_transport_projection_ms,
+				"face_transport_precompute_ms": face_transport_precompute_ms,
+				"linear_operator_build_ms": operator_build_ms,
+				"bicgstab_solve_ms": 0.0,
+				"concentration_finalization_ms": 0.0,
+				"stability_synthesis_ms": 0.0,
+				"total_ms": _elapsed_ms(total_started),
+			},
+		}
+		push_error(
+			"ArcaneEnvironmentGenerator: invalid steady-state operator:\n"
+			+ "\n".join(operator_result.errors)
+		)
+		return null
+
+	var initial_guess := PackedFloat64Array()
+	initial_guess.resize(spatial_graph.cell_count())
+	for cell_id in spatial_graph.cell_count():
+		initial_guess[cell_id] = arcane_field.background_mana[cell_id]
+	stage_started = Time.get_ticks_usec()
+	var solver_result := ArcaneBiCGSTABSolver.solve(operator_result.operator, initial_guess)
 	var solver_ms := _elapsed_ms(stage_started)
 	var solver_report: Dictionary = solver_result.report
+	solver_report.merge(_raw_concentration_report(solver_result.concentration), true)
+	solver_report["operator_cell_count"] = operator_result.operator.cell_count()
+	solver_report["operator_internal_face_count"] = (
+		operator_result.operator.internal_face_count()
+	)
+	solver_report["operator_boundary_face_count"] = (
+		operator_result.operator.boundary_face_count
+	)
+	solver_report["operator_diagonal"] = _statistics(operator_result.operator.diagonal)
 	var solver_errors := ArcaneEnvironmentValidator.validate_solver_report(solver_report)
 	if not solver_errors.is_empty():
 		_last_generation_diagnostics = {
@@ -63,7 +95,9 @@ static func generate(
 			"performance": {
 				"leyline_transport_projection_ms": leyline_transport_projection_ms,
 				"face_transport_precompute_ms": face_transport_precompute_ms,
-				"transport_solver_ms": solver_ms,
+				"linear_operator_build_ms": operator_build_ms,
+				"bicgstab_solve_ms": solver_ms,
+				"concentration_finalization_ms": 0.0,
 				"stability_synthesis_ms": 0.0,
 				"total_ms": _elapsed_ms(total_started),
 			},
@@ -71,15 +105,19 @@ static func generate(
 		push_error("ArcaneEnvironmentGenerator: Solver failed:\n" + "\n".join(solver_errors))
 		return null
 
+	stage_started = Time.get_ticks_usec()
 	var environment := ArcaneEnvironmentLayer.new()
-	environment.mana_concentration = _clamped_float32(solver_result.concentration)
+	environment.mana_concentration = public_concentration_from_raw(
+		solver_result.concentration
+	)
 	environment.mana_flowability = _clamped_float32(transport_projection.flowability)
+	var concentration_finalization_ms := _elapsed_ms(stage_started)
 	stage_started = Time.get_ticks_usec()
 	var stability_result := synthesize_stability(
 		spatial_graph,
 		arcane_field.background_mana,
 		arcane_field.background_stability,
-		environment.mana_concentration,
+		solver_result.concentration,
 		environment.mana_flowability,
 		actual_settings
 	)
@@ -92,13 +130,16 @@ static func generate(
 		arcane_forcing,
 		transport_projection,
 		transport_faces,
+		solver_result.concentration,
 		stability_result.arcane_stress,
 		solver_report,
 		actual_settings,
 		{
 			"leyline_transport_projection_ms": leyline_transport_projection_ms,
 			"face_transport_precompute_ms": face_transport_precompute_ms,
-			"transport_solver_ms": solver_ms,
+			"linear_operator_build_ms": operator_build_ms,
+			"bicgstab_solve_ms": solver_ms,
+			"concentration_finalization_ms": concentration_finalization_ms,
 			"stability_synthesis_ms": stability_ms,
 			"total_ms": total_ms,
 		}
@@ -175,168 +216,6 @@ static func project_leyline_transport(
 	}
 
 
-static func solve_transport(
-		graph: SpatialGraph,
-		background_mana: PackedFloat32Array,
-		background_stability: PackedFloat32Array,
-		transport_tensor: PackedVector3Array,
-		drift_field: PackedVector2Array,
-		source_rate,
-		sink_rate,
-		settings: ArcaneEnvironmentSettings,
-		initial_concentration = PackedFloat64Array(),
-		include_boundary: bool = true,
-		precomputed_faces: Dictionary = {}
-) -> Dictionary:
-	var count := graph.cell_count()
-	var concentration := PackedFloat64Array()
-	concentration.resize(count)
-	for cell_id in count:
-		concentration[cell_id] = (
-			float(initial_concentration[cell_id])
-			if initial_concentration.size() == count
-			else float(background_mana[cell_id])
-		)
-	var restoration_rate := PackedFloat64Array()
-	restoration_rate.resize(count)
-	var removal_rate := PackedFloat64Array()
-	removal_rate.resize(count)
-	for cell_id in count:
-		restoration_rate[cell_id] = lerpf(
-			settings.background_restoration_min_rate,
-			settings.background_restoration_max_rate,
-			background_stability[cell_id]
-		)
-		removal_rate[cell_id] = restoration_rate[cell_id] \
-				+ float(source_rate[cell_id]) + float(sink_rate[cell_id])
-
-	var faces := precomputed_faces if not precomputed_faces.is_empty() else build_transport_faces(
-		graph, transport_tensor, drift_field, settings, include_boundary
-	)
-	for face_index in faces.internal_a.size():
-		var cell_a: int = faces.internal_a[face_index]
-		var cell_b: int = faces.internal_b[face_index]
-		var conductance: float = faces.internal_diffusion[face_index]
-		var velocity_length: float = faces.internal_velocity_length[face_index]
-		removal_rate[cell_a] += conductance / graph.cell_areas[cell_a]
-		removal_rate[cell_b] += conductance / graph.cell_areas[cell_b]
-		if velocity_length >= 0.0:
-			removal_rate[cell_a] += velocity_length / graph.cell_areas[cell_a]
-		else:
-			removal_rate[cell_b] += -velocity_length / graph.cell_areas[cell_b]
-	for face_index in faces.boundary_cell.size():
-		var cell_id: int = faces.boundary_cell[face_index]
-		removal_rate[cell_id] += (
-			faces.boundary_diffusion[face_index] / graph.cell_areas[cell_id]
-		)
-		var outward_velocity_length: float = faces.boundary_velocity_length[face_index]
-		if outward_velocity_length > 0.0:
-			removal_rate[cell_id] += outward_velocity_length / graph.cell_areas[cell_id]
-	var maximum_rate := 0.0
-	for rate in removal_rate:
-		maximum_rate = maxf(maximum_rate, rate)
-	var dt := settings.solver_max_dt
-	if maximum_rate > NUMERICAL_EPSILON:
-		dt = minf(settings.solver_max_dt, settings.solver_cfl_safety / maximum_rate)
-
-	var delta_mass := PackedFloat64Array()
-	delta_mass.resize(count)
-	var next_concentration := PackedFloat64Array()
-	next_concentration.resize(count)
-	var iterations := 0
-	var final_max_delta := INF
-	var converged := false
-	var finite := true
-	var raw_minimum := INF
-	var raw_maximum := -INF
-	for iteration in settings.solver_max_iterations:
-		delta_mass.fill(0.0)
-		for face_index in faces.internal_a.size():
-			var cell_a: int = faces.internal_a[face_index]
-			var cell_b: int = faces.internal_b[face_index]
-			var anomaly_a := concentration[cell_a] - float(background_mana[cell_a])
-			var anomaly_b := concentration[cell_b] - float(background_mana[cell_b])
-			var diffusion_flux: float = faces.internal_diffusion[face_index] * (
-				anomaly_a - anomaly_b
-			)
-			var velocity_length: float = faces.internal_velocity_length[face_index]
-			var upwind_concentration := (
-				concentration[cell_a] if velocity_length >= 0.0 else concentration[cell_b]
-			)
-			var total_mass_flux := diffusion_flux + velocity_length * upwind_concentration
-			delta_mass[cell_a] -= total_mass_flux * dt
-			delta_mass[cell_b] += total_mass_flux * dt
-		for face_index in faces.boundary_cell.size():
-			var cell_id: int = faces.boundary_cell[face_index]
-			var background := float(background_mana[cell_id])
-			var anomaly := concentration[cell_id] - background
-			var diffusion_flux: float = faces.boundary_diffusion[face_index] * anomaly
-			var velocity_length: float = faces.boundary_velocity_length[face_index]
-			var upwind_concentration := (
-				concentration[cell_id] if velocity_length > 0.0 else background
-			)
-			delta_mass[cell_id] -= (
-				diffusion_flux + velocity_length * upwind_concentration
-			) * dt
-		for cell_id in count:
-			var forcing_rate := forcing_concentration_rate(
-				float(source_rate[cell_id]),
-				float(sink_rate[cell_id]),
-				concentration[cell_id]
-			)
-			delta_mass[cell_id] += (
-				graph.cell_areas[cell_id]
-				* (
-					restoration_rate[cell_id]
-							* (float(background_mana[cell_id]) - concentration[cell_id])
-					+ forcing_rate
-				)
-				* dt
-			)
-		final_max_delta = 0.0
-		for cell_id in count:
-			var updated := concentration[cell_id] + delta_mass[cell_id] / graph.cell_areas[cell_id]
-			if not is_finite(updated):
-				finite = false
-			final_max_delta = maxf(final_max_delta, absf(updated - concentration[cell_id]))
-			raw_minimum = minf(raw_minimum, updated)
-			raw_maximum = maxf(raw_maximum, updated)
-			next_concentration[cell_id] = updated
-		var swap := concentration
-		concentration = next_concentration
-		next_concentration = swap
-		iterations = iteration + 1
-		if not finite:
-			break
-		if final_max_delta < settings.solver_convergence_epsilon:
-			converged = true
-			break
-	if count == 0:
-		raw_minimum = 0.0
-		raw_maximum = 0.0
-	var report := {
-		"dt": dt,
-		"max_rate": maximum_rate,
-		"iterations": iterations,
-		"final_max_delta": final_max_delta,
-		"converged": converged,
-		"hit_iteration_cap": not converged and iterations >= settings.solver_max_iterations,
-		"finite": finite,
-		"raw_min": raw_minimum,
-		"raw_max": raw_maximum,
-		"within_expected_range": finite
-				and raw_minimum >= -ACCEPTED_RANGE_EPSILON
-				and raw_maximum <= 1.0 + ACCEPTED_RANGE_EPSILON,
-	}
-	return {"concentration": concentration, "report": report}
-
-
-static func forcing_concentration_rate(
-		source_rate: float, sink_rate: float, concentration: float
-) -> float:
-	return source_rate * (1.0 - concentration) - sink_rate * concentration
-
-
 static func synthesize_stability(
 		graph: SpatialGraph,
 		background_mana: PackedFloat32Array,
@@ -345,6 +224,9 @@ static func synthesize_stability(
 		flowability,
 		settings: ArcaneEnvironmentSettings
 ) -> Dictionary:
+	## Long-term regional stability is derived from the internal raw steady state.
+	## Values above the public scale remain meaningful overload and must not be
+	## clamped before raw anomaly, excess, or anomaly-gradient stress is computed.
 	var count := graph.cell_count()
 	var anomalies := PackedFloat64Array()
 	anomalies.resize(count)
@@ -522,6 +404,83 @@ static func build_transport_faces(
 	}
 
 
+static func build_steady_state_operator(
+		graph: SpatialGraph,
+		background_mana: PackedFloat32Array,
+		background_stability: PackedFloat32Array,
+		source_rate,
+		sink_rate,
+		settings: ArcaneEnvironmentSettings,
+		faces: Dictionary
+) -> Dictionary:
+	var operator := ArcaneSteadyStateOperator.new()
+	var count := graph.cell_count()
+	operator.diagonal.resize(count)
+	operator.rhs.resize(count)
+	operator.internal_a = faces.internal_a
+	operator.internal_b = faces.internal_b
+	operator.internal_diffusion = faces.internal_diffusion
+	operator.internal_velocity_length = faces.internal_velocity_length
+	operator.boundary_face_count = faces.boundary_cell.size()
+
+	for cell_id in count:
+		var area := graph.cell_areas[cell_id]
+		var background := float(background_mana[cell_id])
+		var restoration_rate := lerpf(
+			settings.background_restoration_min_rate,
+			settings.background_restoration_max_rate,
+			background_stability[cell_id]
+		)
+		var source := float(source_rate[cell_id])
+		var sink := float(sink_rate[cell_id])
+		operator.diagonal[cell_id] = area * (restoration_rate + source + sink)
+		operator.rhs[cell_id] = area * (restoration_rate * background + source)
+
+	for face_index in operator.internal_a.size():
+		var cell_a := operator.internal_a[face_index]
+		var cell_b := operator.internal_b[face_index]
+		var diffusion := operator.internal_diffusion[face_index]
+		var velocity_length := operator.internal_velocity_length[face_index]
+		operator.diagonal[cell_a] += diffusion
+		operator.diagonal[cell_b] += diffusion
+		operator.rhs[cell_a] += diffusion * (
+			float(background_mana[cell_a]) - float(background_mana[cell_b])
+		)
+		operator.rhs[cell_b] += diffusion * (
+			float(background_mana[cell_b]) - float(background_mana[cell_a])
+		)
+		if velocity_length >= 0.0:
+			operator.diagonal[cell_a] += velocity_length
+		else:
+			operator.diagonal[cell_b] -= velocity_length
+
+	for face_index in faces.boundary_cell.size():
+		var cell_id: int = faces.boundary_cell[face_index]
+		var background := float(background_mana[cell_id])
+		var diffusion: float = faces.boundary_diffusion[face_index]
+		var velocity_length: float = faces.boundary_velocity_length[face_index]
+		operator.diagonal[cell_id] += diffusion
+		operator.rhs[cell_id] += diffusion * background
+		if velocity_length > 0.0:
+			operator.diagonal[cell_id] += velocity_length
+		else:
+			operator.rhs[cell_id] -= velocity_length * background
+
+	var errors := PackedStringArray()
+	for cell_id in count:
+		var diagonal := operator.diagonal[cell_id]
+		var rhs_value := operator.rhs[cell_id]
+		if not is_finite(diagonal) or not is_finite(rhs_value):
+			errors.append("steady-state operator Cell %d has a non-finite diagonal/RHS" % cell_id)
+		elif absf(diagonal) <= OPERATOR_DIAGONAL_THRESHOLD:
+			errors.append(
+				"steady-state operator Cell %d has a zero/near-zero diagonal (%s)" % [
+					cell_id, str(diagonal),
+				]
+			)
+	return {"operator": operator, "errors": errors}
+
+
 static func _validate_inputs(
 		graph: SpatialGraph,
 		field: ArcaneFieldLayer,
@@ -562,6 +521,16 @@ static func _validate_inputs(
 	return errors
 
 
+## Converts the unbounded-above physical solution into the public standardized scale.
+## This is the layer's semantic mapping, not a numerical repair of the solve.
+static func public_concentration_from_raw(values) -> PackedFloat32Array:
+	var result := PackedFloat32Array()
+	result.resize(values.size())
+	for index in values.size():
+		result[index] = clampf(float(values[index]), 0.0, 1.0)
+	return result
+
+
 static func _clamped_float32(values) -> PackedFloat32Array:
 	var result := PackedFloat32Array()
 	result.resize(values.size())
@@ -570,12 +539,53 @@ static func _clamped_float32(values) -> PackedFloat32Array:
 	return result
 
 
+static func _raw_concentration_report(raw_concentration) -> Dictionary:
+	var raw_minimum := INF
+	var raw_maximum := -INF
+	var finite := true
+	var negative_count := 0
+	var significantly_negative_count := 0
+	var above_one_count := 0
+	var above_110_count := 0
+	var above_125_count := 0
+	for value_variant in raw_concentration:
+		var value := float(value_variant)
+		finite = finite and is_finite(value)
+		raw_minimum = minf(raw_minimum, value)
+		raw_maximum = maxf(raw_maximum, value)
+		if value < 0.0:
+			negative_count += 1
+		if value < -RAW_NEGATIVE_TOLERANCE:
+			significantly_negative_count += 1
+		if value > 1.0:
+			above_one_count += 1
+		if value > 1.10:
+			above_110_count += 1
+		if value > 1.25:
+			above_125_count += 1
+	if raw_concentration.size() == 0:
+		raw_minimum = 0.0
+		raw_maximum = 0.0
+	return {
+		"finite": finite,
+		"raw_min": raw_minimum,
+		"raw_max": raw_maximum,
+		"raw_negative_count": negative_count,
+		"raw_significantly_negative_count": significantly_negative_count,
+		"raw_above_1": _count_statistics(above_one_count, raw_concentration.size()),
+		"raw_above_1_10": _count_statistics(above_110_count, raw_concentration.size()),
+		"raw_above_1_25": _count_statistics(above_125_count, raw_concentration.size()),
+		"maximum_overload": maxf(raw_maximum - 1.0, 0.0),
+	}
+
+
 static func _build_diagnostics(
 		field: ArcaneFieldLayer,
 		environment: ArcaneEnvironmentLayer,
 		forcing: ArcaneForcingLayer,
 		transport_projection: Dictionary,
 		transport_faces: Dictionary,
+		raw_concentration,
 		arcane_stress,
 		solver_report: Dictionary,
 		settings: ArcaneEnvironmentSettings,
@@ -598,8 +608,9 @@ static func _build_diagnostics(
 	var significant_outside_forcing_count := 0
 	var significant_within_leyline_count := 0
 	var significant_outside_leyline_count := 0
+	var overload_stability := PackedFloat64Array()
 	for cell_id in environment.cell_count():
-		var delta := environment.mana_concentration[cell_id] - field.background_mana[cell_id]
+		var delta := float(raw_concentration[cell_id]) - field.background_mana[cell_id]
 		var directly_forced := forcing.source_rate[cell_id] > 0.0 \
 				or forcing.sink_rate[cell_id] > 0.0
 		var significantly_anomalous := absf(delta) > 0.05
@@ -631,11 +642,20 @@ static func _build_diagnostics(
 			below_50_count += 1
 		if environment.mana_stability[cell_id] < 0.25:
 			below_25_count += 1
+		if float(raw_concentration[cell_id]) > 1.0:
+			overload_stability.append(environment.mana_stability[cell_id])
 	var count := environment.cell_count()
 	var absolute_statistics := _statistics(absolute_delta, [0.50, 0.90])
 	return {
 		"background_mana": _statistics(field.background_mana),
 		"mana_concentration": _statistics(environment.mana_concentration),
+		"public_mana_concentration": _statistics(environment.mana_concentration),
+		"raw_concentration": _statistics(raw_concentration),
+		"raw_above_1": solver_report.raw_above_1.duplicate(true),
+		"raw_above_1_10": solver_report.raw_above_1_10.duplicate(true),
+		"raw_above_1_25": solver_report.raw_above_1_25.duplicate(true),
+		"maximum_overload": solver_report.maximum_overload,
+		"overload_mana_stability": _statistics(overload_stability),
 		"concentration_delta": _statistics(concentration_delta),
 		"absolute_concentration_delta": absolute_statistics,
 		"enriched_cells": _count_statistics(enriched_count, count),
@@ -731,10 +751,6 @@ static func _settings_dictionary(settings: ArcaneEnvironmentSettings) -> Diction
 		"arcane_drift_speed_per_flow": settings.arcane_drift_speed_per_flow,
 		"background_restoration_min_rate": settings.background_restoration_min_rate,
 		"background_restoration_max_rate": settings.background_restoration_max_rate,
-		"solver_cfl_safety": settings.solver_cfl_safety,
-		"solver_max_dt": settings.solver_max_dt,
-		"solver_max_iterations": settings.solver_max_iterations,
-		"solver_convergence_epsilon": settings.solver_convergence_epsilon,
 		"stability_min_resistance": settings.stability_min_resistance,
 		"stability_stress_response": settings.stability_stress_response,
 	}

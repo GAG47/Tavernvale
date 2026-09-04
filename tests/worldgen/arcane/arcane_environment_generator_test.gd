@@ -24,6 +24,8 @@ func _run_all() -> void:
 	_test_internal_drift_conservation()
 	_test_open_boundary()
 	_test_stability_response_and_natural_background_gradient()
+	_test_raw_public_mapping_and_stability_semantics()
+	_test_sparse_solver_report_validation()
 	_test_resolution_behavior()
 	_test_no_new_randomness()
 	_test_seed_one_generation_determinism_and_zero_regression()
@@ -45,11 +47,12 @@ func _test_settings_and_formal_layer_contract() -> void:
 	_expect(settings.background_restoration_min_rate == 0.03
 			and settings.background_restoration_max_rate == 0.15,
 		"background restoration rates must be 0.03..0.15")
-	_expect(settings.solver_cfl_safety == 0.40 and settings.solver_max_dt == 1.0,
-		"Solver CFL safety/max dt must be 0.40/1.0")
-	_expect(settings.solver_max_iterations == 1200
-			and settings.solver_convergence_epsilon == 0.00001,
-		"Solver iteration cap/epsilon must be 1200/1e-5")
+	for removed_solver_setting in [
+		"solver_cfl_safety", "solver_max_dt", "solver_max_iterations",
+		"solver_convergence_epsilon",
+	]:
+		_expect(not _object_has_property(settings, StringName(removed_solver_setting)),
+			"explicit runtime setting %s must not remain public" % removed_solver_setting)
 	_expect(settings.stability_min_resistance == 0.15
 			and settings.stability_stress_response == 2.0,
 		"stability resistance/response must be 0.15/2.0")
@@ -68,7 +71,7 @@ func _test_background_equilibrium_invariant() -> void:
 	var background := PackedFloat32Array([0.15, 0.85])
 	var stability := PackedFloat32Array([0.0, 1.0])
 	var settings := ArcaneEnvironmentSettings.new()
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		background,
 		stability,
@@ -105,10 +108,10 @@ func _test_background_stability_controls_restoration() -> void:
 	var settings := ArcaneEnvironmentSettings.new()
 	settings.ambient_mana_diffusivity = 0.0
 	settings.arcane_drift_speed_per_flow = 0.0
-	settings.solver_max_iterations = 1
-	settings.solver_convergence_epsilon = 0.000000000001
+	settings.set_meta("_explicit_max_iterations", 1)
+	settings.set_meta("_explicit_delta_tolerance", 0.000000000001)
 	var background := PackedFloat32Array([0.2, 0.2])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		background,
 		PackedFloat32Array([1.0, 0.0]),
@@ -129,7 +132,7 @@ func _test_natural_disequilibrium_diffusion_and_mass_conservation() -> void:
 	var graph := _two_cell_graph(1.0, 3.0)
 	var settings := _pure_transport_settings(1)
 	var initial := PackedFloat64Array([0.8, 0.2])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
@@ -199,7 +202,7 @@ func _test_arcane_drift_direction_and_actual_mana_transport() -> void:
 	var settings := _pure_transport_settings(1)
 	settings.ambient_mana_diffusivity = 0.0
 	var initial := PackedFloat64Array([0.7, 0.1])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		transport_graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
@@ -220,7 +223,7 @@ func _test_internal_drift_conservation() -> void:
 	var settings := _pure_transport_settings(20)
 	settings.ambient_mana_diffusivity = 0.0
 	var initial := PackedFloat64Array([0.9, 0.1])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.2, 0.2]),
 		PackedFloat32Array([0.0, 0.0]),
@@ -240,7 +243,7 @@ func _test_open_boundary() -> void:
 	var graph := _boundary_cell_graph()
 	var settings := _pure_transport_settings(1)
 	settings.ambient_mana_diffusivity = 0.0
-	var outward := ArcaneEnvironmentGenerator.solve_transport(
+	var outward := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
@@ -252,7 +255,7 @@ func _test_open_boundary() -> void:
 		PackedFloat64Array([0.8]),
 		true
 	)
-	var inward := ArcaneEnvironmentGenerator.solve_transport(
+	var inward := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
@@ -269,7 +272,7 @@ func _test_open_boundary() -> void:
 	_expect(inward.concentration[0] > 0.2,
 		"inward boundary Drift must use local Background Mana as the ghost inflow state")
 	settings.ambient_mana_diffusivity = 56.0
-	var diffusion_out := ArcaneEnvironmentGenerator.solve_transport(
+	var diffusion_out := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
@@ -281,7 +284,7 @@ func _test_open_boundary() -> void:
 		PackedFloat64Array([0.8]),
 		true
 	)
-	var diffusion_in := ArcaneEnvironmentGenerator.solve_transport(
+	var diffusion_in := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([0.6]),
 		PackedFloat32Array([0.0]),
@@ -328,6 +331,53 @@ func _test_stability_response_and_natural_background_gradient() -> void:
 		"higher Background Stability must resist the same Arcane Stress better")
 
 
+func _test_raw_public_mapping_and_stability_semantics() -> void:
+	var public := ArcaneEnvironmentGenerator.public_concentration_from_raw(
+		PackedFloat64Array([0.8, 1.0, 1.2])
+	)
+	_expect(public == PackedFloat32Array([0.8, 1.0, 1.0]),
+		"Public Mana Concentration must semantically map Raw concentration onto [0, 1]")
+	var graph := _two_cell_graph()
+	var background := PackedFloat32Array([0.2, 0.2])
+	var background_stability := PackedFloat32Array([0.5, 0.5])
+	var flowability := PackedFloat64Array([0.15, 0.15])
+	var light_overload := ArcaneEnvironmentGenerator.synthesize_stability(
+		graph, background, background_stability,
+		PackedFloat64Array([1.01, 1.01]), flowability, ArcaneEnvironmentSettings.new()
+	)
+	var heavy_overload := ArcaneEnvironmentGenerator.synthesize_stability(
+		graph, background, background_stability,
+		PackedFloat64Array([1.45, 1.45]), flowability, ArcaneEnvironmentSettings.new()
+	)
+	_expect(heavy_overload.stability[0] < light_overload.stability[0],
+		"Long-term Mana Stability must distinguish Raw 1.45 from Raw 1.01")
+
+
+func _test_sparse_solver_report_validation() -> void:
+	var report := {
+		"converged": true, "breakdown": false, "finite": true, "iterations": 2,
+		"relative_residual": 1.0e-8, "absolute_residual": 1.0e-8,
+		"l_inf_residual": 1.0e-8, "raw_min": 0.1, "raw_max": 1.45,
+		"raw_negative_count": 0, "raw_significantly_negative_count": 0,
+	}
+	_expect(ArcaneEnvironmentValidator.validate_solver_report(report).is_empty(),
+		"finite converged Raw concentration above one must be accepted")
+	var graph := _two_cell_graph()
+	var layer := ArcaneEnvironmentLayer.new()
+	layer.mana_concentration = ArcaneEnvironmentGenerator.public_concentration_from_raw(
+		PackedFloat64Array([1.2, 1.45])
+	)
+	layer.mana_flowability = PackedFloat32Array([0.15, 1.0])
+	layer.mana_stability = PackedFloat32Array([0.7, 0.4])
+	_expect(ArcaneEnvironmentValidator.validate(graph, layer).is_empty(),
+		"Raw overload mapped to public concentration must produce a legal formal Layer")
+	report.raw_min = -0.000002
+	report.raw_negative_count = 1
+	report.raw_significantly_negative_count = 1
+	_expect(not ArcaneEnvironmentValidator.validate_solver_report(report).is_empty(),
+		"Raw concentration below -1e-6 must be rejected")
+
+
 func _test_resolution_behavior() -> void:
 	var settings := ArcaneEnvironmentSettings.new()
 	var samples := [0.0, 13.75, 27.5, 41.25, 55.0, 80.0]
@@ -339,7 +389,7 @@ func _test_resolution_behavior() -> void:
 	var dense := _two_cell_graph(0.5, 0.5)
 	var background := PackedFloat32Array([0.25, 0.75])
 	for graph in [coarse, dense]:
-		var result := ArcaneEnvironmentGenerator.solve_transport(
+		var result := ArcaneExplicitTransportReference.solve_transport(
 			graph,
 			background,
 			PackedFloat32Array([0.5, 0.5]),
@@ -365,10 +415,15 @@ func _test_no_new_randomness() -> void:
 
 
 func _test_seed_one_generation_determinism_and_zero_regression() -> void:
-	_seed_one_graph = SpatialGenerator.generate(SpatialConfig.new())
-	_seed_one_field = ArcaneFieldGenerator.generate(_seed_one_graph, 1) \
+	var fixture_seed := 731
+	var fixture_width := 600.0
+	var fixture_height := 400.0
+	_seed_one_graph = SpatialGenerator.generate(
+		SpatialConfig.new(fixture_seed, fixture_width, fixture_height, 240, 0.9)
+	)
+	_seed_one_field = ArcaneFieldGenerator.generate(_seed_one_graph, fixture_seed) \
 			if _seed_one_graph != null else null
-	_seed_one_web = ArcaneWebGenerator.generate(1, 2000.0, 1000.0) \
+	_seed_one_web = ArcaneWebGenerator.generate(fixture_seed, fixture_width, fixture_height) \
 			if _seed_one_field != null else null
 	_seed_one_circulation = ArcaneCirculationGenerator.generate(_seed_one_web) \
 			if _seed_one_web != null else null
@@ -376,7 +431,7 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 			if _seed_one_graph != null else null
 	_expect(_seed_one_graph != null and _seed_one_field != null
 			and _seed_one_web != null and _seed_one_circulation != null,
-		"Seed 1 v2.2.1 fixture should generate")
+		"targeted Arcane pipeline fixture should generate")
 	if _seed_one_circulation == null:
 		return
 	var input_hash := _arcane_input_hash()
@@ -385,26 +440,25 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 		_seed_one_empty_forcing
 	)
 	var first_diagnostics := ArcaneEnvironmentGenerator.last_generation_diagnostics()
-	_expect(_seed_one_environment != null, "Seed 1 Arcane Environment should generate")
+	_expect(_seed_one_environment != null, "targeted Arcane Environment should generate")
 	if _seed_one_environment == null:
 		return
 	_expect(ArcaneEnvironmentValidator.validate(
 		_seed_one_graph, _seed_one_environment
-	).is_empty(), "Seed 1 Arcane Environment should pass its Validator")
+	).is_empty(), "targeted Arcane Environment should pass its Validator")
 	_expect(ArcaneEnvironmentValidator.validate_solver_report(
 		first_diagnostics.solver
-	).is_empty(), "Seed 1 Solver must provide a complete finite diagnostic report")
-	_expect(first_diagnostics.solver.hit_iteration_cap
-			and not first_diagnostics.solver.converged
-			and first_diagnostics.solver.iterations == 1200,
-		"Seed 1 must transparently report the strict-parameter explicit Solver cap")
+	).is_empty(), "targeted Solver must provide a complete finite diagnostic report")
+	_expect(first_diagnostics.solver.converged
+			and not first_diagnostics.solver.breakdown,
+		"sparse production Solver must converge without breakdown")
 	_expect(input_hash == _arcane_input_hash(),
 		"v2.3 generation must preserve SpatialGraph and all v2.0-v2.2 formal data")
 	var repeat := ArcaneEnvironmentGenerator.generate(
 		_seed_one_graph, _seed_one_field, _seed_one_web, _seed_one_circulation,
 		_seed_one_empty_forcing
 	)
-	_expect(repeat != null, "repeat Seed 1 Arcane Environment should generate")
+	_expect(repeat != null, "repeat targeted Arcane Environment should generate")
 	if repeat != null:
 		_expect(_seed_one_environment.mana_concentration == repeat.mana_concentration
 				and _seed_one_environment.mana_flowability == repeat.mana_flowability
@@ -413,13 +467,13 @@ func _test_seed_one_generation_determinism_and_zero_regression() -> void:
 	var diagnostics := ArcaneEnvironmentGenerator.last_generation_diagnostics()
 	_expect(diagnostics.concentration_delta.max > 0.04
 			and diagnostics.concentration_delta.min < -0.04,
-		"Seed 1 should contain visible Mana enrichment and depletion in both directions")
+		"targeted fixture should contain visible enrichment and depletion")
 
 
 func _print_seed_one_statistics() -> void:
 	if _seed_one_environment == null:
 		return
-	print("Arcane Environment Seed 1 statistics: ",
+	print("Arcane Environment targeted fixture statistics: ",
 		ArcaneEnvironmentGenerator.last_generation_diagnostics())
 
 
@@ -467,8 +521,8 @@ func _pure_transport_settings(iterations: int) -> ArcaneEnvironmentSettings:
 	var settings := ArcaneEnvironmentSettings.new()
 	settings.background_restoration_min_rate = 0.0
 	settings.background_restoration_max_rate = 0.0
-	settings.solver_max_iterations = iterations
-	settings.solver_convergence_epsilon = 0.000000000001
+	settings.set_meta("_explicit_max_iterations", iterations)
+	settings.set_meta("_explicit_delta_tolerance", 0.000000000001)
 	return settings
 
 
@@ -540,7 +594,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Arcane Environment: all 13 test groups passed")
+		print("Arcane Environment: all 15 test groups passed")
 		quit(0)
 		return
 	for failure in _failures:

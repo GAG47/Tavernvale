@@ -154,7 +154,7 @@ func _test_anisotropic_diffusion_conservation() -> void:
 	var tensor := PackedVector3Array([
 		Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0),
 	])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([BACKGROUND, BACKGROUND]),
 		PackedFloat32Array([0.5, 0.5]),
@@ -176,7 +176,7 @@ func _test_drift_conservation() -> void:
 	var settings := _closed_transport_settings(8)
 	settings.ambient_mana_diffusivity = 0.0
 	var initial := PackedFloat64Array([0.8, 0.2])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([BACKGROUND, BACKGROUND]),
 		PackedFloat32Array([0.5, 0.5]),
@@ -199,7 +199,7 @@ func _test_background_equilibrium_invariant() -> void:
 	var tensor := PackedVector3Array([
 		Vector3(1.0, 0.0, 0.0), Vector3(1.0, 0.0, 0.0),
 	])
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		background,
 		PackedFloat32Array([0.5, 0.5]),
@@ -224,7 +224,7 @@ func _test_face_cache_and_cfl() -> void:
 	var faces := ArcaneEnvironmentGenerator.build_transport_faces(
 		graph, tensor, PackedVector2Array([Vector2.ZERO, Vector2.ZERO]), settings, false
 	)
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		PackedFloat32Array([BACKGROUND, BACKGROUND]),
 		PackedFloat32Array([0.5, 0.5]),
@@ -239,7 +239,7 @@ func _test_face_cache_and_cfl() -> void:
 	)
 	_expect(absf(faces.face_diffusivity[0] - 504.0) < 0.000001,
 		"face cache must store the directional physical diffusivity")
-	_expect(result.report.dt < settings.solver_max_dt,
+	_expect(result.report.dt < ArcaneExplicitTransportReference.MAX_DT,
 		"anisotropic face conductance must constrain the CFL timestep")
 
 
@@ -281,7 +281,7 @@ func _simulate_grid(
 	var stability := PackedFloat32Array()
 	stability.resize(graph.cell_count())
 	stability.fill(0.5)
-	var result := ArcaneEnvironmentGenerator.solve_transport(
+	var result := ArcaneExplicitTransportReference.solve_transport(
 		graph,
 		background,
 		stability,
@@ -451,8 +451,8 @@ func _closed_transport_settings(iterations: int) -> ArcaneEnvironmentSettings:
 	var settings := ArcaneEnvironmentSettings.new()
 	settings.background_restoration_min_rate = 0.0
 	settings.background_restoration_max_rate = 0.0
-	settings.solver_max_iterations = iterations
-	settings.solver_convergence_epsilon = 0.000000000001
+	settings.set_meta("_explicit_max_iterations", iterations)
+	settings.set_meta("_explicit_delta_tolerance", 0.000000000001)
 	return settings
 
 

@@ -33,20 +33,30 @@ static func validate(
 
 static func validate_solver_report(report: Dictionary) -> PackedStringArray:
 	var errors := PackedStringArray()
-	for field_name in ["converged", "hit_iteration_cap", "finite", "within_expected_range"]:
+	for field_name in [
+		"converged", "breakdown", "finite", "iterations", "relative_residual",
+		"absolute_residual", "l_inf_residual", "raw_min", "raw_max",
+		"raw_negative_count", "raw_significantly_negative_count",
+	]:
 		if not report.has(field_name):
-			errors.append("transport Solver must report %s" % field_name)
+			errors.append("sparse steady-state Solver must report %s" % field_name)
 	if not errors.is_empty():
 		return errors
 	if not bool(report.get("finite", false)):
-		errors.append("transport Solver produced a non-finite concentration")
-	if not bool(report.converged) and not bool(report.hit_iteration_cap):
-		errors.append("non-converged transport Solver must report its iteration cap")
-	if bool(report.converged) and bool(report.hit_iteration_cap):
-		errors.append("converged transport Solver cannot also report its iteration cap")
-	for field_name in ["dt", "final_max_delta"]:
+		errors.append("sparse steady-state Solver produced a non-finite result")
+	if bool(report.get("breakdown", false)):
+		errors.append("sparse steady-state Solver reported breakdown: %s" % [
+		str(report.get("breakdown_reason", "unspecified")),
+	])
+	if not bool(report.get("converged", false)):
+		errors.append("sparse steady-state Solver did not converge")
+	for field_name in [
+		"relative_residual", "absolute_residual", "l_inf_residual", "raw_min", "raw_max",
+	]:
 		if not report.has(field_name) or not is_finite(float(report.get(field_name, NAN))):
-			errors.append("transport Solver report %s must be finite" % field_name)
-	if int(report.get("iterations", 0)) <= 0:
-		errors.append("transport Solver must report at least one iteration")
+			errors.append("sparse steady-state Solver report %s must be finite" % field_name)
+	if int(report.get("iterations", -1)) < 0:
+		errors.append("sparse steady-state Solver iterations must be non-negative")
+	if int(report.get("raw_significantly_negative_count", 0)) > 0:
+		errors.append("raw concentration contains values below -1e-6")
 	return errors
