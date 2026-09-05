@@ -27,6 +27,10 @@ var arcane_web: ArcaneWebLayer
 var arcane_circulation: ArcaneCirculationLayer
 var arcane_forcing: ArcaneForcingLayer
 var arcane_environment: ArcaneEnvironmentLayer
+var arcane_ecology: ArcaneEcologyLayer
+var arcane_ecology_settings: ArcaneEcologySettings
+var _arcane_ecology_statistics := {}
+var _arcane_ecology_generation_ms := 0
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -90,6 +94,7 @@ enum DebugPage {
 	ECOLOGY_SOIL,
 	RESOURCES,
 	ARCANE,
+	ARCANE_ECOLOGY,
 }
 
 enum ReferenceView {
@@ -140,10 +145,13 @@ enum ViewMode {
 	MANA_CONCENTRATION,
 	MANA_FLOWABILITY,
 	MANA_STABILITY,
+	ARCANE_ECOLOGY_POTENTIAL,
+	ARCANE_ECOLOGY_STATE,
+	ARCANE_RESPONSE_PROFILE,
 }
 
 const DEBUG_PAGE_NAMES := [
-	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane"
+	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane", "Arcane Ecology"
 ]
 const DEBUG_PAGE_VIEWS := [
 	[
@@ -198,6 +206,11 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.MANA_CONCENTRATION,
 		ViewMode.MANA_FLOWABILITY,
 		ViewMode.MANA_STABILITY,
+	],
+	[
+		ViewMode.ARCANE_ECOLOGY_POTENTIAL,
+		ViewMode.ARCANE_ECOLOGY_STATE,
+		ViewMode.ARCANE_RESPONSE_PROFILE,
 	],
 ]
 
@@ -275,6 +288,7 @@ func _draw() -> void:
 			or arcane_web == null \
 			or arcane_circulation == null \
 			or arcane_forcing == null \
+			or arcane_ecology == null \
 			or arcane_environment == null \
 			or preliminary_climate == null \
 			or climate == null:
@@ -463,6 +477,15 @@ func _mask_outside_logical_world() -> void:
 
 func _cell_color(cell_id: int) -> Color:
 	match _map_view_mode():
+		ViewMode.ARCANE_ECOLOGY_POTENTIAL:
+			return _background_mana_color(arcane_ecology.arcane_ecology_potential[cell_id])
+		ViewMode.ARCANE_ECOLOGY_STATE:
+			return [Color(0.27, 0.31, 0.29), Color(0.18, 0.72, 0.65), Color(0.80, 0.36, 0.94)][
+				arcane_ecology.arcane_ecology_state[cell_id]]
+		ViewMode.ARCANE_RESPONSE_PROFILE:
+			return [Color(0.22, 0.24, 0.28), Color(0.94, 0.73, 0.22),
+				Color(0.12, 0.70, 0.90), Color(0.86, 0.30, 0.59)][
+				arcane_ecology.arcane_response_profile_id[cell_id] + 1]
 		ViewMode.RAW_COMPOSITION:
 			var grayscale := float(composition.continental_value[cell_id]) / 100.0
 			return Color(grayscale, grayscale, grayscale)
@@ -944,6 +967,8 @@ func _regenerate_composition() -> void:
 		arcane_circulation = null
 		arcane_forcing = null
 		arcane_environment = null
+		arcane_ecology = null
+		_arcane_ecology_statistics = {}
 		preliminary_climate = null
 		climate = null
 		return
@@ -1086,6 +1111,15 @@ func _regenerate_composition() -> void:
 		ArcaneEnvironmentGenerator.last_generation_diagnostics()
 		if arcane_environment != null else {}
 	)
+	started = Time.get_ticks_msec()
+	arcane_ecology_settings = ArcaneEcologySettings.new()
+	arcane_ecology = null if ecology == null or arcane_environment == null else ArcaneEcologyGenerator.generate(
+		ecology, arcane_environment, arcane_ecology_settings
+	)
+	_arcane_ecology_generation_ms = Time.get_ticks_msec() - started
+	_arcane_ecology_statistics = {} if arcane_ecology == null else ArcaneEcologyGenerator.statistics(
+		ecology, arcane_environment, arcane_ecology, arcane_ecology_settings
+	)
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -1149,6 +1183,8 @@ func _draw_information() -> void:
 				"Precipitation Delta: %+.3f"
 				% (climate.precipitation[selected_cell_id] - preliminary_climate.precipitation[selected_cell_id])
 			)
+		elif _is_arcane_ecology_view():
+			_append_arcane_ecology_cell_inspection(lines, selected_cell_id)
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_view():
@@ -1261,7 +1297,8 @@ func _draw_information() -> void:
 				and not _is_ecology_view() \
 				and not _is_soil_view() \
 				and not _is_resource_view() \
-				and not _is_arcane_view():
+				and not _is_arcane_view() \
+				and not _is_arcane_ecology_view():
 			lines.append("Latitude: %.2f" % WorldClimateGenerator.latitude_at(
 				selected_cell_id, graph, climate_settings
 			))
@@ -1407,6 +1444,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 
 
 func _append_mode_statistics(lines: PackedStringArray) -> void:
+	if _is_arcane_ecology_view():
+		_append_arcane_ecology_statistics(lines)
+		return
 	if _is_resource_view():
 		_append_resource_statistics(lines, _resource_statistics.get(view_mode, {}))
 		return
@@ -2533,6 +2573,12 @@ func _ensure_valid_page_view() -> void:
 func _view_mode_name(mode: int = -1) -> String:
 	var actual_mode := view_mode if mode < 0 else mode
 	match actual_mode:
+		ViewMode.ARCANE_ECOLOGY_POTENTIAL:
+			return "Arcane Ecology Potential"
+		ViewMode.ARCANE_ECOLOGY_STATE:
+			return "Arcane Ecology State"
+		ViewMode.ARCANE_RESPONSE_PROFILE:
+			return "Arcane Response Profile"
 		ViewMode.RAW_COMPOSITION:
 			return "Raw Composition"
 		ViewMode.TERRAIN_HEIGHT:
@@ -2656,6 +2702,67 @@ func _is_arcane_view() -> bool:
 			or view_mode == ViewMode.MANA_FLOWABILITY \
 			or view_mode == ViewMode.MANA_STABILITY \
 			or _is_arcane_overlay_view()
+
+
+func _is_arcane_ecology_view() -> bool:
+	return view_mode in DEBUG_PAGE_VIEWS[DebugPage.ARCANE_ECOLOGY]
+
+
+func _append_arcane_ecology_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
+	lines.append("Arcane Ecology Potential: %.4f" % arcane_ecology.arcane_ecology_potential[cell_id])
+	lines.append("State: " + ArcaneEcologyCatalog.state_name(arcane_ecology.arcane_ecology_state[cell_id]))
+	lines.append("Response: " + ArcaneEcologyCatalog.response_profile_name(
+		arcane_ecology.arcane_response_profile_id[cell_id]))
+	lines.append("Mana Concentration: %.4f" % arcane_environment.mana_concentration[cell_id])
+	lines.append("Mana Flowability: %.4f" % arcane_environment.mana_flowability[cell_id])
+	lines.append("Mana Stability: %.4f" % arcane_environment.mana_stability[cell_id])
+	lines.append("Ecological Moisture: %.4f" % ecology.ecological_moisture[cell_id])
+	lines.append("Vegetation Potential: %.4f" % ecology.vegetation_potential[cell_id])
+
+
+func _append_arcane_ecology_statistics(lines: PackedStringArray) -> void:
+	var statistics := _arcane_ecology_statistics
+	if statistics.is_empty():
+		lines.append("No Arcane Ecology data")
+		return
+	lines.append("Potential Min / Mean / Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [statistics.potential.min,
+		statistics.potential.mean, statistics.potential.max])
+	# Show the distribution relevant to this map; all tables remain in the diagnostics.
+	var keys := ["mana_bands", "potential_bands"]
+	if view_mode == ViewMode.ARCANE_ECOLOGY_STATE:
+		keys = ["states"]
+	elif view_mode == ViewMode.ARCANE_RESPONSE_PROFILE:
+		keys = ["profiles"]
+	for key in keys:
+		lines.append(key.replace("_", " ").capitalize() + ":")
+		for index in statistics[key].size():
+			var label: String = ["LOW", "MEDIUM", "HIGH"][mini(index, 2)]
+			if key == "states":
+				label = ArcaneEcologyCatalog.state_name(index)
+			elif key == "profiles":
+				label = ArcaneEcologyCatalog.response_profile_name(index if index < 3 else -1)
+			lines.append("%s: %d (%.2f%%)" % [label,
+				statistics[key][index].count, statistics[key][index].percentage])
+	if view_mode == ViewMode.ARCANE_ECOLOGY_POTENTIAL:
+		lines.append("Mana x Potential (columns L / M / H):")
+		for band in 3:
+			lines.append("%s: %d / %d / %d" % [["LOW", "MEDIUM", "HIGH"][band],
+				statistics.mana_by_potential[band][0], statistics.mana_by_potential[band][1],
+				statistics.mana_by_potential[band][2]])
+		lines.append("Legend: Dark = 0, Purple = 0.5, Cyan = 1")
+	elif view_mode == ViewMode.ARCANE_ECOLOGY_STATE:
+		lines.append("Group x State (columns N / I / D):")
+		for group in ArcaneEcologyCatalog.GROUP_COUNT:
+			lines.append("%s: %d / %d / %d" % [ArcaneEcologyCatalog.natural_group_name(group),
+				statistics.group_by_state[group][0], statistics.group_by_state[group][1],
+				statistics.group_by_state[group][2]])
+		lines.append("Legend: Gray N / Teal I / Purple D")
+	else:
+		lines.append("Legend: Gray = No Response")
+		lines.append("Gold = Stable / Blue = Circulating")
+		lines.append("Pink = Fluctuation")
+	lines.append("Generation: %d ms" % _arcane_ecology_generation_ms)
 
 
 func _is_arcane_network_view() -> bool:

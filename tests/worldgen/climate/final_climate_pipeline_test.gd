@@ -24,6 +24,7 @@ func _run_all() -> void:
 	_test_arcane_web_follows_arcane_field_and_preserves_prior_layers()
 	_test_arcane_circulation_follows_web_and_preserves_prior_layers()
 	_test_arcane_environment_follows_circulation_and_preserves_prior_layers()
+	_test_arcane_ecology_follows_environment_and_preserves_inputs()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -172,7 +173,13 @@ func _build_fixed_pipeline() -> Dictionary:
 	var arcane_environment_diagnostics := (
 		ArcaneEnvironmentGenerator.last_generation_diagnostics()
 	)
+	var ecology_inputs_before := _arcane_ecology_input_signature(ecology, arcane_environment)
+	var arcane_ecology := ArcaneEcologyGenerator.generate(ecology, arcane_environment)
+	if arcane_ecology == null:
+		return {}
 	return {
+		"arcane_ecology": arcane_ecology,
+		"ecology_inputs_before": ecology_inputs_before,
 		"graph": graph,
 		"composition": composition,
 		"projected": projected,
@@ -204,6 +211,35 @@ func _build_fixed_pipeline() -> Dictionary:
 		"v21_hash_before_circulation": v21_hash_before_circulation,
 		"v22_hash_before_environment": v22_hash_before_environment,
 	}
+
+
+func _test_arcane_ecology_follows_environment_and_preserves_inputs() -> void:
+	var layer: ArcaneEcologyLayer = _pipeline.arcane_ecology
+	_expect(ArcaneEcologyValidator.validate(_pipeline.graph.cell_count(), layer).is_empty(),
+		"Arcane Ecology pipeline output should validate")
+	_expect(_pipeline.ecology_inputs_before == _arcane_ecology_input_signature(
+		_pipeline.ecology, _pipeline.arcane_environment), "Arcane Ecology must preserve both input Layers")
+	_expect(_pipeline.v1_hash_before_arcane == _v1_pipeline_hash(_pipeline),
+		"Arcane Ecology must preserve all natural Layers")
+	var repeated := ArcaneEcologyGenerator.generate(_pipeline.ecology, _pipeline.arcane_environment)
+	_expect(repeated != null, "repeated Arcane Ecology pipeline should generate")
+	if repeated != null:
+		_expect(layer.arcane_ecology_potential == repeated.arcane_ecology_potential
+			and layer.arcane_ecology_state == repeated.arcane_ecology_state
+			and layer.arcane_response_profile_id == repeated.arcane_response_profile_id,
+			"all Arcane Ecology formal outputs should be deterministic")
+	var diagnostics := ArcaneEcologyGenerator.statistics(
+		_pipeline.ecology, _pipeline.arcane_environment, layer)
+	_expect(diagnostics.get("cell_count", -1) == _pipeline.graph.cell_count(),
+		"Arcane Ecology pipeline diagnostics should include all Cells")
+	print("Final pipeline Arcane Ecology diagnostics: ", JSON.stringify(diagnostics))
+
+
+func _arcane_ecology_input_signature(ecology: EcologyLayer, environment: ArcaneEnvironmentLayer) -> Array:
+	return [ecology.drainage_index.duplicate(), ecology.ecological_moisture.duplicate(),
+		ecology.vegetation_potential.duplicate(), ecology.biome_id.duplicate(),
+		environment.mana_concentration.duplicate(), environment.mana_flowability.duplicate(),
+		environment.mana_stability.duplicate()]
 
 
 func _test_final_climate_uses_conditioned_terrain_and_same_generator() -> void:
@@ -708,7 +744,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 12 test groups passed")
+		print("Final Climate Pipeline: all 13 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
