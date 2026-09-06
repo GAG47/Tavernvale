@@ -8,6 +8,7 @@ const E1EAD01_ARCANE_WEB_HASH := 2171446821
 const E1EAD01_ARCANE_CIRCULATION_HASH := 2528184610
 const E1EAD01_ARCANE_FORCING_HASH := 1720515922
 const E1EAD01_ARCANE_ENVIRONMENT_HASH := 138486197
+const V201_ARCANE_FIELD_HASH := 33085044
 
 
 func _init() -> void:
@@ -31,6 +32,7 @@ func _run_all() -> void:
 	_test_arcane_circulation_follows_web_and_preserves_prior_layers()
 	_test_arcane_environment_follows_circulation_and_preserves_prior_layers()
 	_test_v201_downstream_zero_regression()
+	_test_arcane_ecology_follows_environment_and_preserves_upstream()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -183,6 +185,14 @@ func _build_fixed_pipeline() -> Dictionary:
 	var arcane_environment_diagnostics := (
 		ArcaneEnvironmentGenerator.last_generation_diagnostics()
 	)
+	var arcane_environment_before_ecology := [
+		arcane_environment.mana_concentration.duplicate(),
+		arcane_environment.mana_flowability.duplicate(),
+		arcane_environment.mana_stability.duplicate(),
+	]
+	var arcane_ecology := ArcaneEcologyGenerator.generate(arcane_field, arcane_environment)
+	if arcane_ecology == null:
+		return {}
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -210,6 +220,8 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_forcing_diagnostics": arcane_forcing_diagnostics,
 		"arcane_environment": arcane_environment,
 		"arcane_environment_diagnostics": arcane_environment_diagnostics,
+		"arcane_environment_before_ecology": arcane_environment_before_ecology,
+		"arcane_ecology": arcane_ecology,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
 		"v201_hash_before_web": v201_hash_before_web,
@@ -576,6 +588,41 @@ func _test_v201_downstream_zero_regression() -> void:
 			"Background Arcane Potential must not affect Mana Stability")
 
 
+func _test_arcane_ecology_follows_environment_and_preserves_upstream() -> void:
+	var field: ArcaneFieldLayer = _pipeline.arcane_field
+	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
+	var arcane_ecology: ArcaneEcologyLayer = _pipeline.arcane_ecology
+	_expect(arcane_ecology.cell_count() == environment.cell_count(),
+		"Arcane Ecology should contain one classification per Environment Cell")
+	_expect(ArcaneEcologyValidator.validate(field, environment, arcane_ecology).is_empty(),
+		"Arcane Ecology should validate after Arcane Environment")
+	_expect(_pipeline.v201_hash_before_web == V201_ARCANE_FIELD_HASH,
+		"v2.0/v2.0.1 Arcane Field must match the 8cf6dd8 baseline exactly")
+	_expect(environment.mana_concentration
+			== _pipeline.arcane_environment_before_ecology[0],
+		"Arcane Ecology generation must not modify Mana Concentration")
+	_expect(environment.mana_flowability
+			== _pipeline.arcane_environment_before_ecology[1],
+		"Arcane Ecology generation must not modify Mana Flowability")
+	_expect(environment.mana_stability
+			== _pipeline.arcane_environment_before_ecology[2],
+		"Arcane Ecology generation must not modify Mana Stability")
+	_expect(_v21_pipeline_hash(_pipeline.v2_hash_before_web, field, _pipeline.arcane_web)
+			== E1EAD01_ARCANE_WEB_HASH,
+		"Arcane Ecology generation must not modify Arcane Web")
+	_expect(_v22_pipeline_hash(
+		_pipeline.v2_hash_before_web,
+		field,
+		_pipeline.arcane_web,
+		_pipeline.arcane_circulation
+	) == E1EAD01_ARCANE_CIRCULATION_HASH,
+		"Arcane Ecology generation must not modify Arcane Circulation")
+	_expect(_arcane_forcing_hash(_pipeline.arcane_forcing) == E1EAD01_ARCANE_FORCING_HASH,
+		"Arcane Ecology generation must not modify Arcane Forcing")
+	_expect(_arcane_environment_hash(environment) == E1EAD01_ARCANE_ENVIRONMENT_HASH,
+		"Arcane Ecology generation must not modify Arcane Environment")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -623,6 +670,17 @@ func _test_determinism() -> void:
 		_expect(_pipeline.arcane_environment.mana_stability
 				== repeated_environment.mana_stability,
 			"Final Mana Stability should be deterministic")
+	var repeated_arcane_ecology := ArcaneEcologyGenerator.generate(
+		_pipeline.arcane_field, _pipeline.arcane_environment
+	)
+	_expect(repeated_arcane_ecology != null, "repeat Arcane Ecology should generate")
+	if repeated_arcane_ecology != null:
+		_expect(_pipeline.arcane_ecology.arcane_ecology_state
+				== repeated_arcane_ecology.arcane_ecology_state,
+			"Arcane Ecology State should be deterministic")
+		_expect(_pipeline.arcane_ecology.arcane_manifestation_type
+				== repeated_arcane_ecology.arcane_manifestation_type,
+			"Arcane Manifestation Type should be deterministic")
 	var repeated_forcing := ArcaneForcingGenerator.generate(graph, graph.config.seed)
 	_expect(repeated_forcing != null, "repeat Arcane Forcing pipeline should generate")
 	if repeated_forcing != null:
@@ -784,7 +842,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 13 test groups passed")
+		print("Final Climate Pipeline: all 14 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

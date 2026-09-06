@@ -27,6 +27,7 @@ var arcane_web: ArcaneWebLayer
 var arcane_circulation: ArcaneCirculationLayer
 var arcane_forcing: ArcaneForcingLayer
 var arcane_environment: ArcaneEnvironmentLayer
+var arcane_ecology: ArcaneEcologyLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -40,6 +41,7 @@ var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
 var arcane_forcing_settings: ArcaneForcingSettings
 var arcane_environment_settings: ArcaneEnvironmentSettings
+var arcane_ecology_settings: ArcaneEcologySettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -61,6 +63,7 @@ var _arcane_generation_ms := 0
 var _arcane_circulation_generation_ms := 0
 var _arcane_forcing_generation_ms := 0
 var _arcane_environment_generation_ms := 0
+var _arcane_ecology_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -141,6 +144,8 @@ enum ViewMode {
 	MANA_CONCENTRATION,
 	MANA_FLOWABILITY,
 	MANA_STABILITY,
+	ARCANE_ECOLOGY_STATE,
+	ARCANE_MANIFESTATION_TYPE,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -200,6 +205,8 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.MANA_CONCENTRATION,
 		ViewMode.MANA_FLOWABILITY,
 		ViewMode.MANA_STABILITY,
+		ViewMode.ARCANE_ECOLOGY_STATE,
+		ViewMode.ARCANE_MANIFESTATION_TYPE,
 	],
 ]
 
@@ -230,6 +237,10 @@ func _unhandled_input(event: InputEvent) -> void:
 			_show_arcane_domains = not _show_arcane_domains
 		elif event.keycode >= KEY_1 and event.keycode <= KEY_9:
 			_select_current_page_view(int(event.keycode - KEY_1))
+		elif event.keycode == KEY_0:
+			_select_current_page_view(9)
+		elif event.keycode == KEY_MINUS:
+			_select_current_page_view(10)
 		elif event.keycode == KEY_T:
 			var template_ids := CompositionTemplates.template_ids()
 			var current_index := template_ids.find(template_id)
@@ -278,6 +289,7 @@ func _draw() -> void:
 			or arcane_circulation == null \
 			or arcane_forcing == null \
 			or arcane_environment == null \
+			or arcane_ecology == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -546,6 +558,12 @@ func _cell_color(cell_id: int) -> Color:
 			return _mana_flowability_color(arcane_environment.mana_flowability[cell_id])
 		ViewMode.MANA_STABILITY:
 			return _mana_stability_color(arcane_environment.mana_stability[cell_id])
+		ViewMode.ARCANE_ECOLOGY_STATE:
+			return _arcane_ecology_state_color(arcane_ecology.arcane_ecology_state[cell_id])
+		ViewMode.ARCANE_MANIFESTATION_TYPE:
+			return _arcane_manifestation_color(
+				arcane_ecology.arcane_manifestation_type[cell_id]
+			)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
 		ViewMode.PRECIPITATION_DELTA:
@@ -624,6 +642,32 @@ func _mana_stability_color(value: float) -> Color:
 	return Color(0.92, 0.54, 0.18).lerp(
 		Color(0.58, 0.96, 0.76), (normalized - 0.5) * 2.0
 	)
+
+
+func _arcane_ecology_state_color(state: int) -> Color:
+	match state:
+		ArcaneEcologyLayer.EcologyState.NORMAL:
+			return Color(0.28, 0.30, 0.34)
+		ArcaneEcologyLayer.EcologyState.INFLUENCED:
+			return Color(0.08, 0.66, 0.62)
+		ArcaneEcologyLayer.EcologyState.DOMINANT:
+			return Color(0.92, 0.12, 0.68)
+		_:
+			return Color.MAGENTA
+
+
+func _arcane_manifestation_color(manifestation_type: int) -> Color:
+	match manifestation_type:
+		ArcaneEcologyLayer.ManifestationType.NONE:
+			return Color(0.09, 0.10, 0.13)
+		ArcaneEcologyLayer.ManifestationType.CRYSTALLINE:
+			return Color(0.12, 0.70, 0.94)
+		ArcaneEcologyLayer.ManifestationType.ECOLOGICAL:
+			return Color(0.20, 0.72, 0.30)
+		ArcaneEcologyLayer.ManifestationType.MIXED:
+			return Color(0.62, 0.24, 0.82)
+		_:
+			return Color.MAGENTA
 
 
 func _lake_extent_color(cell_id: int) -> Color:
@@ -961,6 +1005,7 @@ func _regenerate_composition() -> void:
 		arcane_circulation = null
 		arcane_forcing = null
 		arcane_environment = null
+		arcane_ecology = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -1103,6 +1148,12 @@ func _regenerate_composition() -> void:
 		ArcaneEnvironmentGenerator.last_generation_diagnostics()
 		if arcane_environment != null else {}
 	)
+	started = Time.get_ticks_msec()
+	arcane_ecology_settings = ArcaneEcologySettings.new()
+	arcane_ecology = null if arcane_environment == null else ArcaneEcologyGenerator.generate(
+		arcane_field, arcane_environment, arcane_ecology_settings
+	)
+	_arcane_ecology_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -1138,6 +1189,10 @@ func _draw_information() -> void:
 	for view_index in page_views.size():
 		lines.append("[%d] %s" % [view_index + 1, _view_mode_name(page_views[view_index])])
 	lines.append("")
+	if page_views.size() > 9:
+		lines.append("0          Select View 10")
+	if page_views.size() > 10:
+		lines.append("-          Select View 11")
 	lines.append("Tab        Next Page")
 	lines.append("Shift+Tab  Previous Page")
 	lines.append("H          Hold Height Reference")
@@ -1168,6 +1223,8 @@ func _draw_information() -> void:
 			)
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
+		elif _is_arcane_ecology_view():
+			_append_arcane_ecology_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_view():
 			lines.append("Arcane Environment")
 			lines.append(
@@ -1318,6 +1375,29 @@ func _append_cell_inspector_header(lines: PackedStringArray, cell_id: int) -> vo
 	lines.append("Biome: %s" % EcologyCatalog.biome_name(ecology.biome_id[cell_id]))
 
 
+func _append_arcane_ecology_cell_inspection(
+		lines: PackedStringArray, cell_id: int
+) -> void:
+	var mana := arcane_environment.mana_concentration[cell_id]
+	var potential := arcane_field.background_arcane_potential[cell_id]
+	var mana_band := ArcaneEcologyGenerator.classify_mana(mana, arcane_ecology_settings)
+	var potential_band := ArcaneEcologyGenerator.classify_potential(
+		potential, arcane_ecology_settings
+	)
+	lines.append("Mana Concentration: %.4f" % mana)
+	lines.append("Background Arcane Potential: %.4f" % potential)
+	lines.append("Mana Band: %s" % ArcaneEcologyGenerator.band_name(mana_band))
+	lines.append("Potential Band: %s" % ArcaneEcologyGenerator.band_name(potential_band))
+	lines.append("Arcane Ecology State: %s" % ArcaneEcologyLayer.ecology_state_name(
+		arcane_ecology.arcane_ecology_state[cell_id]
+	))
+	lines.append("Arcane Manifestation Type: %s" % (
+		ArcaneEcologyLayer.manifestation_type_name(
+			arcane_ecology.arcane_manifestation_type[cell_id]
+		)
+	))
+
+
 func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
 	lines.append("Agriculture: %.4f" % resource_potential.agriculture_potential[cell_id])
 	lines.append("Timber: %.4f" % resource_potential.timber_potential[cell_id])
@@ -1452,6 +1532,14 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_mana_flowability_statistics(lines)
 		ViewMode.MANA_STABILITY:
 			_append_mana_stability_statistics(lines)
+		ViewMode.ARCANE_ECOLOGY_STATE:
+			_append_arcane_ecology_state_statistics(
+				lines, _arcane_statistics.get("arcane_ecology", {})
+			)
+		ViewMode.ARCANE_MANIFESTATION_TYPE:
+			_append_arcane_manifestation_statistics(
+				lines, _arcane_statistics.get("arcane_ecology", {})
+			)
 		ViewMode.RAW_COMPOSITION:
 			lines.append(
 				"Min %d | Max %d | Mean %.2f"
@@ -2000,7 +2088,7 @@ func _calculate_resource_statistics() -> Dictionary:
 
 func _calculate_arcane_statistics() -> Dictionary:
 	if arcane_field == null or arcane_web == null or arcane_circulation == null \
-			or arcane_environment == null:
+			or arcane_environment == null or arcane_ecology == null:
 		return {}
 	return {
 		"mana": _arcane_field_statistics(arcane_field.background_mana),
@@ -2009,6 +2097,9 @@ func _calculate_arcane_statistics() -> Dictionary:
 		"web": ArcaneWebValidator.statistics(arcane_web),
 		"circulation": ArcaneCirculationValidator.statistics(arcane_web, arcane_circulation),
 		"forcing": ArcaneForcingValidator.statistics(graph, arcane_forcing),
+		"arcane_ecology": ArcaneEcologyValidator.statistics(
+			arcane_field, arcane_environment, arcane_ecology, arcane_ecology_settings
+		),
 	}
 
 
@@ -2047,6 +2138,63 @@ func _append_arcane_statistics(lines: PackedStringArray, statistics: Dictionary)
 	lines.append("Max: %.4f" % statistics.max)
 	lines.append("Mean Neighbor Delta: %.5f" % statistics.mean_neighbor_delta)
 	lines.append("Generation: %d ms" % _arcane_generation_ms)
+
+
+func _append_arcane_ecology_state_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Ecology data")
+		return
+	var counts: PackedInt32Array = statistics.ecology_state_counts
+	var total := int(statistics.cell_count)
+	lines.append("Arcane Ecology State:")
+	for state in counts.size():
+		lines.append("  %s: %s" % [
+			ArcaneEcologyLayer.ecology_state_name(state),
+			_count_percentage(counts[state], total),
+		])
+	_append_arcane_ecology_matrix(lines, statistics)
+
+
+func _append_arcane_manifestation_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Ecology data")
+		return
+	var counts: PackedInt32Array = statistics.manifestation_type_counts
+	var total := int(statistics.cell_count)
+	lines.append("Arcane Manifestation Type:")
+	for manifestation_type in counts.size():
+		lines.append("  %s: %s" % [
+			ArcaneEcologyLayer.manifestation_type_name(manifestation_type),
+			_count_percentage(counts[manifestation_type], total),
+		])
+	_append_arcane_ecology_matrix(lines, statistics)
+
+
+func _append_arcane_ecology_matrix(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	var matrix: Array = statistics.matrix
+	var total := int(statistics.cell_count)
+	lines.append("Mana x Potential Matrix:")
+	for mana_band in matrix.size():
+		lines.append("  Mana %s:" % ArcaneEcologyGenerator.band_name(mana_band))
+		var row: PackedInt32Array = matrix[mana_band]
+		for potential_band in row.size():
+			lines.append("    P.%s: %s" % [
+				ArcaneEcologyGenerator.band_name(potential_band),
+				_count_percentage(row[potential_band], total),
+			])
+	lines.append("Mana/Potential Pearson: %.4f" % statistics.mana_potential_pearson)
+	lines.append("Generation: %d ms" % _arcane_ecology_generation_ms)
+
+
+func _count_percentage(count: int, total: int) -> String:
+	var percentage := 100.0 * float(count) / float(total) if total > 0 else 0.0
+	return "%d / %.2f%%" % [count, percentage]
 
 
 func _append_arcane_web_statistics(lines: PackedStringArray, statistics: Dictionary) -> void:
@@ -2641,6 +2789,10 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Mana Flowability"
 		ViewMode.MANA_STABILITY:
 			return "Long-term Mana Stability"
+		ViewMode.ARCANE_ECOLOGY_STATE:
+			return "Arcane Ecology State"
+		ViewMode.ARCANE_MANIFESTATION_TYPE:
+			return "Arcane Manifestation Type"
 		_:
 			return "Unknown"
 
@@ -2682,7 +2834,13 @@ func _is_arcane_view() -> bool:
 			or view_mode == ViewMode.MANA_CONCENTRATION \
 			or view_mode == ViewMode.MANA_FLOWABILITY \
 			or view_mode == ViewMode.MANA_STABILITY \
+			or _is_arcane_ecology_view() \
 			or _is_arcane_overlay_view()
+
+
+func _is_arcane_ecology_view() -> bool:
+	return view_mode == ViewMode.ARCANE_ECOLOGY_STATE \
+			or view_mode == ViewMode.ARCANE_MANIFESTATION_TYPE
 
 
 func _is_arcane_network_view() -> bool:
