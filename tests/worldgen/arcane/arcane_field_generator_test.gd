@@ -15,6 +15,7 @@ func _run_all() -> void:
 	_test_spatial_continuity()
 	_test_resolution_independence()
 	_test_spatial_graph_preservation()
+	_test_template_independence()
 	_finish()
 
 
@@ -28,7 +29,9 @@ func _test_sizes_ranges_settings_and_validator() -> void:
 		"background_mana should contain one value per Cell")
 	_expect(field.background_stability.size() == graph.cell_count(),
 		"background_stability should contain one value per Cell")
-	for values in [field.background_mana, field.background_stability]:
+	_expect(field.background_arcane_potential.size() == graph.cell_count(),
+		"background_arcane_potential should contain one value per Cell")
+	for values in _field_arrays(field):
 		for value in values:
 			_expect(is_finite(value), "Arcane Field values should be finite")
 			_expect(value >= 0.0 and value <= 1.0,
@@ -39,15 +42,21 @@ func _test_sizes_ranges_settings_and_validator() -> void:
 	var invalid_settings := ArcaneFieldSettings.new()
 	invalid_settings.mana_feature_scale = 0.0
 	invalid_settings.stability_feature_scale = INF
-	_expect(invalid_settings.validate().size() == 2,
+	invalid_settings.potential_feature_scale = NAN
+	_expect(invalid_settings.validate().size() == 3,
 		"Arcane Field Settings should reject non-positive or non-finite scales")
+	var copied_settings := ArcaneFieldSettings.new().duplicate_settings()
+	_expect(copied_settings.potential_feature_scale == 1000.0,
+		"Arcane Field Settings should preserve the Potential feature scale")
 	var invalid_field := ArcaneFieldLayer.new()
 	invalid_field.background_mana.resize(graph.cell_count())
 	invalid_field.background_stability.resize(graph.cell_count())
+	invalid_field.background_arcane_potential.resize(graph.cell_count())
 	invalid_field.background_mana[0] = NAN
 	invalid_field.background_stability[0] = INF
-	_expect(ArcaneFieldValidator.validate(graph, invalid_field).size() >= 2,
-		"Arcane Field Validator should reject NaN and INF")
+	invalid_field.background_arcane_potential[0] = -0.01
+	_expect(ArcaneFieldValidator.validate(graph, invalid_field).size() >= 3,
+		"Arcane Field Validator should reject non-finite and out-of-range values")
 
 
 func _test_determinism_and_different_seed() -> void:
@@ -64,10 +73,14 @@ func _test_determinism_and_different_seed() -> void:
 		"same inputs should reproduce background_mana exactly")
 	_expect(first.background_stability == repeat.background_stability,
 		"same inputs should reproduce background_stability exactly")
+	_expect(first.background_arcane_potential == repeat.background_arcane_potential,
+		"same inputs should reproduce background_arcane_potential exactly")
 	_expect(first.background_mana != other_seed.background_mana,
 		"a different World Seed should change background_mana")
 	_expect(first.background_stability != other_seed.background_stability,
 		"a different World Seed should change background_stability")
+	_expect(first.background_arcane_potential != other_seed.background_arcane_potential,
+		"a different World Seed should change background_arcane_potential")
 
 
 func _test_seed_domains_and_field_independence() -> void:
@@ -75,13 +88,20 @@ func _test_seed_domains_and_field_independence() -> void:
 		"Mana must use the stable MANA seed salt")
 	_expect(ArcaneFieldGenerator.ARCANE_STABILITY_SEED_SALT == 0x53544142,
 		"Stability must use the stable STAB seed salt")
+	_expect(ArcaneFieldGenerator.ARCANE_POTENTIAL_SEED_SALT == 0x504F544C,
+		"Arcane Potential must use the stable POTL seed salt")
 	var mana_seed := DeterministicRng.stable_mix(
 		777, ArcaneFieldGenerator.ARCANE_MANA_SEED_SALT
 	)
 	var stability_seed := DeterministicRng.stable_mix(
 		777, ArcaneFieldGenerator.ARCANE_STABILITY_SEED_SALT
 	)
-	_expect(mana_seed != stability_seed, "Mana and Stability must use independent seed domains")
+	var potential_seed := DeterministicRng.stable_mix(
+		777, ArcaneFieldGenerator.ARCANE_POTENTIAL_SEED_SALT
+	)
+	_expect(mana_seed != stability_seed and mana_seed != potential_seed
+			and stability_seed != potential_seed,
+		"all Arcane fields must use independent seed domains")
 	var graph := _grid_graph(41, 21, 50.0, 777)
 	var field := ArcaneFieldGenerator.generate(graph, 777)
 	_expect(field != null, "field-independence fixture should generate")
@@ -89,6 +109,23 @@ func _test_seed_domains_and_field_independence() -> void:
 		return
 	_expect(field.background_mana != field.background_stability,
 		"Mana and Stability must not be the same field")
+	_expect(field.background_arcane_potential != field.background_mana,
+		"Arcane Potential must not be the same field as Mana")
+	_expect(field.background_arcane_potential != field.background_stability,
+		"Arcane Potential must not be the same field as Stability")
+	var expected_noise := ArcaneFieldGenerator._make_noise(
+		potential_seed,
+		1000.0,
+		ArcaneFieldGenerator.POTENTIAL_OCTAVES,
+		ArcaneFieldGenerator.POTENTIAL_LACUNARITY,
+		ArcaneFieldGenerator.POTENTIAL_GAIN
+	)
+	var position := graph.cell_centers[37]
+	var expected_value := ArcaneFieldGenerator._unit_value(
+		expected_noise.get_noise_2d(position.x, position.y)
+	)
+	_expect(is_equal_approx(field.background_arcane_potential[37], expected_value),
+		"Arcane Potential samples its stable POTL seed domain directly in world space")
 	var exact_inverse := true
 	var combinations := PackedByteArray()
 	combinations.resize(4)
@@ -118,7 +155,11 @@ func _test_noise_configuration() -> void:
 		2, 500.0, ArcaneFieldGenerator.STABILITY_OCTAVES,
 		ArcaneFieldGenerator.STABILITY_LACUNARITY, ArcaneFieldGenerator.STABILITY_GAIN
 	)
-	for noise in [mana_noise, stability_noise]:
+	var potential_noise := ArcaneFieldGenerator._make_noise(
+		3, 1000.0, ArcaneFieldGenerator.POTENTIAL_OCTAVES,
+		ArcaneFieldGenerator.POTENTIAL_LACUNARITY, ArcaneFieldGenerator.POTENTIAL_GAIN
+	)
+	for noise in [mana_noise, stability_noise, potential_noise]:
 		_expect(noise.noise_type == FastNoiseLite.TYPE_SIMPLEX_SMOOTH,
 			"Arcane fields should use Simplex Smooth noise")
 		_expect(noise.fractal_type == FastNoiseLite.FRACTAL_FBM,
@@ -136,6 +177,25 @@ func _test_noise_configuration() -> void:
 		"Stability frequency should be 1 / 500 world units")
 	_expect(is_equal_approx(stability_noise.fractal_gain, 0.50),
 		"Stability gain should be 0.50")
+	_expect(is_equal_approx(potential_noise.frequency, 1.0 / 1000.0),
+		"Arcane Potential frequency should be 1 / 1000 world units")
+	_expect(is_equal_approx(potential_noise.fractal_gain, 0.40),
+		"Arcane Potential gain should be 0.40")
+
+	var graph := _grid_graph(41, 21, 50.0, 808)
+	var default_field := ArcaneFieldGenerator.generate(graph, 808)
+	var changed_settings := ArcaneFieldSettings.new()
+	changed_settings.potential_feature_scale = 250.0
+	var changed_field := ArcaneFieldGenerator.generate(graph, 808, changed_settings)
+	_expect(default_field != null and changed_field != null,
+		"feature-scale fixtures should generate")
+	if default_field != null and changed_field != null:
+		_expect(default_field.background_arcane_potential
+				!= changed_field.background_arcane_potential,
+			"changing potential_feature_scale should change Potential spatial structure")
+		_expect(default_field.background_mana == changed_field.background_mana
+				and default_field.background_stability == changed_field.background_stability,
+			"changing potential_feature_scale must not alter Mana or Stability")
 
 
 func _test_spatial_continuity() -> void:
@@ -148,6 +208,8 @@ func _test_spatial_continuity() -> void:
 		"Mana should be spatially continuous, not per-Cell random")
 	_expect(_mean_neighbor_delta(graph, field.background_stability) < 0.12,
 		"Stability should be spatially continuous, not per-Cell random")
+	_expect(_mean_neighbor_delta(graph, field.background_arcane_potential) < 0.12,
+		"Arcane Potential should be spatially continuous, not per-Cell random")
 
 
 func _test_resolution_independence() -> void:
@@ -171,6 +233,9 @@ func _test_resolution_independence() -> void:
 			_expect(coarse_field.background_stability[coarse_id]
 					== dense_field.background_stability[dense_id],
 				"Stability should match at the same world coordinate across resolutions")
+			_expect(coarse_field.background_arcane_potential[coarse_id]
+					== dense_field.background_arcane_potential[dense_id],
+				"Arcane Potential should match at the same coordinate across resolutions")
 
 
 func _test_spatial_graph_preservation() -> void:
@@ -183,6 +248,39 @@ func _test_spatial_graph_preservation() -> void:
 		"Arcane Field generation must not modify SpatialGraph Cell centers")
 	_expect(graph.cell_neighbors == neighbors_before,
 		"Arcane Field generation must not modify SpatialGraph topology")
+
+
+func _test_template_independence() -> void:
+	var graph := _grid_graph(41, 21, 50.0, 5150)
+	var continents := WorldCompositionGenerator.generate(
+		graph, WorldCompositionConfig.new(5150, CompositionTemplates.CONTINENTS)
+	)
+	var archipelago := WorldCompositionGenerator.generate(
+		graph, WorldCompositionConfig.new(5150, CompositionTemplates.ARCHIPELAGO)
+	)
+	_expect(continents != null and archipelago != null,
+		"natural-geography template fixtures should generate")
+	if continents == null or archipelago == null:
+		return
+	_expect(continents.continental_value != archipelago.continental_value,
+		"template-independence fixtures should have different natural geography")
+	var under_continents := ArcaneFieldGenerator.generate(graph, 5150)
+	var under_archipelago := ArcaneFieldGenerator.generate(graph, 5150)
+	_expect(under_continents != null and under_archipelago != null,
+		"template-independence Arcane fields should generate")
+	if under_continents == null or under_archipelago == null:
+		return
+	_expect(under_continents.background_arcane_potential
+			== under_archipelago.background_arcane_potential,
+		"Arcane Potential must be identical across natural-geography templates")
+
+
+func _field_arrays(field: ArcaneFieldLayer) -> Array[PackedFloat32Array]:
+	return [
+		field.background_mana,
+		field.background_stability,
+		field.background_arcane_potential,
+	]
 
 
 func _grid_graph(columns: int, rows: int, spacing: float, seed: int) -> SpatialGraph:
@@ -231,7 +329,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Arcane Field: all 7 test groups passed")
+		print("Arcane Field: all 8 test groups passed")
 		quit(0)
 		return
 	for failure in _failures:

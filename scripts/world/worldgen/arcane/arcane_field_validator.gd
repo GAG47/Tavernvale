@@ -12,6 +12,8 @@ static func validate(graph: SpatialGraph, arcane_field: ArcaneFieldLayer) -> Pac
 		errors.append("background_mana must contain one value per Cell")
 	if arcane_field.background_stability.size() != count:
 		errors.append("background_stability must contain one value per Cell")
+	if arcane_field.background_arcane_potential.size() != count:
+		errors.append("background_arcane_potential must contain one value per Cell")
 	if not errors.is_empty():
 		return errors
 	for cell_id in count:
@@ -22,5 +24,11 @@ static func validate(graph: SpatialGraph, arcane_field: ArcaneFieldLayer) -> Pac
 		if not is_finite(stability) or stability < 0.0 or stability > 1.0:
 			errors.append(
 				"background_stability[%d] must be finite and inside [0, 1]" % cell_id
+			)
+		var potential := arcane_field.background_arcane_potential[cell_id]
+		if not is_finite(potential) or potential < 0.0 or potential > 1.0:
+			errors.append(
+				"background_arcane_potential[%d] must be finite and inside [0, 1]"
+				% cell_id
 			)
 	return errors

@@ -3,6 +3,12 @@ extends SceneTree
 var _failures := PackedStringArray()
 var _pipeline := {}
 
+const E1EAD01_V1_HASH := 2590575400
+const E1EAD01_ARCANE_WEB_HASH := 2171446821
+const E1EAD01_ARCANE_CIRCULATION_HASH := 2528184610
+const E1EAD01_ARCANE_FORCING_HASH := 1720515922
+const E1EAD01_ARCANE_ENVIRONMENT_HASH := 138486197
+
 
 func _init() -> void:
 	call_deferred("_run_all")
@@ -24,6 +30,7 @@ func _run_all() -> void:
 	_test_arcane_web_follows_arcane_field_and_preserves_prior_layers()
 	_test_arcane_circulation_follows_web_and_preserves_prior_layers()
 	_test_arcane_environment_follows_circulation_and_preserves_prior_layers()
+	_test_v201_downstream_zero_regression()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -144,6 +151,10 @@ func _build_fixed_pipeline() -> Dictionary:
 		arcane_field.background_mana,
 		arcane_field.background_stability,
 	])
+	var v201_hash_before_web := hash([
+		v2_hash_before_web,
+		arcane_field.background_arcane_potential,
+	])
 	var arcane_web := ArcaneWebGenerator.generate(
 		graph.config.seed, graph.config.world_width, graph.config.world_height
 	)
@@ -201,6 +212,7 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_environment_diagnostics": arcane_environment_diagnostics,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
+		"v201_hash_before_web": v201_hash_before_web,
 		"v21_hash_before_circulation": v21_hash_before_circulation,
 		"v22_hash_before_environment": v22_hash_before_environment,
 	}
@@ -453,6 +465,10 @@ func _test_arcane_web_follows_arcane_field_and_preserves_prior_layers() -> void:
 		_pipeline.arcane_field.background_mana,
 		_pipeline.arcane_field.background_stability,
 	]), "Arcane Web generation must preserve v2.0 Arcane Field and every v1 Layer")
+	_expect(_pipeline.v201_hash_before_web == hash([
+		_pipeline.v2_hash_before_web,
+		_pipeline.arcane_field.background_arcane_potential,
+	]), "Arcane Web generation must preserve the v2.0.1 Arcane Potential field")
 
 
 func _test_arcane_circulation_follows_web_and_preserves_prior_layers() -> void:
@@ -514,6 +530,50 @@ func _test_arcane_environment_follows_circulation_and_preserves_prior_layers() -
 		),
 		"Arcane Environment generation must preserve v2.2 Circulation, v2.1 Web, v2.0 Field, and v1"
 	)
+
+
+func _test_v201_downstream_zero_regression() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var field: ArcaneFieldLayer = _pipeline.arcane_field
+	var web: ArcaneWebLayer = _pipeline.arcane_web
+	var circulation: ArcaneCirculationLayer = _pipeline.arcane_circulation
+	var forcing: ArcaneForcingLayer = _pipeline.arcane_forcing
+	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
+	_expect(_v1_pipeline_hash(_pipeline) == E1EAD01_V1_HASH,
+		"v1 formal outputs must match the e1ead01 baseline exactly")
+	_expect(_v21_pipeline_hash(_pipeline.v2_hash_before_web, field, web)
+			== E1EAD01_ARCANE_WEB_HASH,
+		"Arcane Web formal outputs must match the e1ead01 baseline exactly")
+	_expect(_v22_pipeline_hash(_pipeline.v2_hash_before_web, field, web, circulation)
+			== E1EAD01_ARCANE_CIRCULATION_HASH,
+		"Arcane Circulation formal outputs must match the e1ead01 baseline exactly")
+	_expect(_arcane_forcing_hash(forcing) == E1EAD01_ARCANE_FORCING_HASH,
+		"Arcane Forcing formal outputs must match the e1ead01 baseline exactly")
+	_expect(_arcane_environment_hash(environment) == E1EAD01_ARCANE_ENVIRONMENT_HASH,
+		"Arcane Environment formal outputs must match the e1ead01 baseline exactly")
+
+	var counterfactual_field := ArcaneFieldLayer.new()
+	counterfactual_field.background_mana = field.background_mana.duplicate()
+	counterfactual_field.background_stability = field.background_stability.duplicate()
+	counterfactual_field.background_arcane_potential.resize(graph.cell_count())
+	for cell_id in graph.cell_count():
+		counterfactual_field.background_arcane_potential[cell_id] = (
+			1.0 - field.background_arcane_potential[cell_id]
+		)
+	_expect(ArcaneFieldValidator.validate(graph, counterfactual_field).is_empty(),
+		"counterfactual Potential field should remain a valid Arcane Field input")
+	var counterfactual_environment := ArcaneEnvironmentGenerator.generate(
+		graph, counterfactual_field, web, circulation, forcing
+	)
+	_expect(counterfactual_environment != null,
+		"counterfactual downstream fixture should generate")
+	if counterfactual_environment != null:
+		_expect(counterfactual_environment.mana_concentration == environment.mana_concentration,
+			"Background Arcane Potential must not affect Mana Concentration")
+		_expect(counterfactual_environment.mana_flowability == environment.mana_flowability,
+			"Background Arcane Potential must not affect Mana Flowability")
+		_expect(counterfactual_environment.mana_stability == environment.mana_stability,
+			"Background Arcane Potential must not affect Mana Stability")
 
 
 func _test_determinism() -> void:
@@ -701,6 +761,22 @@ func _forcing_signature(forcing: ArcaneForcingLayer) -> Array:
 	return signature
 
 
+func _arcane_forcing_hash(forcing: ArcaneForcingLayer) -> int:
+	return hash([
+		_forcing_signature(forcing),
+		forcing.source_rate,
+		forcing.sink_rate,
+	])
+
+
+func _arcane_environment_hash(environment: ArcaneEnvironmentLayer) -> int:
+	return hash([
+		environment.mana_concentration,
+		environment.mana_flowability,
+		environment.mana_stability,
+	])
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -708,7 +784,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 12 test groups passed")
+		print("Final Climate Pipeline: all 13 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

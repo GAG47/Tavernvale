@@ -3,6 +3,7 @@ extends RefCounted
 
 const ARCANE_MANA_SEED_SALT := 0x4D414E41 # "MANA"
 const ARCANE_STABILITY_SEED_SALT := 0x53544142 # "STAB"
+const ARCANE_POTENTIAL_SEED_SALT := 0x504F544C # "POTL"
 
 const MANA_OCTAVES := 3
 const MANA_LACUNARITY := 2.0
@@ -10,6 +11,9 @@ const MANA_GAIN := 0.40
 const STABILITY_OCTAVES := 3
 const STABILITY_LACUNARITY := 2.0
 const STABILITY_GAIN := 0.50
+const POTENTIAL_OCTAVES := 3
+const POTENTIAL_LACUNARITY := 2.0
+const POTENTIAL_GAIN := 0.40
 
 
 static func generate(
@@ -43,10 +47,18 @@ static func generate(
 		STABILITY_LACUNARITY,
 		STABILITY_GAIN
 	)
+	var potential_noise := _make_noise(
+		DeterministicRng.stable_mix(world_seed, ARCANE_POTENTIAL_SEED_SALT),
+		actual_settings.potential_feature_scale,
+		POTENTIAL_OCTAVES,
+		POTENTIAL_LACUNARITY,
+		POTENTIAL_GAIN
+	)
 	var arcane_field := ArcaneFieldLayer.new()
 	var count := graph.cell_count()
 	arcane_field.background_mana.resize(count)
 	arcane_field.background_stability.resize(count)
+	arcane_field.background_arcane_potential.resize(count)
 	for cell_id in count:
 		var position := graph.cell_centers[cell_id]
 		arcane_field.background_mana[cell_id] = _unit_value(
@@ -54,6 +66,9 @@ static func generate(
 		)
 		arcane_field.background_stability[cell_id] = _unit_value(
 			stability_noise.get_noise_2d(position.x, position.y)
+		)
+		arcane_field.background_arcane_potential[cell_id] = _unit_value(
+			potential_noise.get_noise_2d(position.x, position.y)
 		)
 
 	var validation_errors := ArcaneFieldValidator.validate(graph, arcane_field)

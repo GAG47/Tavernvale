@@ -4,6 +4,7 @@ extends RefCounted
 ## Natural arcane background fields before ley networks or other magical influences.
 var background_mana := PackedFloat32Array()
 var background_stability := PackedFloat32Array()
+var background_arcane_potential := PackedFloat32Array()
 
 
 func cell_count() -> int:

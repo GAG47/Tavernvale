@@ -3,6 +3,7 @@ extends RefCounted
 
 var mana_feature_scale: float = 800.0
 var stability_feature_scale: float = 500.0
+var potential_feature_scale: float = 1000.0
 
 
 func validate() -> PackedStringArray:
@@ -11,6 +12,8 @@ func validate() -> PackedStringArray:
 		errors.append("mana_feature_scale must be finite and positive")
 	if not is_finite(stability_feature_scale) or stability_feature_scale <= 0.0:
 		errors.append("stability_feature_scale must be finite and positive")
+	if not is_finite(potential_feature_scale) or potential_feature_scale <= 0.0:
+		errors.append("potential_feature_scale must be finite and positive")
 	return errors
 
 
@@ -18,4 +21,5 @@ func duplicate_settings() -> ArcaneFieldSettings:
 	var result := ArcaneFieldSettings.new()
 	result.mana_feature_scale = mana_feature_scale
 	result.stability_feature_scale = stability_feature_scale
+	result.potential_feature_scale = potential_feature_scale
 	return result

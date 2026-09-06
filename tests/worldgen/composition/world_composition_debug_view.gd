@@ -134,6 +134,7 @@ enum ViewMode {
 	COASTAL_AQUATIC_POTENTIAL,
 	BACKGROUND_MANA,
 	BACKGROUND_STABILITY,
+	BACKGROUND_ARCANE_POTENTIAL,
 	ARCANE_WEB,
 	ARCANE_CIRCULATION,
 	ARCANE_FORCING,
@@ -192,6 +193,7 @@ const DEBUG_PAGE_VIEWS := [
 	[
 		ViewMode.BACKGROUND_MANA,
 		ViewMode.BACKGROUND_STABILITY,
+		ViewMode.BACKGROUND_ARCANE_POTENTIAL,
 		ViewMode.ARCANE_WEB,
 		ViewMode.ARCANE_CIRCULATION,
 		ViewMode.ARCANE_FORCING,
@@ -534,6 +536,10 @@ func _cell_color(cell_id: int) -> Color:
 			return _background_mana_color(arcane_field.background_mana[cell_id])
 		ViewMode.BACKGROUND_STABILITY:
 			return _background_stability_color(arcane_field.background_stability[cell_id])
+		ViewMode.BACKGROUND_ARCANE_POTENTIAL:
+			return _background_arcane_potential_color(
+				arcane_field.background_arcane_potential[cell_id]
+			)
 		ViewMode.MANA_CONCENTRATION:
 			return _background_mana_color(arcane_environment.mana_concentration[cell_id])
 		ViewMode.MANA_FLOWABILITY:
@@ -584,6 +590,17 @@ func _background_stability_color(value: float) -> Color:
 		return Color(0.26, 0.05, 0.12).lerp(Color(0.60, 0.34, 0.24), normalized * 2.0)
 	return Color(0.60, 0.34, 0.24).lerp(
 		Color(0.54, 0.94, 0.72), (normalized - 0.5) * 2.0
+	)
+
+
+func _background_arcane_potential_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.5:
+		return Color(0.06, 0.05, 0.18).lerp(
+			Color(0.42, 0.18, 0.62), normalized * 2.0
+		)
+	return Color(0.42, 0.18, 0.62).lerp(
+		Color(1.00, 0.82, 0.30), (normalized - 0.5) * 2.0
 	)
 
 
@@ -1174,6 +1191,10 @@ func _draw_information() -> void:
 				% arcane_field.background_stability[selected_cell_id]
 			)
 			lines.append(
+				"Background Arcane Potential: %.4f"
+				% arcane_field.background_arcane_potential[selected_cell_id]
+			)
+			lines.append(
 				"Long-term Mana Stability: %.4f"
 				% arcane_environment.mana_stability[selected_cell_id]
 			)
@@ -1415,6 +1436,8 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			_append_arcane_statistics(lines, _arcane_statistics.get("mana", {}))
 		ViewMode.BACKGROUND_STABILITY:
 			_append_arcane_statistics(lines, _arcane_statistics.get("stability", {}))
+		ViewMode.BACKGROUND_ARCANE_POTENTIAL:
+			_append_arcane_statistics(lines, _arcane_statistics.get("potential", {}))
 		ViewMode.ARCANE_WEB:
 			_append_arcane_web_statistics(lines, _arcane_statistics.get("web", {}))
 		ViewMode.ARCANE_CIRCULATION:
@@ -1982,6 +2005,7 @@ func _calculate_arcane_statistics() -> Dictionary:
 	return {
 		"mana": _arcane_field_statistics(arcane_field.background_mana),
 		"stability": _arcane_field_statistics(arcane_field.background_stability),
+		"potential": _arcane_field_statistics(arcane_field.background_arcane_potential),
 		"web": ArcaneWebValidator.statistics(arcane_web),
 		"circulation": ArcaneCirculationValidator.statistics(arcane_web, arcane_circulation),
 		"forcing": ArcaneForcingValidator.statistics(graph, arcane_forcing),
@@ -2603,6 +2627,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Background Mana"
 		ViewMode.BACKGROUND_STABILITY:
 			return "Background Stability"
+		ViewMode.BACKGROUND_ARCANE_POTENTIAL:
+			return "Background Arcane Potential"
 		ViewMode.ARCANE_WEB:
 			return "Arcane Web"
 		ViewMode.ARCANE_CIRCULATION:
@@ -2652,6 +2678,7 @@ func _is_resource_view() -> bool:
 func _is_arcane_view() -> bool:
 	return view_mode == ViewMode.BACKGROUND_MANA \
 			or view_mode == ViewMode.BACKGROUND_STABILITY \
+			or view_mode == ViewMode.BACKGROUND_ARCANE_POTENTIAL \
 			or view_mode == ViewMode.MANA_CONCENTRATION \
 			or view_mode == ViewMode.MANA_FLOWABILITY \
 			or view_mode == ViewMode.MANA_STABILITY \
