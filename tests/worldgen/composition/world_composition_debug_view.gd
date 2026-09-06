@@ -660,9 +660,9 @@ func _arcane_manifestation_color(manifestation_type: int) -> Color:
 	match manifestation_type:
 		ArcaneEcologyLayer.ManifestationType.NONE:
 			return Color(0.09, 0.10, 0.13)
-		ArcaneEcologyLayer.ManifestationType.CRYSTALLINE:
+		ArcaneEcologyLayer.ManifestationType.MANA_DOMINANT:
 			return Color(0.12, 0.70, 0.94)
-		ArcaneEcologyLayer.ManifestationType.ECOLOGICAL:
+		ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT:
 			return Color(0.20, 0.72, 0.30)
 		ArcaneEcologyLayer.ManifestationType.MIXED:
 			return Color(0.62, 0.24, 0.82)

@@ -112,7 +112,7 @@ static func _classification_for(mana_band: int, potential_band: int) -> Vector2i
 	if potential_band == Band.LOW:
 		return Vector2i(
 			ArcaneEcologyLayer.EcologyState.NORMAL,
-			ArcaneEcologyLayer.ManifestationType.CRYSTALLINE
+			ArcaneEcologyLayer.ManifestationType.MANA_DOMINANT
 		)
 	if potential_band == Band.MEDIUM:
 		return Vector2i(
@@ -122,7 +122,7 @@ static func _classification_for(mana_band: int, potential_band: int) -> Vector2i
 	if mana_band == Band.MEDIUM:
 		return Vector2i(
 			ArcaneEcologyLayer.EcologyState.INFLUENCED,
-			ArcaneEcologyLayer.ManifestationType.ECOLOGICAL
+			ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT
 		)
 	return Vector2i(
 		ArcaneEcologyLayer.EcologyState.DOMINANT,

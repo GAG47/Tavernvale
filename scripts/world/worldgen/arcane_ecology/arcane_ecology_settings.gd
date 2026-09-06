@@ -2,9 +2,9 @@ class_name ArcaneEcologySettings
 extends RefCounted
 
 var mana_medium_threshold: float = 0.60
-var mana_high_threshold: float = 0.70
-var potential_medium_threshold: float = 0.60
-var potential_high_threshold: float = 0.70
+var mana_high_threshold: float = 0.75
+var potential_medium_threshold: float = 0.55
+var potential_high_threshold: float = 0.65
 
 
 func validate() -> PackedStringArray:

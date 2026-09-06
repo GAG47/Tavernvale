@@ -9,8 +9,8 @@ enum EcologyState {
 
 enum ManifestationType {
 	NONE = 0,
-	CRYSTALLINE = 1,
-	ECOLOGICAL = 2,
+	MANA_DOMINANT = 1,
+	ECOLOGY_DOMINANT = 2,
 	MIXED = 3,
 }
 
@@ -40,10 +40,10 @@ static func manifestation_type_name(manifestation_type: int) -> String:
 	match manifestation_type:
 		ManifestationType.NONE:
 			return "NONE"
-		ManifestationType.CRYSTALLINE:
-			return "CRYSTALLINE"
-		ManifestationType.ECOLOGICAL:
-			return "ECOLOGICAL"
+		ManifestationType.MANA_DOMINANT:
+			return "MANA_DOMINANT"
+		ManifestationType.ECOLOGY_DOMINANT:
+			return "ECOLOGY_DOMINANT"
 		ManifestationType.MIXED:
 			return "MIXED"
 		_:

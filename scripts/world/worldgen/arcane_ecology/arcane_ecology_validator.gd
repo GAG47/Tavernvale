@@ -35,8 +35,8 @@ static func validate(
 			continue
 		if manifestation not in [
 			ArcaneEcologyLayer.ManifestationType.NONE,
-			ArcaneEcologyLayer.ManifestationType.CRYSTALLINE,
-			ArcaneEcologyLayer.ManifestationType.ECOLOGICAL,
+			ArcaneEcologyLayer.ManifestationType.MANA_DOMINANT,
+			ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT,
 			ArcaneEcologyLayer.ManifestationType.MIXED,
 		]:
 			errors.append("arcane_manifestation_type[%d] is invalid" % cell_id)

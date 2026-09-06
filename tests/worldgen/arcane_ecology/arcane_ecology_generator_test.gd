@@ -32,6 +32,14 @@ func _test_output_sizes_and_enum_validity() -> void:
 		"Arcane Ecology State should contain one value per input Cell")
 	_expect(result.arcane_manifestation_type.size() == 3,
 		"Manifestation Type should contain one value per input Cell")
+	_expect(ArcaneEcologyLayer.ManifestationType.NONE == 0
+			and ArcaneEcologyLayer.ManifestationType.MANA_DOMINANT == 1
+			and ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT == 2
+			and ArcaneEcologyLayer.ManifestationType.MIXED == 3,
+		"Manifestation Type numeric values should remain 0 through 3")
+	_expect(ArcaneEcologyLayer.manifestation_type_name(1) == "MANA_DOMINANT"
+			and ArcaneEcologyLayer.manifestation_type_name(2) == "ECOLOGY_DOMINANT",
+		"Manifestation Type names should use the v2.4.1 semantics")
 	_expect(ArcaneEcologyValidator.validate(field, environment, result).is_empty(),
 		"generated Arcane Ecology should pass its Validator")
 
@@ -40,10 +48,10 @@ func _test_settings_validation() -> void:
 	var settings := ArcaneEcologySettings.new()
 	_expect(settings.validate().is_empty(), "default Arcane Ecology Settings should validate")
 	_expect(settings.mana_medium_threshold == 0.60
-			and settings.mana_high_threshold == 0.70
-			and settings.potential_medium_threshold == 0.60
-			and settings.potential_high_threshold == 0.70,
-		"default thresholds should be fixed at 0.60 and 0.70")
+			and settings.mana_high_threshold == 0.75
+			and settings.potential_medium_threshold == 0.55
+			and settings.potential_high_threshold == 0.65,
+		"default thresholds should match the v2.4.1 fixed values")
 	var copied := settings.duplicate_settings()
 	_expect(copied.mana_medium_threshold == settings.mana_medium_threshold
 			and copied.mana_high_threshold == settings.mana_high_threshold
@@ -59,26 +67,30 @@ func _test_settings_validation() -> void:
 
 func _test_exact_band_boundaries() -> void:
 	var settings := ArcaneEcologySettings.new()
-	var values := PackedFloat32Array([0.599999, 0.600000, 0.699999, 0.700000])
+	var mana_values := PackedFloat32Array([0.599999, 0.600000, 0.749999, 0.750000])
+	var potential_values := PackedFloat32Array([0.549999, 0.550000, 0.649999, 0.650000])
 	var expected := PackedInt32Array([
 		ArcaneEcologyGenerator.Band.LOW,
 		ArcaneEcologyGenerator.Band.MEDIUM,
 		ArcaneEcologyGenerator.Band.MEDIUM,
 		ArcaneEcologyGenerator.Band.HIGH,
 	])
-	for index in values.size():
-		_expect(ArcaneEcologyGenerator.classify_mana(values[index], settings) == expected[index],
-			"Mana boundary value %.6f should enter the exact specified Band" % values[index])
-		_expect(ArcaneEcologyGenerator.classify_potential(values[index], settings)
+	for index in expected.size():
+		_expect(ArcaneEcologyGenerator.classify_mana(mana_values[index], settings)
 				== expected[index],
-			"Potential boundary value %.6f should enter the exact specified Band" % values[index])
+			"Mana boundary value %.6f should enter the exact specified Band"
+			% mana_values[index])
+		_expect(ArcaneEcologyGenerator.classify_potential(potential_values[index], settings)
+				== expected[index],
+			"Potential boundary value %.6f should enter the exact specified Band"
+			% potential_values[index])
 
 
 func _test_complete_rule_table() -> void:
 	var mana := PackedFloat32Array()
 	var potential := PackedFloat32Array()
 	for mana_value in [0.50, 0.65, 0.80]:
-		for potential_value in [0.50, 0.65, 0.80]:
+		for potential_value in [0.50, 0.60, 0.70]:
 			mana.append(mana_value)
 			potential.append(potential_value)
 	var result := ArcaneEcologyGenerator.generate(_field(potential), _environment(mana))
@@ -126,9 +138,9 @@ func _test_potential_change_and_input_preservation() -> void:
 		"Potential-change fixtures should generate")
 	if low_result != null and high_result != null:
 		_expect(low_result.arcane_manifestation_type[0]
-				== ArcaneEcologyLayer.ManifestationType.CRYSTALLINE
+				== ArcaneEcologyLayer.ManifestationType.MANA_DOMINANT
 				and high_result.arcane_manifestation_type[0]
-				== ArcaneEcologyLayer.ManifestationType.ECOLOGICAL,
+				== ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT,
 			"changing Potential may change only the downstream classification")
 	_expect(environment.mana_concentration == mana_before
 			and low_field.background_arcane_potential == low_before
@@ -188,7 +200,7 @@ func _test_natural_ecology_is_not_an_input() -> void:
 		"Arcane Ecology classification should require no graph or natural-geography Layer")
 	if result != null:
 		_expect(result.arcane_manifestation_type[0]
-				== ArcaneEcologyLayer.ManifestationType.ECOLOGICAL,
+				== ArcaneEcologyLayer.ManifestationType.ECOLOGY_DOMINANT,
 			"classification without natural ecology should follow the formal two-axis table")
 
 
