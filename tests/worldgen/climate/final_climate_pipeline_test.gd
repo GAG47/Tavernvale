@@ -34,6 +34,7 @@ func _run_all() -> void:
 	_test_v201_downstream_zero_regression()
 	_test_arcane_ecology_follows_environment_and_preserves_upstream()
 	_test_arcane_resources_follow_ecology_and_preserve_upstream()
+	_test_arcane_hazards_follow_resources_and_preserve_upstream()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -223,6 +224,26 @@ func _build_fixed_pipeline() -> Dictionary:
 		arcane_environment,
 		arcane_ecology
 	)
+	var upstream_hash_before_arcane_hazards := _v25_pipeline_hash(
+		upstream_hash_after_arcane_resources, arcane_resources
+	)
+	var arcane_hazards := ArcaneHazardPotentialGenerator.generate(
+		arcane_field, arcane_environment
+	)
+	if arcane_hazards == null:
+		return {}
+	var upstream_hash_after_arcane_hazards := _v25_pipeline_hash(
+		_v24_pipeline_hash(
+			v1_hash_before_arcane,
+			arcane_field,
+			arcane_web,
+			arcane_circulation,
+			arcane_forcing,
+			arcane_environment,
+			arcane_ecology
+		),
+		arcane_resources
+	)
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -253,8 +274,11 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_environment_before_ecology": arcane_environment_before_ecology,
 		"arcane_ecology": arcane_ecology,
 		"arcane_resources": arcane_resources,
+		"arcane_hazards": arcane_hazards,
 		"upstream_hash_before_arcane_resources": upstream_hash_before_arcane_resources,
 		"upstream_hash_after_arcane_resources": upstream_hash_after_arcane_resources,
+		"upstream_hash_before_arcane_hazards": upstream_hash_before_arcane_hazards,
+		"upstream_hash_after_arcane_hazards": upstream_hash_after_arcane_hazards,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
 		"v201_hash_before_web": v201_hash_before_web,
@@ -677,6 +701,24 @@ func _test_arcane_resources_follow_ecology_and_preserve_upstream() -> void:
 		"Arcane Resource Potential must preserve Arcane Environment")
 
 
+func _test_arcane_hazards_follow_resources_and_preserve_upstream() -> void:
+	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
+	var hazards: ArcaneHazardPotentialLayer = _pipeline.arcane_hazards
+	_expect(hazards.cell_count() == environment.cell_count(),
+		"Arcane Hazard Potential should contain one value per Environment Cell")
+	_expect(ArcaneHazardPotentialValidator.validate(hazards).is_empty(),
+		"Arcane Hazard Potential should validate after Arcane Resource Potential")
+	_expect(_pipeline.upstream_hash_before_arcane_hazards
+			== _pipeline.upstream_hash_after_arcane_hazards,
+		"Arcane Hazard generation must preserve the complete v2.5 upstream snapshot")
+	_expect(_pipeline.v1_hash_before_arcane == E1EAD01_V1_HASH,
+		"Arcane Hazard generation must preserve Natural Resource Potential")
+	_expect(_pipeline.v201_hash_before_web == V201_ARCANE_FIELD_HASH,
+		"Arcane Hazard generation must preserve all Background Arcane fields")
+	_expect(_arcane_environment_hash(environment) == E1EAD01_ARCANE_ENVIRONMENT_HASH,
+		"Arcane Hazard generation must preserve Arcane Environment")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -758,6 +800,20 @@ func _test_determinism() -> void:
 		_expect(_pipeline.arcane_resources.rare_arcane_resource_potential
 				== repeated_arcane_resources.rare_arcane_resource_potential,
 			"Rare Arcane Resource Potential should be deterministic")
+	var repeated_arcane_hazards := ArcaneHazardPotentialGenerator.generate(
+		_pipeline.arcane_field, _pipeline.arcane_environment
+	)
+	_expect(repeated_arcane_hazards != null, "repeat Arcane Hazard Potential should generate")
+	if repeated_arcane_hazards != null:
+		_expect(_pipeline.arcane_hazards.arcane_hazard_activity_potential
+				== repeated_arcane_hazards.arcane_hazard_activity_potential,
+			"Arcane Hazard Activity should be deterministic")
+		_expect(_pipeline.arcane_hazards.arcane_hazard_severity_potential
+				== repeated_arcane_hazards.arcane_hazard_severity_potential,
+			"Arcane Hazard Severity should be deterministic")
+		_expect(_pipeline.arcane_hazards.arcane_hazard_propagation_potential
+				== repeated_arcane_hazards.arcane_hazard_propagation_potential,
+			"Arcane Hazard Propagation should be deterministic")
 	var repeated_forcing := ArcaneForcingGenerator.generate(graph, graph.config.seed)
 	_expect(repeated_forcing != null, "repeat Arcane Forcing pipeline should generate")
 	if repeated_forcing != null:
@@ -939,6 +995,18 @@ func _v24_pipeline_hash(
 	])
 
 
+func _v25_pipeline_hash(
+		v24_hash: int, resources: ArcaneResourcePotentialLayer
+) -> int:
+	return hash([
+		v24_hash,
+		resources.arcane_energy_potential,
+		resources.arcane_material_potential,
+		resources.arcane_bioresource_potential,
+		resources.rare_arcane_resource_potential,
+	])
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -946,7 +1014,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 15 test groups passed")
+		print("Final Climate Pipeline: all 16 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

@@ -29,6 +29,7 @@ var arcane_forcing: ArcaneForcingLayer
 var arcane_environment: ArcaneEnvironmentLayer
 var arcane_ecology: ArcaneEcologyLayer
 var arcane_resource_potential: ArcaneResourcePotentialLayer
+var arcane_hazard_potential: ArcaneHazardPotentialLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -67,6 +68,7 @@ var _arcane_forcing_generation_ms := 0
 var _arcane_environment_generation_ms := 0
 var _arcane_ecology_generation_ms := 0
 var _arcane_resource_generation_ms := 0
+var _arcane_hazard_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -83,6 +85,7 @@ var _soil_statistics := {}
 var _resource_statistics := {}
 var _arcane_statistics := {}
 var _arcane_resource_statistics := {}
+var _arcane_hazard_statistics := {}
 var _arcane_environment_diagnostics := {}
 var _arcane_forcing_diagnostics := {}
 var _show_arcane_domains := false
@@ -155,6 +158,9 @@ enum ViewMode {
 	ARCANE_MATERIAL_POTENTIAL,
 	ARCANE_BIORESOURCE_POTENTIAL,
 	RARE_ARCANE_RESOURCE_POTENTIAL,
+	ARCANE_HAZARD_ACTIVITY,
+	ARCANE_HAZARD_SEVERITY,
+	ARCANE_HAZARD_PROPAGATION,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -223,6 +229,9 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.ARCANE_MATERIAL_POTENTIAL,
 		ViewMode.ARCANE_BIORESOURCE_POTENTIAL,
 		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL,
+		ViewMode.ARCANE_HAZARD_ACTIVITY,
+		ViewMode.ARCANE_HAZARD_SEVERITY,
+		ViewMode.ARCANE_HAZARD_PROPAGATION,
 	],
 ]
 
@@ -307,6 +316,7 @@ func _draw() -> void:
 			or arcane_environment == null \
 			or arcane_ecology == null \
 			or arcane_resource_potential == null \
+			or arcane_hazard_potential == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -596,6 +606,18 @@ func _cell_color(cell_id: int) -> Color:
 		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
 			return _resource_heatmap_color(
 				arcane_resource_potential.rare_arcane_resource_potential[cell_id]
+			)
+		ViewMode.ARCANE_HAZARD_ACTIVITY:
+			return _resource_heatmap_color(
+				arcane_hazard_potential.arcane_hazard_activity_potential[cell_id]
+			)
+		ViewMode.ARCANE_HAZARD_SEVERITY:
+			return _resource_heatmap_color(
+				arcane_hazard_potential.arcane_hazard_severity_potential[cell_id]
+			)
+		ViewMode.ARCANE_HAZARD_PROPAGATION:
+			return _resource_heatmap_color(
+				arcane_hazard_potential.arcane_hazard_propagation_potential[cell_id]
 			)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
@@ -1040,6 +1062,7 @@ func _regenerate_composition() -> void:
 		arcane_environment = null
 		arcane_ecology = null
 		arcane_resource_potential = null
+		arcane_hazard_potential = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -1203,6 +1226,13 @@ func _regenerate_composition() -> void:
 		)
 	)
 	_arcane_resource_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	arcane_hazard_potential = (
+		null if arcane_resource_potential == null else ArcaneHazardPotentialGenerator.generate(
+			arcane_field, arcane_environment
+		)
+	)
+	_arcane_hazard_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -1217,6 +1247,7 @@ func _regenerate_composition() -> void:
 	_arcane_resource_statistics = ArcaneResourcePotentialValidator.statistics(
 		arcane_resource_potential
 	)
+	_arcane_hazard_statistics = _calculate_arcane_hazard_statistics()
 	_ensure_valid_page_view()
 	selected_cell_id = -1
 	queue_redraw()
@@ -1277,6 +1308,8 @@ func _draw_information() -> void:
 			_append_resource_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_resource_view():
 			_append_arcane_resource_cell_inspection(lines, selected_cell_id)
+		elif _is_arcane_hazard_view():
+			_append_arcane_hazard_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_ecology_view():
 			_append_arcane_ecology_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_view():
@@ -1522,6 +1555,35 @@ func _append_arcane_resource_cell_inspection(
 			lines.append("Rare Concentration: %.4f" % (
 				ArcaneResourcePotentialGenerator.rare_concentration_for(raw_noise)
 			))
+
+
+func _append_arcane_hazard_cell_inspection(
+		lines: PackedStringArray, cell_id: int
+) -> void:
+	var concentration := arcane_environment.mana_concentration[cell_id]
+	var flowability := arcane_environment.mana_flowability[cell_id]
+	var stability := arcane_environment.mana_stability[cell_id]
+	var potential := arcane_field.background_arcane_potential[cell_id]
+	match view_mode:
+		ViewMode.ARCANE_HAZARD_ACTIVITY:
+			lines.append("Mana Stability: %.4f" % stability)
+			lines.append("Instability: %.4f" % (1.0 - stability))
+			lines.append("Mana Flowability: %.4f" % flowability)
+			lines.append("Hazard Activity: %.4f" % (
+				arcane_hazard_potential.arcane_hazard_activity_potential[cell_id]
+			))
+		ViewMode.ARCANE_HAZARD_SEVERITY:
+			lines.append("Mana Concentration: %.4f" % concentration)
+			lines.append("Background Arcane Potential: %.4f" % potential)
+			lines.append("Hazard Severity: %.4f" % (
+				arcane_hazard_potential.arcane_hazard_severity_potential[cell_id]
+			))
+		ViewMode.ARCANE_HAZARD_PROPAGATION:
+			lines.append("Mana Flowability: %.4f" % flowability)
+			lines.append("Mana Concentration: %.4f" % concentration)
+			lines.append("Hazard Propagation: %.4f" % (
+				arcane_hazard_potential.arcane_hazard_propagation_potential[cell_id]
+			))
 	lines.append("Arcane Manifestation Type: %s" % (
 		ArcaneEcologyLayer.manifestation_type_name(
 			arcane_ecology.arcane_manifestation_type[cell_id]
@@ -1645,6 +1707,11 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 	if _is_arcane_resource_view():
 		_append_arcane_resource_statistics(
 			lines, _arcane_resource_statistics.get(_arcane_resource_key_for_mode(view_mode), {})
+		)
+		return
+	if _is_arcane_hazard_view():
+		_append_arcane_hazard_statistics(
+			lines, _arcane_hazard_statistics.get(_arcane_hazard_key_for_mode(view_mode), {})
 		)
 		return
 	match view_mode:
@@ -2237,6 +2304,69 @@ func _calculate_arcane_statistics() -> Dictionary:
 			arcane_field, arcane_environment, arcane_ecology, arcane_ecology_settings
 		),
 	}
+
+
+func _calculate_arcane_hazard_statistics() -> Dictionary:
+	var result := ArcaneHazardPotentialValidator.statistics(arcane_hazard_potential)
+	if result.is_empty():
+		return result
+	result["pearson"] = {
+		"activity_severity": ArcaneHazardPotentialValidator.pearson(
+			arcane_hazard_potential.arcane_hazard_activity_potential,
+			arcane_hazard_potential.arcane_hazard_severity_potential
+		),
+		"activity_propagation": ArcaneHazardPotentialValidator.pearson(
+			arcane_hazard_potential.arcane_hazard_activity_potential,
+			arcane_hazard_potential.arcane_hazard_propagation_potential
+		),
+		"severity_propagation": ArcaneHazardPotentialValidator.pearson(
+			arcane_hazard_potential.arcane_hazard_severity_potential,
+			arcane_hazard_potential.arcane_hazard_propagation_potential
+		),
+	}
+	return result
+
+
+func _append_arcane_hazard_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Hazard data")
+		return
+	var count := int(statistics.count)
+	lines.append("All Cells (%d):" % count)
+	lines.append("Min: %.4f | Mean: %.4f" % [statistics.min, statistics.mean])
+	lines.append("P10: %.4f | P25: %.4f" % [statistics.p10, statistics.p25])
+	lines.append("P50: %.4f | P75: %.4f" % [statistics.p50, statistics.p75])
+	lines.append("P90: %.4f | P95: %.4f" % [statistics.p90, statistics.p95])
+	lines.append("Max: %.4f" % statistics.max)
+	lines.append("== 0: %d / %.2f%%" % [
+		statistics.zero_count, 100.0 * float(statistics.zero_count) / float(count)
+	])
+	for threshold_index in ArcaneHazardPotentialValidator.THRESHOLDS.size():
+		var threshold: float = ArcaneHazardPotentialValidator.THRESHOLDS[threshold_index]
+		var threshold_count: int = statistics.threshold_counts[threshold_index]
+		lines.append(">= %.2f: %d / %.2f%%" % [
+			threshold, threshold_count, 100.0 * float(threshold_count) / float(count)
+		])
+	var pearson: Dictionary = _arcane_hazard_statistics.pearson
+	lines.append("Pearson A/S: %.3f | A/P: %.3f" % [
+		pearson.activity_severity, pearson.activity_propagation
+	])
+	lines.append("Pearson S/P: %.3f" % pearson.severity_propagation)
+	lines.append("Generation: %d ms" % _arcane_hazard_generation_ms)
+
+
+func _arcane_hazard_key_for_mode(mode: int) -> String:
+	match mode:
+		ViewMode.ARCANE_HAZARD_ACTIVITY:
+			return "arcane_hazard_activity_potential"
+		ViewMode.ARCANE_HAZARD_SEVERITY:
+			return "arcane_hazard_severity_potential"
+		ViewMode.ARCANE_HAZARD_PROPAGATION:
+			return "arcane_hazard_propagation_potential"
+		_:
+			return ""
 
 
 func _append_arcane_resource_statistics(
@@ -2977,6 +3107,12 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Arcane Bioresource"
 		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
 			return "Rare Arcane Resource"
+		ViewMode.ARCANE_HAZARD_ACTIVITY:
+			return "Hazard Activity"
+		ViewMode.ARCANE_HAZARD_SEVERITY:
+			return "Hazard Severity"
+		ViewMode.ARCANE_HAZARD_PROPAGATION:
+			return "Hazard Propagation"
 		_:
 			return "Unknown"
 
@@ -3018,6 +3154,7 @@ func _is_arcane_view() -> bool:
 			or view_mode == ViewMode.MANA_CONCENTRATION \
 			or view_mode == ViewMode.MANA_FLOWABILITY \
 			or view_mode == ViewMode.MANA_STABILITY \
+			or _is_arcane_hazard_view() \
 			or _is_arcane_ecology_view() \
 			or _is_arcane_overlay_view()
 
@@ -3025,6 +3162,12 @@ func _is_arcane_view() -> bool:
 func _is_arcane_resource_view() -> bool:
 	return view_mode >= ViewMode.ARCANE_ENERGY_POTENTIAL \
 			and view_mode <= ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL
+
+
+func _is_arcane_hazard_view() -> bool:
+	return view_mode == ViewMode.ARCANE_HAZARD_ACTIVITY \
+			or view_mode == ViewMode.ARCANE_HAZARD_SEVERITY \
+			or view_mode == ViewMode.ARCANE_HAZARD_PROPAGATION
 
 
 func _is_arcane_ecology_view() -> bool:
