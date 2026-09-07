@@ -33,6 +33,7 @@ func _run_all() -> void:
 	_test_arcane_environment_follows_circulation_and_preserves_prior_layers()
 	_test_v201_downstream_zero_regression()
 	_test_arcane_ecology_follows_environment_and_preserves_upstream()
+	_test_arcane_resources_follow_ecology_and_preserve_upstream()
 	_test_terrain_lengths_values_and_validation()
 	_test_determinism()
 	_finish()
@@ -193,6 +194,35 @@ func _build_fixed_pipeline() -> Dictionary:
 	var arcane_ecology := ArcaneEcologyGenerator.generate(arcane_field, arcane_environment)
 	if arcane_ecology == null:
 		return {}
+	var upstream_hash_before_arcane_resources := _v24_pipeline_hash(
+		v1_hash_before_arcane,
+		arcane_field,
+		arcane_web,
+		arcane_circulation,
+		arcane_forcing,
+		arcane_environment,
+		arcane_ecology
+	)
+	var arcane_resources := ArcaneResourcePotentialGenerator.generate(
+		graph,
+		geology,
+		ecology,
+		resources,
+		arcane_field,
+		arcane_environment,
+		arcane_ecology
+	)
+	if arcane_resources == null:
+		return {}
+	var upstream_hash_after_arcane_resources := _v24_pipeline_hash(
+		v1_hash_before_arcane,
+		arcane_field,
+		arcane_web,
+		arcane_circulation,
+		arcane_forcing,
+		arcane_environment,
+		arcane_ecology
+	)
 	return {
 		"graph": graph,
 		"composition": composition,
@@ -222,6 +252,9 @@ func _build_fixed_pipeline() -> Dictionary:
 		"arcane_environment_diagnostics": arcane_environment_diagnostics,
 		"arcane_environment_before_ecology": arcane_environment_before_ecology,
 		"arcane_ecology": arcane_ecology,
+		"arcane_resources": arcane_resources,
+		"upstream_hash_before_arcane_resources": upstream_hash_before_arcane_resources,
+		"upstream_hash_after_arcane_resources": upstream_hash_after_arcane_resources,
 		"v1_hash_before_arcane": v1_hash_before_arcane,
 		"v2_hash_before_web": v2_hash_before_web,
 		"v201_hash_before_web": v201_hash_before_web,
@@ -623,6 +656,27 @@ func _test_arcane_ecology_follows_environment_and_preserves_upstream() -> void:
 		"Arcane Ecology generation must not modify Arcane Environment")
 
 
+func _test_arcane_resources_follow_ecology_and_preserve_upstream() -> void:
+	var graph: SpatialGraph = _pipeline.graph
+	var resources: ArcaneResourcePotentialLayer = _pipeline.arcane_resources
+	_expect(resources.cell_count() == graph.cell_count(),
+		"Arcane Resource Potential should contain one value per Cell")
+	_expect(ArcaneResourcePotentialValidator.validate(graph, resources).is_empty(),
+		"Arcane Resource Potential should validate after Arcane Ecology")
+	_expect(_pipeline.upstream_hash_before_arcane_resources
+			== _pipeline.upstream_hash_after_arcane_resources,
+		"Arcane Resource Potential generation must preserve every upstream output")
+	_expect(_pipeline.v1_hash_before_arcane == E1EAD01_V1_HASH,
+		"Arcane Resource Potential must preserve Natural Resource Potential")
+	_expect(_pipeline.v201_hash_before_web == V201_ARCANE_FIELD_HASH,
+		"Arcane Resource Potential must preserve all Background Arcane fields")
+	_expect(_arcane_forcing_hash(_pipeline.arcane_forcing) == E1EAD01_ARCANE_FORCING_HASH,
+		"Arcane Resource Potential must preserve Arcane Forcing")
+	_expect(_arcane_environment_hash(_pipeline.arcane_environment)
+			== E1EAD01_ARCANE_ENVIRONMENT_HASH,
+		"Arcane Resource Potential must preserve Arcane Environment")
+
+
 func _test_determinism() -> void:
 	var graph: SpatialGraph = _pipeline.graph
 	var conditioned: TerrainHeightLayer = _pipeline.conditioned
@@ -681,6 +735,29 @@ func _test_determinism() -> void:
 		_expect(_pipeline.arcane_ecology.arcane_manifestation_type
 				== repeated_arcane_ecology.arcane_manifestation_type,
 			"Arcane Manifestation Type should be deterministic")
+	var repeated_arcane_resources := ArcaneResourcePotentialGenerator.generate(
+		graph,
+		_pipeline.geology,
+		_pipeline.ecology,
+		_pipeline.resources,
+		_pipeline.arcane_field,
+		_pipeline.arcane_environment,
+		_pipeline.arcane_ecology
+	)
+	_expect(repeated_arcane_resources != null, "repeat Arcane Resource Potential should generate")
+	if repeated_arcane_resources != null:
+		_expect(_pipeline.arcane_resources.arcane_energy_potential
+				== repeated_arcane_resources.arcane_energy_potential,
+			"Arcane Energy Potential should be deterministic")
+		_expect(_pipeline.arcane_resources.arcane_material_potential
+				== repeated_arcane_resources.arcane_material_potential,
+			"Arcane Material Potential should be deterministic")
+		_expect(_pipeline.arcane_resources.arcane_bioresource_potential
+				== repeated_arcane_resources.arcane_bioresource_potential,
+			"Arcane Bioresource Potential should be deterministic")
+		_expect(_pipeline.arcane_resources.rare_arcane_resource_potential
+				== repeated_arcane_resources.rare_arcane_resource_potential,
+			"Rare Arcane Resource Potential should be deterministic")
 	var repeated_forcing := ArcaneForcingGenerator.generate(graph, graph.config.seed)
 	_expect(repeated_forcing != null, "repeat Arcane Forcing pipeline should generate")
 	if repeated_forcing != null:
@@ -835,6 +912,33 @@ func _arcane_environment_hash(environment: ArcaneEnvironmentLayer) -> int:
 	])
 
 
+func _v24_pipeline_hash(
+		v1_hash: int,
+		field: ArcaneFieldLayer,
+		web: ArcaneWebLayer,
+		circulation: ArcaneCirculationLayer,
+		forcing: ArcaneForcingLayer,
+		environment: ArcaneEnvironmentLayer,
+		ecology: ArcaneEcologyLayer
+) -> int:
+	return hash([
+		v1_hash,
+		field.background_mana,
+		field.background_stability,
+		field.background_arcane_potential,
+		_v21_pipeline_hash(
+			hash([v1_hash, field.background_mana, field.background_stability]), field, web
+		),
+		circulation.edge_flow,
+		_arcane_forcing_hash(forcing),
+		environment.mana_concentration,
+		environment.mana_flowability,
+		environment.mana_stability,
+		ecology.arcane_ecology_state,
+		ecology.arcane_manifestation_type,
+	])
+
+
 func _expect(condition: bool, message: String) -> void:
 	if not condition:
 		_failures.append(message)
@@ -842,7 +946,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Final Climate Pipeline: all 14 test groups passed")
+		print("Final Climate Pipeline: all 15 test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

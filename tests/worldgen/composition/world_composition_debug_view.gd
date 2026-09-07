@@ -28,6 +28,7 @@ var arcane_circulation: ArcaneCirculationLayer
 var arcane_forcing: ArcaneForcingLayer
 var arcane_environment: ArcaneEnvironmentLayer
 var arcane_ecology: ArcaneEcologyLayer
+var arcane_resource_potential: ArcaneResourcePotentialLayer
 var preliminary_climate: WorldClimateLayer
 var climate: WorldClimateLayer
 var climate_settings: WorldClimateSettings
@@ -42,6 +43,7 @@ var arcane_web_settings: ArcaneWebSettings
 var arcane_forcing_settings: ArcaneForcingSettings
 var arcane_environment_settings: ArcaneEnvironmentSettings
 var arcane_ecology_settings: ArcaneEcologySettings
+var arcane_resource_settings: ArcaneResourcePotentialSettings
 var selected_cell_id := -1
 var debug_page := DebugPage.WORLD
 var view_mode := ViewMode.RAW_COMPOSITION
@@ -64,6 +66,7 @@ var _arcane_circulation_generation_ms := 0
 var _arcane_forcing_generation_ms := 0
 var _arcane_environment_generation_ms := 0
 var _arcane_ecology_generation_ms := 0
+var _arcane_resource_generation_ms := 0
 var _preliminary_climate_generation_ms := 0
 var _final_climate_generation_ms := 0
 var _view_scale := 1.0
@@ -79,6 +82,7 @@ var _ecology_statistics := {}
 var _soil_statistics := {}
 var _resource_statistics := {}
 var _arcane_statistics := {}
+var _arcane_resource_statistics := {}
 var _arcane_environment_diagnostics := {}
 var _arcane_forcing_diagnostics := {}
 var _show_arcane_domains := false
@@ -93,6 +97,7 @@ enum DebugPage {
 	ECOLOGY_SOIL,
 	RESOURCES,
 	ARCANE,
+	ARCANE_RESOURCES,
 }
 
 enum ReferenceView {
@@ -146,10 +151,15 @@ enum ViewMode {
 	MANA_STABILITY,
 	ARCANE_ECOLOGY_STATE,
 	ARCANE_MANIFESTATION_TYPE,
+	ARCANE_ENERGY_POTENTIAL,
+	ARCANE_MATERIAL_POTENTIAL,
+	ARCANE_BIORESOURCE_POTENTIAL,
+	RARE_ARCANE_RESOURCE_POTENTIAL,
 }
 
 const DEBUG_PAGE_NAMES := [
-	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane"
+	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane",
+	"Arcane Resources"
 ]
 const DEBUG_PAGE_VIEWS := [
 	[
@@ -207,6 +217,12 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.MANA_STABILITY,
 		ViewMode.ARCANE_ECOLOGY_STATE,
 		ViewMode.ARCANE_MANIFESTATION_TYPE,
+	],
+	[
+		ViewMode.ARCANE_ENERGY_POTENTIAL,
+		ViewMode.ARCANE_MATERIAL_POTENTIAL,
+		ViewMode.ARCANE_BIORESOURCE_POTENTIAL,
+		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL,
 	],
 ]
 
@@ -290,6 +306,7 @@ func _draw() -> void:
 			or arcane_forcing == null \
 			or arcane_environment == null \
 			or arcane_ecology == null \
+			or arcane_resource_potential == null \
 			or preliminary_climate == null \
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
@@ -563,6 +580,22 @@ func _cell_color(cell_id: int) -> Color:
 		ViewMode.ARCANE_MANIFESTATION_TYPE:
 			return _arcane_manifestation_color(
 				arcane_ecology.arcane_manifestation_type[cell_id]
+			)
+		ViewMode.ARCANE_ENERGY_POTENTIAL:
+			return _resource_heatmap_color(
+				arcane_resource_potential.arcane_energy_potential[cell_id]
+			)
+		ViewMode.ARCANE_MATERIAL_POTENTIAL:
+			return _resource_heatmap_color(
+				arcane_resource_potential.arcane_material_potential[cell_id]
+			)
+		ViewMode.ARCANE_BIORESOURCE_POTENTIAL:
+			return _resource_heatmap_color(
+				arcane_resource_potential.arcane_bioresource_potential[cell_id]
+			)
+		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
+			return _resource_heatmap_color(
+				arcane_resource_potential.rare_arcane_resource_potential[cell_id]
 			)
 		ViewMode.TEMPERATURE_DELTA:
 			return _temperature_delta_color(cell_id)
@@ -1006,6 +1039,7 @@ func _regenerate_composition() -> void:
 		arcane_forcing = null
 		arcane_environment = null
 		arcane_ecology = null
+		arcane_resource_potential = null
 		preliminary_climate = null
 		climate = null
 		return
@@ -1154,6 +1188,21 @@ func _regenerate_composition() -> void:
 		arcane_field, arcane_environment, arcane_ecology_settings
 	)
 	_arcane_ecology_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	arcane_resource_settings = ArcaneResourcePotentialSettings.new()
+	arcane_resource_potential = (
+		null if arcane_ecology == null else ArcaneResourcePotentialGenerator.generate(
+			graph,
+			geology,
+			ecology,
+			resource_potential,
+			arcane_field,
+			arcane_environment,
+			arcane_ecology,
+			arcane_resource_settings
+		)
+	)
+	_arcane_resource_generation_ms = Time.get_ticks_msec() - started
 	_statistics = WorldCompositionValidator.statistics(composition)
 	_terrain_statistics = _calculate_terrain_statistics()
 	_climate_statistics = _calculate_climate_statistics()
@@ -1165,6 +1214,9 @@ func _regenerate_composition() -> void:
 	_soil_statistics = _calculate_soil_statistics()
 	_resource_statistics = _calculate_resource_statistics()
 	_arcane_statistics = _calculate_arcane_statistics()
+	_arcane_resource_statistics = ArcaneResourcePotentialValidator.statistics(
+		arcane_resource_potential
+	)
 	_ensure_valid_page_view()
 	selected_cell_id = -1
 	queue_redraw()
@@ -1223,6 +1275,8 @@ func _draw_information() -> void:
 			)
 		elif _is_resource_view():
 			_append_resource_cell_inspection(lines, selected_cell_id)
+		elif _is_arcane_resource_view():
+			_append_arcane_resource_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_ecology_view():
 			_append_arcane_ecology_cell_inspection(lines, selected_cell_id)
 		elif _is_arcane_view():
@@ -1391,6 +1445,83 @@ func _append_arcane_ecology_cell_inspection(
 	lines.append("Arcane Ecology State: %s" % ArcaneEcologyLayer.ecology_state_name(
 		arcane_ecology.arcane_ecology_state[cell_id]
 	))
+
+
+func _append_arcane_resource_cell_inspection(
+		lines: PackedStringArray, cell_id: int
+) -> void:
+	var concentration := arcane_environment.mana_concentration[cell_id]
+	var flowability := arcane_environment.mana_flowability[cell_id]
+	var potential := arcane_field.background_arcane_potential[cell_id]
+	var manifestation := arcane_ecology.arcane_manifestation_type[cell_id]
+	var vegetation := ecology.vegetation_potential[cell_id]
+	var freshwater := resource_potential.freshwater_aquatic_potential[cell_id]
+	var coastal := resource_potential.coastal_aquatic_potential[cell_id]
+	var energy := arcane_resource_potential.arcane_energy_potential[cell_id]
+	var material := arcane_resource_potential.arcane_material_potential[cell_id]
+	var bioresource := arcane_resource_potential.arcane_bioresource_potential[cell_id]
+	var rare := arcane_resource_potential.rare_arcane_resource_potential[cell_id]
+	lines.append("Arcane Energy: %.4f" % energy)
+	lines.append("Arcane Material: %.4f" % material)
+	lines.append("Arcane Bioresource: %.4f" % bioresource)
+	lines.append("Rare Arcane Resource: %.4f" % rare)
+	lines.append("")
+	match view_mode:
+		ViewMode.ARCANE_ENERGY_POTENTIAL:
+			lines.append("Mana Concentration: %.4f" % concentration)
+			lines.append("Mana Flowability: %.4f" % flowability)
+		ViewMode.ARCANE_MATERIAL_POTENTIAL:
+			var geology_host := ArcaneResourcePotentialGenerator.arcane_material_geology_host_for(
+				geology.province_id[cell_id], geology.material_id[cell_id]
+			)
+			var manifestation_factor := (
+				ArcaneResourcePotentialGenerator.manifestation_material_factor_for(manifestation)
+			)
+			lines.append("Mana Support: %.4f" % sqrt(concentration))
+			lines.append("Geology Host: %.4f" % geology_host)
+			lines.append("Geology Support: %.4f" % (0.60 + 0.40 * geology_host))
+			lines.append("Manifestation Factor: %.4f" % manifestation_factor)
+			lines.append("Manifestation Support: %.4f" % (
+				0.75 + 0.25 * manifestation_factor
+			))
+		ViewMode.ARCANE_BIORESOURCE_POTENTIAL:
+			var terrestrial := (
+				ArcaneResourcePotentialGenerator.terrestrial_biological_host_for(vegetation)
+			)
+			var biological_host := ArcaneResourcePotentialGenerator.biological_host_for(
+				vegetation, freshwater, coastal
+			)
+			lines.append("C / P: %.4f / %.4f" % [concentration, potential])
+			lines.append("Arcane Ecology Support: %.4f" % (
+				ArcaneResourcePotentialGenerator.arcane_ecology_support_for(
+					concentration, potential
+				)
+			))
+			lines.append("Terrestrial Host: %.4f" % terrestrial)
+			lines.append("Freshwater / Coastal: %.4f / %.4f" % [freshwater, coastal])
+			lines.append("Biological Host B: %.4f" % biological_host)
+			lines.append("Host Support: %.4f" % (
+				ArcaneResourcePotentialGenerator.biological_host_support_for(biological_host)
+			))
+			lines.append("Manifestation Factor: %.4f" % (
+				ArcaneResourcePotentialGenerator.manifestation_bioresource_factor_for(
+					manifestation
+				)
+			))
+		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
+			var raw_noise := ArcaneResourcePotentialGenerator.rare_raw_concentration_at(
+				graph, cell_id, arcane_resource_settings
+			)
+			lines.append("Rare Host: %.4f" % (
+				ArcaneResourcePotentialGenerator.rare_host_for(energy, material, bioresource)
+			))
+			lines.append("Raw Rare Noise: %.4f" % raw_noise)
+			lines.append("Unit Noise: %.4f" % (
+				ArcaneResourcePotentialGenerator.rare_unit_noise_for(raw_noise)
+			))
+			lines.append("Rare Concentration: %.4f" % (
+				ArcaneResourcePotentialGenerator.rare_concentration_for(raw_noise)
+			))
 	lines.append("Arcane Manifestation Type: %s" % (
 		ArcaneEcologyLayer.manifestation_type_name(
 			arcane_ecology.arcane_manifestation_type[cell_id]
@@ -1510,6 +1641,11 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 func _append_mode_statistics(lines: PackedStringArray) -> void:
 	if _is_resource_view():
 		_append_resource_statistics(lines, _resource_statistics.get(view_mode, {}))
+		return
+	if _is_arcane_resource_view():
+		_append_arcane_resource_statistics(
+			lines, _arcane_resource_statistics.get(_arcane_resource_key_for_mode(view_mode), {})
+		)
 		return
 	match view_mode:
 		ViewMode.BACKGROUND_MANA:
@@ -2101,6 +2237,46 @@ func _calculate_arcane_statistics() -> Dictionary:
 			arcane_field, arcane_environment, arcane_ecology, arcane_ecology_settings
 		),
 	}
+
+
+func _append_arcane_resource_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	if statistics.is_empty():
+		lines.append("No Arcane Resource data")
+		return
+	var count := int(statistics.count)
+	lines.append("All Cells (%d):" % count)
+	lines.append("Min: %.4f | Mean: %.4f" % [statistics.min, statistics.mean])
+	lines.append("P10: %.4f | P25: %.4f" % [statistics.p10, statistics.p25])
+	lines.append("P50: %.4f | P75: %.4f" % [statistics.p50, statistics.p75])
+	lines.append("P90: %.4f | P95: %.4f" % [statistics.p90, statistics.p95])
+	lines.append("Max: %.4f" % statistics.max)
+	for threshold_index in 3:
+		var threshold: float = [0.25, 0.50, 0.75][threshold_index]
+		var threshold_count: int = statistics.threshold_counts[threshold_index]
+		lines.append(">= %.2f: %d / %.2f%%" % [
+			threshold, threshold_count, 100.0 * float(threshold_count) / float(count)
+		])
+	if view_mode == ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
+		lines.append("== 0: %d / %.2f%%" % [
+			statistics.zero_count, 100.0 * float(statistics.zero_count) / float(count)
+		])
+	lines.append("Generation: %d ms" % _arcane_resource_generation_ms)
+
+
+func _arcane_resource_key_for_mode(mode: int) -> String:
+	match mode:
+		ViewMode.ARCANE_ENERGY_POTENTIAL:
+			return "arcane_energy_potential"
+		ViewMode.ARCANE_MATERIAL_POTENTIAL:
+			return "arcane_material_potential"
+		ViewMode.ARCANE_BIORESOURCE_POTENTIAL:
+			return "arcane_bioresource_potential"
+		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
+			return "rare_arcane_resource_potential"
+		_:
+			return ""
 
 
 func _arcane_field_statistics(values: PackedFloat32Array) -> Dictionary:
@@ -2793,6 +2969,14 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Arcane Ecology State"
 		ViewMode.ARCANE_MANIFESTATION_TYPE:
 			return "Arcane Manifestation Type"
+		ViewMode.ARCANE_ENERGY_POTENTIAL:
+			return "Arcane Energy"
+		ViewMode.ARCANE_MATERIAL_POTENTIAL:
+			return "Arcane Material"
+		ViewMode.ARCANE_BIORESOURCE_POTENTIAL:
+			return "Arcane Bioresource"
+		ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL:
+			return "Rare Arcane Resource"
 		_:
 			return "Unknown"
 
@@ -2836,6 +3020,11 @@ func _is_arcane_view() -> bool:
 			or view_mode == ViewMode.MANA_STABILITY \
 			or _is_arcane_ecology_view() \
 			or _is_arcane_overlay_view()
+
+
+func _is_arcane_resource_view() -> bool:
+	return view_mode >= ViewMode.ARCANE_ENERGY_POTENTIAL \
+			and view_mode <= ViewMode.RARE_ARCANE_RESOURCE_POTENTIAL
 
 
 func _is_arcane_ecology_view() -> bool:
