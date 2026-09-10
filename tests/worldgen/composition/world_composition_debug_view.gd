@@ -15,6 +15,7 @@ var composition: WorldCompositionLayer
 var projected_terrain: TerrainHeightLayer
 var geology: GeologyLayer
 var terrain: TerrainHeightLayer
+var subsurface_strata: SubsurfaceStrataLayer
 var hydrology: HydrologyConditioningResult
 var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
@@ -39,6 +40,7 @@ var surface_water_settings: SurfaceWaterSettings
 var ecology_settings: EcologySettings
 var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
+var subsurface_strata_settings: SubsurfaceStrataSettings
 var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
 var arcane_forcing_settings: ArcaneForcingSettings
@@ -55,6 +57,7 @@ var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _geology_generation_ms := 0
+var _subsurface_strata_generation_ms := 0
 var _hydrology_conditioning_ms := 0
 var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
@@ -79,6 +82,7 @@ var _climate_statistics := {}
 var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
+var _subsurface_strata_statistics := {}
 var _surface_water_statistics := {}
 var _ecology_statistics := {}
 var _soil_statistics := {}
@@ -96,6 +100,7 @@ const _INFO_WIDTH := 350.0
 enum DebugPage {
 	WORLD,
 	GEOLOGY,
+	SUBSURFACE_STRATA,
 	HYDROLOGY,
 	ECOLOGY_SOIL,
 	RESOURCES,
@@ -161,10 +166,17 @@ enum ViewMode {
 	ARCANE_HAZARD_ACTIVITY,
 	ARCANE_HAZARD_SEVERITY,
 	ARCANE_HAZARD_PROPAGATION,
+	STRATA_LAYER_COUNT,
+	STRATA_MATERIAL_Z_25,
+	STRATA_MATERIAL_Z_75,
+	STRATA_MATERIAL_Z_150,
+	STRATA_TRANSECT_Y_25,
+	STRATA_TRANSECT_Y_50,
+	STRATA_TRANSECT_Y_75,
 }
 
 const DEBUG_PAGE_NAMES := [
-	"World", "Geology", "Hydrology", "Ecology & Soil", "Resources", "Arcane",
+	"World", "Geology", "Subsurface Strata", "Hydrology", "Ecology & Soil", "Resources", "Arcane",
 	"Arcane Resources"
 ]
 const DEBUG_PAGE_VIEWS := [
@@ -182,6 +194,15 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.DOMINANT_MATERIAL,
 		ViewMode.PERMEABILITY,
 		ViewMode.ERODIBILITY,
+	],
+	[
+		ViewMode.STRATA_LAYER_COUNT,
+		ViewMode.STRATA_MATERIAL_Z_25,
+		ViewMode.STRATA_MATERIAL_Z_75,
+		ViewMode.STRATA_MATERIAL_Z_150,
+		ViewMode.STRATA_TRANSECT_Y_25,
+		ViewMode.STRATA_TRANSECT_Y_50,
+		ViewMode.STRATA_TRANSECT_Y_75,
 	],
 	[
 		ViewMode.HYDROLOGY_CONDITIONING,
@@ -302,6 +323,7 @@ func _draw() -> void:
 			or projected_terrain == null \
 			or geology == null \
 			or terrain == null \
+			or subsurface_strata == null \
 			or hydrology == null \
 			or preliminary_flow == null \
 			or formal_hydrology == null \
@@ -321,7 +343,9 @@ func _draw() -> void:
 			or climate == null:
 		draw_string(ThemeDB.fallback_font, Vector2(24.0, 40.0), "World generation failed")
 		return
-	if view_mode == ViewMode.ARCANE_WEB:
+	if _is_strata_transect_view() and reference_view == ReferenceView.NONE:
+		_draw_strata_transect()
+	elif view_mode == ViewMode.ARCANE_WEB:
 		_draw_arcane_web()
 	elif view_mode == ViewMode.ARCANE_CIRCULATION:
 		_draw_arcane_circulation()
@@ -331,7 +355,7 @@ func _draw() -> void:
 		for cell_id in graph.cell_count():
 			var color := _cell_color(cell_id)
 			_draw_cell_triangle_fan(cell_id, color)
-	if selected_cell_id >= 0 and not _is_arcane_overlay_view():
+	if selected_cell_id >= 0 and not _is_arcane_overlay_view() and not _is_strata_transect_view():
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
 			Color(1.0, 0.72, 0.12),
@@ -535,6 +559,14 @@ func _cell_color(cell_id: int) -> Color:
 			return Color(0.16, 0.20, 0.26).lerp(
 				Color(0.96, 0.48, 0.08), geology.erodibility[cell_id]
 			)
+		ViewMode.STRATA_LAYER_COUNT:
+			return _strata_layer_count_color(cell_id)
+		ViewMode.STRATA_MATERIAL_Z_25:
+			return _strata_slice_color(cell_id, -25.0)
+		ViewMode.STRATA_MATERIAL_Z_75:
+			return _strata_slice_color(cell_id, -75.0)
+		ViewMode.STRATA_MATERIAL_Z_150:
+			return _strata_slice_color(cell_id, -150.0)
 		ViewMode.LAKE_EXTENT:
 			return _lake_extent_color(cell_id)
 		ViewMode.LAKE_DEPTH:
@@ -908,6 +940,169 @@ func _material_color(material_id: int) -> Color:
 			return Color(0.18, 0.42, 0.62)
 
 
+func _strata_layer_count_color(cell_id: int) -> Color:
+	var record_range := subsurface_strata.record_range_for_cell(cell_id)
+	match record_range.y - record_range.x:
+		1:
+			return Color(0.18, 0.42, 0.78)
+		2:
+			return Color(0.16, 0.70, 0.42)
+		3:
+			return Color(0.94, 0.68, 0.16)
+		4:
+			return Color(0.86, 0.22, 0.24)
+		_:
+			return Color.MAGENTA
+
+
+func _strata_slice_color(cell_id: int, z: float) -> Color:
+	var material_id := subsurface_strata.material_at_z(cell_id, z)
+	if material_id == SubsurfaceStrataLayer.NO_MATERIAL:
+		return Color(0.50, 0.72, 0.88)
+	return _material_color(material_id)
+
+
+func _draw_strata_transect() -> void:
+	var fraction := _strata_transect_fraction()
+	var row := clampi(roundi(fraction * float(graph.rows - 1)), 0, graph.rows - 1)
+	var cells := PackedInt32Array()
+	for column in graph.columns:
+		var cell_id := row * graph.columns + column
+		if cell_id < graph.cell_count():
+			cells.append(cell_id)
+	if cells.is_empty():
+		return
+	var minimum_z := -200.0
+	var maximum_z := -INF
+	for cell_id in cells:
+		maximum_z = maxf(maximum_z, terrain.terrain_height[cell_id])
+	maximum_z = ceilf(maximum_z / 10.0) * 10.0 + 10.0
+	var map_rect := Rect2(
+		_view_offset, Vector2(graph.config.world_width, graph.config.world_height) * _view_scale
+	)
+	draw_rect(map_rect, Color(0.50, 0.72, 0.88))
+	for index in range(cells.size() - 1):
+		var left_id := cells[index]
+		var right_id := cells[index + 1]
+		var left_x := graph.cell_centers[left_id].x
+		var right_x := graph.cell_centers[right_id].x
+		if _strata_sequences_match(left_id, right_id):
+			_draw_matching_strata_interval(
+				left_id, right_id, left_x, right_x, minimum_z, maximum_z, map_rect
+			)
+		else:
+			var midpoint_x := (left_x + right_x) * 0.5
+			_draw_strata_column(left_id, left_x, midpoint_x, minimum_z, maximum_z, map_rect)
+			_draw_strata_column(right_id, midpoint_x, right_x, minimum_z, maximum_z, map_rect)
+	for z_line in [-150.0, -100.0, -50.0, 0.0, 50.0, 100.0]:
+		if z_line >= minimum_z and z_line <= maximum_z:
+			var screen_y := _strata_z_to_screen(z_line, minimum_z, maximum_z, map_rect)
+			draw_line(
+				Vector2(map_rect.position.x, screen_y),
+				Vector2(map_rect.end.x, screen_y),
+				Color(1.0, 1.0, 1.0, 0.18), 1.0
+			)
+	_mask_outside_logical_world()
+
+
+func _draw_matching_strata_interval(
+		left_id: int,
+		right_id: int,
+		left_x: float,
+		right_x: float,
+		minimum_z: float,
+		maximum_z: float,
+		map_rect: Rect2
+) -> void:
+	var left_range := subsurface_strata.record_range_for_cell(left_id)
+	var right_range := subsurface_strata.record_range_for_cell(right_id)
+	for local_index in left_range.y - left_range.x:
+		var left_record := left_range.x + local_index
+		var right_record := right_range.x + local_index
+		var left_top := subsurface_strata.top_z[left_record]
+		var right_top := subsurface_strata.top_z[right_record]
+		var left_bottom := minimum_z if left_record + 1 == left_range.y else subsurface_strata.top_z[left_record + 1]
+		var right_bottom := minimum_z if right_record + 1 == right_range.y else subsurface_strata.top_z[right_record + 1]
+		_draw_strata_polygon(
+			left_x, right_x, left_top, right_top, left_bottom, right_bottom,
+			minimum_z, maximum_z, map_rect,
+			_material_color(subsurface_strata.material_ids[left_record])
+		)
+
+
+func _draw_strata_column(
+		cell_id: int,
+		left_x: float,
+		right_x: float,
+		minimum_z: float,
+		maximum_z: float,
+		map_rect: Rect2
+) -> void:
+	var record_range := subsurface_strata.record_range_for_cell(cell_id)
+	for record_index in range(record_range.x, record_range.y):
+		var top := subsurface_strata.top_z[record_index]
+		var bottom := minimum_z if record_index + 1 == record_range.y else subsurface_strata.top_z[record_index + 1]
+		_draw_strata_polygon(
+			left_x, right_x, top, top, bottom, bottom, minimum_z, maximum_z, map_rect,
+			_material_color(subsurface_strata.material_ids[record_index])
+		)
+
+
+func _draw_strata_polygon(
+		left_x: float,
+		right_x: float,
+		left_top: float,
+		right_top: float,
+		left_bottom: float,
+		right_bottom: float,
+		minimum_z: float,
+		maximum_z: float,
+		map_rect: Rect2,
+		color: Color
+) -> void:
+	left_top = clampf(left_top, minimum_z, maximum_z)
+	right_top = clampf(right_top, minimum_z, maximum_z)
+	left_bottom = clampf(left_bottom, minimum_z, maximum_z)
+	right_bottom = clampf(right_bottom, minimum_z, maximum_z)
+	if left_top <= left_bottom and right_top <= right_bottom:
+		return
+	draw_colored_polygon(PackedVector2Array([
+		Vector2(_strata_x_to_screen(left_x, map_rect), _strata_z_to_screen(left_top, minimum_z, maximum_z, map_rect)),
+		Vector2(_strata_x_to_screen(right_x, map_rect), _strata_z_to_screen(right_top, minimum_z, maximum_z, map_rect)),
+		Vector2(_strata_x_to_screen(right_x, map_rect), _strata_z_to_screen(right_bottom, minimum_z, maximum_z, map_rect)),
+		Vector2(_strata_x_to_screen(left_x, map_rect), _strata_z_to_screen(left_bottom, minimum_z, maximum_z, map_rect)),
+	]), color)
+
+
+func _strata_x_to_screen(x: float, map_rect: Rect2) -> float:
+	return map_rect.position.x + x / graph.config.world_width * map_rect.size.x
+
+
+func _strata_z_to_screen(z: float, minimum_z: float, maximum_z: float, map_rect: Rect2) -> float:
+	return map_rect.end.y - (z - minimum_z) / (maximum_z - minimum_z) * map_rect.size.y
+
+
+func _strata_sequences_match(cell_a: int, cell_b: int) -> bool:
+	var range_a := subsurface_strata.record_range_for_cell(cell_a)
+	var range_b := subsurface_strata.record_range_for_cell(cell_b)
+	if range_a.y - range_a.x != range_b.y - range_b.x:
+		return false
+	for local_index in range_a.y - range_a.x:
+		if subsurface_strata.material_ids[range_a.x + local_index] \
+				!= subsurface_strata.material_ids[range_b.x + local_index]:
+			return false
+	return true
+
+
+func _strata_transect_fraction() -> float:
+	match view_mode:
+		ViewMode.STRATA_TRANSECT_Y_25:
+			return 0.25
+		ViewMode.STRATA_TRANSECT_Y_75:
+			return 0.75
+	return 0.50
+
+
 func _hydrology_action_color(cell_id: int) -> Color:
 	if hydrology.closed_basin_id[cell_id] >= 0:
 		return Color(0.62, 0.22, 0.78)
@@ -1048,6 +1243,7 @@ func _regenerate_composition() -> void:
 		projected_terrain = null
 		geology = null
 		terrain = null
+		subsurface_strata = null
 		hydrology = null
 		preliminary_flow = null
 		formal_hydrology = null
@@ -1101,6 +1297,12 @@ func _regenerate_composition() -> void:
 		terrain = TerrainHeightLayer.new()
 		terrain.terrain_height = hydrology.terrain_height.duplicate()
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	subsurface_strata_settings = SubsurfaceStrataSettings.new()
+	subsurface_strata = null if terrain == null else SubsurfaceStrataGenerator.generate(
+		graph, terrain, geology, seed, subsurface_strata_settings
+	)
+	_subsurface_strata_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	climate = null if terrain == null else WorldClimateGenerator.generate(
 		graph, terrain, climate_settings
@@ -1239,6 +1441,7 @@ func _regenerate_composition() -> void:
 	_climate_delta_statistics = _calculate_climate_delta_statistics()
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	_geology_statistics = _calculate_geology_statistics()
+	_subsurface_strata_statistics = _calculate_subsurface_strata_statistics()
 	_surface_water_statistics = _calculate_surface_water_statistics()
 	_ecology_statistics = _calculate_ecology_statistics()
 	_soil_statistics = _calculate_soil_statistics()
@@ -1284,13 +1487,16 @@ func _draw_information() -> void:
 	lines.append("R          Seed +1")
 	if _is_arcane_network_view():
 		lines.append("D          Toggle Domains")
-	lines.append("Click      Inspect Cell")
+	if not _is_strata_transect_view():
+		lines.append("Click      Inspect Cell")
 	lines.append("")
 	_append_mode_statistics(lines)
 	if selected_cell_id >= 0:
 		lines.append("")
 		_append_cell_inspector_header(lines, selected_cell_id)
-		if view_mode == ViewMode.TEMPERATURE_DELTA:
+		if _is_strata_view():
+			_append_strata_cell_inspection(lines, selected_cell_id)
+		elif view_mode == ViewMode.TEMPERATURE_DELTA:
 			lines.append("Preliminary Temp: %.3f °C" % preliminary_climate.temperature[selected_cell_id])
 			lines.append("Final Temp: %.3f °C" % climate.temperature[selected_cell_id])
 			lines.append(
@@ -1421,6 +1627,7 @@ func _draw_information() -> void:
 			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
+				and not _is_strata_view() \
 				and not _is_geology_view() \
 				and not _is_surface_water_view() \
 				and not _is_ecology_view() \
@@ -1460,6 +1667,22 @@ func _append_cell_inspector_header(lines: PackedStringArray, cell_id: int) -> vo
 	lines.append("Cell ID: %d" % cell_id)
 	lines.append("Height: %.3f" % terrain.terrain_height[cell_id])
 	lines.append("Biome: %s" % EcologyCatalog.biome_name(ecology.biome_id[cell_id]))
+
+
+func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
+	lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[cell_id]))
+	lines.append("Surface Terrain z: %.3f" % terrain.terrain_height[cell_id])
+	var record_range := subsurface_strata.record_range_for_cell(cell_id)
+	lines.append("Layer Count: %d" % (record_range.y - record_range.x))
+	for record_index in range(record_range.x, record_range.y):
+		var local_index := record_index - record_range.x
+		var bounds := subsurface_strata.layer_bounds(cell_id, local_index)
+		lines.append("Layer %d: %s" % [
+			local_index, GeologyCatalog.material_name(subsurface_strata.material_ids[record_index])
+		])
+		lines.append("  top_z %.3f | %s" % [
+			bounds.x, "terminal" if is_inf(bounds.y) else "bottom_z %.3f" % bounds.y
+		])
 
 
 func _append_arcane_ecology_cell_inspection(
@@ -1701,6 +1924,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 
 
 func _append_mode_statistics(lines: PackedStringArray) -> void:
+	if _is_strata_view():
+		_append_subsurface_strata_statistics(lines)
+		return
 	if _is_resource_view():
 		_append_resource_statistics(lines, _resource_statistics.get(view_mode, {}))
 		return
@@ -1925,6 +2151,32 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Min Delta: %+.4f" % _climate_delta_statistics.min_precipitation_delta)
 			lines.append("Max Delta: %+.4f" % _climate_delta_statistics.max_precipitation_delta)
 			lines.append("Mean Absolute Delta: %.4f" % _climate_delta_statistics.mean_abs_precipitation_delta)
+
+
+func _append_subsurface_strata_statistics(lines: PackedStringArray) -> void:
+	lines.append("Generation: %d ms" % _subsurface_strata_generation_ms)
+	if _subsurface_strata_statistics.is_empty():
+		lines.append("No Subsurface Strata data")
+		return
+	lines.append("Layer Count Mean / P50 / P95:")
+	lines.append("  %.3f / %.1f / %.1f" % [
+		_subsurface_strata_statistics.mean,
+		_subsurface_strata_statistics.p50,
+		_subsurface_strata_statistics.p95,
+	])
+	if view_mode == ViewMode.STRATA_LAYER_COUNT:
+		lines.append("")
+		lines.append("Legend:")
+		var counts: PackedInt32Array = _subsurface_strata_statistics.counts_by_layer
+		for layer_count in range(1, 5):
+			lines.append("%d layers: %d Cells" % [layer_count, counts[layer_count]])
+	elif not _is_strata_transect_view():
+		lines.append("")
+		lines.append("Light blue = above ground / air")
+	else:
+		lines.append("")
+		lines.append("Horizontal: World x")
+		lines.append("Vertical: absolute z (-200 to surface)")
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -2188,6 +2440,31 @@ func _calculate_geology_statistics() -> Dictionary:
 		"min_erodibility": min_erodibility,
 		"max_erodibility": max_erodibility,
 		"mean_erodibility": erodibility_sum / float(geology.cell_count()),
+	}
+
+
+func _calculate_subsurface_strata_statistics() -> Dictionary:
+	if subsurface_strata == null:
+		return {}
+	var layer_counts := PackedFloat32Array()
+	var counts_by_layer := PackedInt32Array()
+	counts_by_layer.resize(5)
+	for cell_id in graph.cell_count():
+		var record_range := subsurface_strata.record_range_for_cell(cell_id)
+		var layer_count := record_range.y - record_range.x
+		layer_counts.append(layer_count)
+		if layer_count >= 1 and layer_count <= 4:
+			counts_by_layer[layer_count] += 1
+	var sorted := layer_counts.duplicate()
+	sorted.sort()
+	var total := 0.0
+	for layer_count in layer_counts:
+		total += layer_count
+	return {
+		"counts_by_layer": counts_by_layer,
+		"mean": total / maxf(float(layer_counts.size()), 1.0),
+		"p50": _percentile(sorted, 0.50),
+		"p95": _percentile(sorted, 0.95),
 	}
 
 
@@ -2998,7 +3275,7 @@ func _select_current_page_view(view_index: int) -> void:
 	if view_index < 0 or view_index >= page_views.size():
 		return
 	view_mode = page_views[view_index]
-	if _is_arcane_overlay_view():
+	if _is_arcane_overlay_view() or _is_strata_transect_view():
 		selected_cell_id = -1
 
 
@@ -3113,6 +3390,20 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Hazard Severity"
 		ViewMode.ARCANE_HAZARD_PROPAGATION:
 			return "Hazard Propagation"
+		ViewMode.STRATA_LAYER_COUNT:
+			return "Strata Layer Count"
+		ViewMode.STRATA_MATERIAL_Z_25:
+			return "Strata Material z=-25"
+		ViewMode.STRATA_MATERIAL_Z_75:
+			return "Strata Material z=-75"
+		ViewMode.STRATA_MATERIAL_Z_150:
+			return "Strata Material z=-150"
+		ViewMode.STRATA_TRANSECT_Y_25:
+			return "Strata Transect y=25%"
+		ViewMode.STRATA_TRANSECT_Y_50:
+			return "Strata Transect y=50%"
+		ViewMode.STRATA_TRANSECT_Y_75:
+			return "Strata Transect y=75%"
 		_:
 			return "Unknown"
 
@@ -3122,6 +3413,16 @@ func _is_geology_view() -> bool:
 			or view_mode == ViewMode.DOMINANT_MATERIAL \
 			or view_mode == ViewMode.PERMEABILITY \
 			or view_mode == ViewMode.ERODIBILITY
+
+
+func _is_strata_view() -> bool:
+	return view_mode >= ViewMode.STRATA_LAYER_COUNT \
+			and view_mode <= ViewMode.STRATA_TRANSECT_Y_75
+
+
+func _is_strata_transect_view() -> bool:
+	return view_mode >= ViewMode.STRATA_TRANSECT_Y_25 \
+			and view_mode <= ViewMode.STRATA_TRANSECT_Y_75
 
 
 func _is_surface_water_view() -> bool:
@@ -3185,7 +3486,7 @@ func _is_arcane_overlay_view() -> bool:
 
 
 func _select_cell_at(world_position: Vector2) -> void:
-	if _is_arcane_overlay_view():
+	if _is_arcane_overlay_view() or _is_strata_transect_view():
 		selected_cell_id = -1
 		queue_redraw()
 		return
