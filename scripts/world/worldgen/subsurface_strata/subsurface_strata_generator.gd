@@ -2,6 +2,7 @@ class_name SubsurfaceStrataGenerator
 extends RefCounted
 
 const STRATA_SEED_SALT := 0x53545241 # "STRA"
+const DEEP_CRUST_CHANNEL_SALT := 0x44435255 # "DCRU"
 const SEQUENCE_CHANNEL_SALTS := [0x53513030, 0x53513031, 0x53513032] # SQ00..SQ02
 const THICKNESS_CHANNEL_SALTS := [0x54483030, 0x54483031, 0x54483032] # TH00..TH02
 const _DEPTH_FACTORS := [1.0, 1.1, 1.2]
@@ -9,17 +10,19 @@ const _DEPTH_FACTORS := [1.0, 1.1, 1.2]
 
 static func generate(
 		graph: SpatialGraph,
+		composition: WorldCompositionLayer,
 		terrain: TerrainHeightLayer,
 		geology: GeologyLayer,
 		world_seed: int,
 		settings: SubsurfaceStrataSettings = null
 ) -> SubsurfaceStrataLayer:
 	var actual_settings := settings if settings != null else SubsurfaceStrataSettings.new()
-	if not _inputs_are_valid(graph, terrain, geology, actual_settings):
+	if not _inputs_are_valid(graph, composition, terrain, geology, actual_settings):
 		return null
 	var base_seed := DeterministicRng.stable_mix(world_seed, STRATA_SEED_SALT)
 	var sequence_noises: Array[FastNoiseLite] = []
 	var thickness_noises: Array[FastNoiseLite] = []
+	var deep_crust_noise := make_deep_crust_noise(base_seed, actual_settings)
 	for channel_index in 3:
 		sequence_noises.append(_make_noise(
 			DeterministicRng.stable_mix(base_seed, SEQUENCE_CHANNEL_SALTS[channel_index]),
@@ -37,6 +40,10 @@ static func generate(
 		strata.cell_offsets[cell_id] = strata.material_ids.size()
 		var position := graph.cell_centers[cell_id]
 		var province_id := geology.province_id[cell_id]
+		var deep_noise := deep_crust_noise.get_noise_2d(position.x, position.y)
+		var is_deep_continental := is_continental_deep_substrate(
+			composition.continental_value[cell_id], deep_noise, actual_settings
+		)
 		var current_material := geology.material_id[cell_id]
 		var current_top_z := terrain.terrain_height[cell_id]
 		var terminated := false
@@ -49,7 +56,8 @@ static func generate(
 					position.x, position.y
 				))
 			var next_material := next_material_for(
-				province_id, current_material, local_layer_index, selector
+				province_id, current_material, local_layer_index, selector,
+				is_deep_continental
 			)
 			if next_material == SubsurfaceStrataLayer.NO_MATERIAL:
 				terminated = true
@@ -71,7 +79,7 @@ static func generate(
 			return null
 	strata.cell_offsets[count] = strata.material_ids.size()
 	var validation_errors := SubsurfaceStrataValidator.validate(
-		graph, terrain, geology, strata, actual_settings
+		graph, composition, terrain, geology, strata, world_seed, actual_settings
 	)
 	if not validation_errors.is_empty():
 		push_error("Subsurface Strata validation failed: " + "; ".join(validation_errors))
@@ -80,10 +88,18 @@ static func generate(
 
 
 static func next_material_for(
-		province_id: int, current_material: int, local_layer_index: int, selector: float
+		province_id: int,
+		current_material: int,
+		local_layer_index: int,
+		selector: float,
+		is_deep_continental: bool = false
 ) -> int:
 	if province_id == GeologyCatalog.Province.OCEANIC_CRUST:
 		if current_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+			return GeologyCatalog.MaterialType.CRYSTALLINE_ROCK \
+					if is_deep_continental else SubsurfaceStrataLayer.NO_MATERIAL
+		if current_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK \
+				and local_layer_index > 0:
 			return SubsurfaceStrataLayer.NO_MATERIAL
 		return GeologyCatalog.MaterialType.VOLCANIC_ROCK
 	if current_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
@@ -105,6 +121,32 @@ static func next_material_for(
 		GeologyCatalog.Province.VOLCANIC_PROVINCE:
 			return _volcanic_province_next_material(current_material, selector)
 	return SubsurfaceStrataLayer.NO_MATERIAL
+
+
+static func deep_score_for(
+		continental_value: int,
+		deep_noise: float,
+		settings: SubsurfaceStrataSettings
+) -> float:
+	return float(continental_value) + deep_noise * settings.deep_crust_noise_amplitude
+
+
+static func is_continental_deep_substrate(
+		continental_value: int,
+		deep_noise: float,
+		settings: SubsurfaceStrataSettings
+) -> bool:
+	return deep_score_for(continental_value, deep_noise, settings) \
+			>= settings.deep_continental_threshold
+
+
+static func make_deep_crust_noise(
+		base_seed: int, settings: SubsurfaceStrataSettings
+) -> FastNoiseLite:
+	return _make_noise(
+		DeterministicRng.stable_mix(base_seed, DEEP_CRUST_CHANNEL_SALT),
+		settings.deep_crust_feature_scale
+	)
 
 
 static func thickness_for(
@@ -193,6 +235,105 @@ static func _is_land_sedimentary(material_id: int) -> bool:
 			or material_id == GeologyCatalog.MaterialType.CARBONATE_ROCK
 
 
+static func transition_is_allowed(
+		province_id: int,
+		current_material: int,
+		next_material: int,
+		local_layer_index: int,
+		is_deep_continental: bool
+) -> bool:
+	if province_id == GeologyCatalog.Province.OCEANIC_CRUST:
+		if current_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+			return is_deep_continental \
+					and next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+		if current_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK \
+				and local_layer_index > 0:
+			return false
+		return next_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK
+	if current_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
+		return false
+	if current_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
+		return next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+
+	match province_id:
+		GeologyCatalog.Province.CRATON, GeologyCatalog.Province.OROGENIC_BELT:
+			return next_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK \
+					or next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+		GeologyCatalog.Province.SEDIMENTARY_BASIN:
+			return _basin_transition_is_allowed(
+				current_material, next_material, local_layer_index
+			)
+		GeologyCatalog.Province.PASSIVE_MARGIN:
+			return _passive_margin_transition_is_allowed(
+				current_material, next_material, local_layer_index
+			)
+		GeologyCatalog.Province.VOLCANIC_PROVINCE:
+			if current_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+				return next_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK \
+						or next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+			if _is_land_sedimentary(current_material) \
+					or current_material == GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
+				return next_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK \
+						or next_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK \
+						or next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+	return false
+
+
+static func _basin_transition_is_allowed(
+		current_material: int, next_material: int, local_layer_index: int
+) -> bool:
+	if local_layer_index == 0 and _is_land_sedimentary(current_material):
+		match current_material:
+			GeologyCatalog.MaterialType.SANDSTONE:
+				return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+						or next_material == GeologyCatalog.MaterialType.CARBONATE_ROCK
+			GeologyCatalog.MaterialType.SHALE_MUDSTONE:
+				return next_material == GeologyCatalog.MaterialType.SANDSTONE \
+						or next_material == GeologyCatalog.MaterialType.CARBONATE_ROCK
+			GeologyCatalog.MaterialType.CARBONATE_ROCK:
+				return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+						or next_material == GeologyCatalog.MaterialType.SANDSTONE
+	if _is_land_sedimentary(current_material) \
+			or current_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+		return next_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK \
+				or next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+	if current_material == GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
+		return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+				or next_material == GeologyCatalog.MaterialType.METAMORPHIC_ROCK
+	return false
+
+
+static func _passive_margin_transition_is_allowed(
+		current_material: int, next_material: int, local_layer_index: int
+) -> bool:
+	if local_layer_index == 0 and _is_land_sedimentary(current_material):
+		match current_material:
+			GeologyCatalog.MaterialType.SANDSTONE:
+				return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+						or next_material == GeologyCatalog.MaterialType.CARBONATE_ROCK \
+						or _is_continental_basement(next_material)
+			GeologyCatalog.MaterialType.SHALE_MUDSTONE:
+				return next_material == GeologyCatalog.MaterialType.SANDSTONE \
+						or next_material == GeologyCatalog.MaterialType.CARBONATE_ROCK \
+						or _is_continental_basement(next_material)
+			GeologyCatalog.MaterialType.CARBONATE_ROCK:
+				return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+						or next_material == GeologyCatalog.MaterialType.SANDSTONE \
+						or _is_continental_basement(next_material)
+	if _is_land_sedimentary(current_material) \
+			or current_material == GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+		return _is_continental_basement(next_material)
+	if current_material == GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
+		return next_material == GeologyCatalog.MaterialType.SHALE_MUDSTONE \
+				or next_material == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+	return false
+
+
+static func _is_continental_basement(material_id: int) -> bool:
+	return material_id == GeologyCatalog.MaterialType.METAMORPHIC_ROCK \
+			or material_id == GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+
+
 static func _make_noise(seed: int, feature_scale: float) -> FastNoiseLite:
 	var noise := FastNoiseLite.new()
 	noise.seed = seed
@@ -213,15 +354,19 @@ static func _unit_value(noise_value: float) -> float:
 
 static func _inputs_are_valid(
 		graph: SpatialGraph,
+		composition: WorldCompositionLayer,
 		terrain: TerrainHeightLayer,
 		geology: GeologyLayer,
 		settings: SubsurfaceStrataSettings
 ) -> bool:
-	if graph == null or terrain == null or geology == null:
-		push_error("Subsurface Strata requires SpatialGraph, Final Terrain, and Geology")
+	if graph == null or composition == null or terrain == null or geology == null:
+		push_error(
+			"Subsurface Strata requires SpatialGraph, World Composition, Final Terrain, and Geology"
+		)
 		return false
 	var count := graph.cell_count()
 	if count <= 0 or graph.cell_centers.size() != count \
+			or composition.continental_value.size() != count \
 			or terrain.terrain_height.size() != count \
 			or geology.province_id.size() != count \
 			or geology.material_id.size() != count:

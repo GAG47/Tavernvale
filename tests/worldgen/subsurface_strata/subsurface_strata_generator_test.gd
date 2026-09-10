@@ -12,6 +12,9 @@ func _run_all() -> void:
 	_test_structure_surface_and_validator(fixture)
 	_test_queries_and_bounds(fixture)
 	_test_transition_rules()
+	_test_deep_substrate_threshold()
+	_test_oceanic_deep_substrate_routes()
+	_test_validator_rejects_illegal_transition()
 	_test_determinism_and_input_preservation(fixture)
 	_test_invalid_layer_queries(fixture)
 	var standard := _standard_world_fixture()
@@ -21,6 +24,7 @@ func _run_all() -> void:
 
 func _test_structure_surface_and_validator(fixture: Dictionary) -> void:
 	var graph: SpatialGraph = fixture.graph
+	var composition: WorldCompositionLayer = fixture.composition
 	var terrain: TerrainHeightLayer = fixture.terrain
 	var geology: GeologyLayer = fixture.geology
 	var strata: SubsurfaceStrataLayer = fixture.strata
@@ -35,18 +39,32 @@ func _test_structure_surface_and_validator(fixture: Dictionary) -> void:
 	_expect(strata.cell_offsets[-1] == strata.material_ids.size(), "last offset must match records")
 	_expect(strata.material_ids.size() == strata.top_z.size(), "record arrays must have equal sizes")
 	_expect(
-		SubsurfaceStrataValidator.validate(graph, terrain, geology, strata).is_empty(),
+		SubsurfaceStrataValidator.validate(
+			graph, composition, terrain, geology, strata, fixture.world_seed
+		).is_empty(),
 		"generated synthetic Strata should pass its Validator"
 	)
+	var settings := SubsurfaceStrataSettings.new()
+	var base_seed := DeterministicRng.stable_mix(
+		fixture.world_seed, SubsurfaceStrataGenerator.STRATA_SEED_SALT
+	)
+	var deep_noise := SubsurfaceStrataGenerator.make_deep_crust_noise(base_seed, settings)
 	for cell_id in graph.cell_count():
 		var record_range := strata.record_range_for_cell(cell_id)
 		var layer_count := record_range.y - record_range.x
 		_expect(layer_count >= 1 and layer_count <= 4, "every Cell must have 1..4 layers")
 		_expect(strata.material_ids[record_range.x] == geology.material_id[cell_id], "surface Material must match Geology")
 		_expect(is_equal_approx(strata.top_z[record_range.x], terrain.terrain_height[cell_id]), "surface top_z must match Final Terrain")
-		var expected_terminal := GeologyCatalog.MaterialType.VOLCANIC_ROCK \
-				if geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST \
-				else GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+		var position := graph.cell_centers[cell_id]
+		var is_deep_continental := SubsurfaceStrataGenerator.is_continental_deep_substrate(
+			composition.continental_value[cell_id],
+			deep_noise.get_noise_2d(position.x, position.y),
+			settings
+		)
+		var expected_terminal := GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+		if geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST \
+				and not is_deep_continental:
+			expected_terminal = GeologyCatalog.MaterialType.VOLCANIC_ROCK
 		_expect(strata.material_ids[record_range.y - 1] == expected_terminal, "terminal Material must match Province")
 		for record_index in range(record_range.x, record_range.y - 1):
 			_expect(strata.top_z[record_index + 1] < strata.top_z[record_index], "top_z must strictly descend")
@@ -55,7 +73,8 @@ func _test_structure_surface_and_validator(fixture: Dictionary) -> void:
 				geology.province_id[cell_id],
 				strata.material_ids[record_index],
 				strata.material_ids[record_index + 1],
-				record_index - record_range.x
+				record_index - record_range.x,
+				is_deep_continental
 			), "generated transition must be legal")
 
 
@@ -74,6 +93,17 @@ func _test_queries_and_bounds(fixture: Dictionary) -> void:
 		_expect(strata.layer_index_at_z(cell_id, terrain.terrain_height[cell_id] + 1.0) == -1, "above-ground layer index must be -1")
 		for record_index in range(record_range.x, record_range.y):
 			var local_index := record_index - record_range.x
+			if local_index > 0:
+				var boundary_z := strata.top_z[record_index]
+				_expect(
+					strata.material_at_z(cell_id, boundary_z) \
+							== strata.material_ids[record_index],
+					"internal boundary must belong to the lower layer Material"
+				)
+				_expect(
+					strata.layer_index_at_z(cell_id, boundary_z) == local_index,
+					"internal boundary must belong to the lower local layer index"
+				)
 			var bounds := strata.layer_bounds(cell_id, local_index)
 			var expected_bottom := -INF if record_index + 1 == record_range.y else strata.top_z[record_index + 1]
 			_expect(bounds.x == strata.top_z[record_index], "layer_bounds top must match record top_z")
@@ -101,24 +131,117 @@ func _test_transition_rules() -> void:
 	_expect(SubsurfaceStrataGenerator.next_material_for(p.VOLCANIC_PROVINCE, m.SHALE_MUDSTONE, 0, 0.59) == m.VOLCANIC_ROCK, "Volcanic Province sediment should commonly enter Volcanic")
 	_expect(SubsurfaceStrataGenerator.next_material_for(p.CRATON, m.CRYSTALLINE_ROCK, 0, 0.0) == SubsurfaceStrataLayer.NO_MATERIAL, "continental Crystalline must terminate")
 	_expect(SubsurfaceStrataGenerator.next_material_for(p.CRATON, m.METAMORPHIC_ROCK, 0, 1.0) == m.CRYSTALLINE_ROCK, "continental Metamorphic must enter Crystalline")
+	var settings := SubsurfaceStrataSettings.new()
+	settings.max_layers = 3
+	_expect(not settings.validate().is_empty(), "v3.0.1 settings must reject max_layers other than four")
+
+
+func _test_deep_substrate_threshold() -> void:
+	var settings := SubsurfaceStrataSettings.new()
+	_expect(
+		SubsurfaceStrataGenerator.is_continental_deep_substrate(20, -1.0, settings),
+		"continental value 20 with deep noise -1 must remain Continental"
+	)
+	_expect(
+		SubsurfaceStrataGenerator.is_continental_deep_substrate(14, 0.0, settings),
+		"deep score exactly 14 must be Continental"
+	)
+	_expect(
+		not SubsurfaceStrataGenerator.is_continental_deep_substrate(13, 0.0, settings),
+		"deep score 13 must be Oceanic"
+	)
+	_expect(
+		not SubsurfaceStrataGenerator.is_continental_deep_substrate(17, -1.0, settings),
+		"continental value 17 with deep noise -1 must be Oceanic"
+	)
+	_expect(
+		SubsurfaceStrataGenerator.is_continental_deep_substrate(17, 1.0, settings),
+		"continental value 17 with deep noise +1 must be Continental"
+	)
+
+
+func _test_oceanic_deep_substrate_routes() -> void:
+	var m := GeologyCatalog.MaterialType
+	var oceanic := _oceanic_route(0, m.MARINE_SEDIMENTARY_ROCK)
+	_expect(
+		oceanic.material_ids == PackedInt32Array([m.MARINE_SEDIMENTARY_ROCK, m.VOLCANIC_ROCK]),
+		"Oceanic surface plus Oceanic Deep Substrate must terminate in Volcanic"
+	)
+	var continental := _oceanic_route(20, m.MARINE_SEDIMENTARY_ROCK)
+	_expect(
+		continental.material_ids == PackedInt32Array([
+			m.MARINE_SEDIMENTARY_ROCK, m.VOLCANIC_ROCK, m.CRYSTALLINE_ROCK
+		]),
+		"Oceanic surface plus Continental Deep Substrate must enter Crystalline"
+	)
+	var volcanic_continental := _oceanic_route(20, m.VOLCANIC_ROCK)
+	_expect(
+		volcanic_continental.material_ids == PackedInt32Array([
+			m.VOLCANIC_ROCK, m.CRYSTALLINE_ROCK
+		]),
+		"Oceanic surface Volcanic plus Continental Deep Substrate must enter Crystalline"
+	)
+
+
+func _test_validator_rejects_illegal_transition() -> void:
+	var graph := SpatialGraph.new()
+	graph.cell_centers = PackedVector2Array([Vector2.ZERO])
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height = PackedFloat32Array([10.0])
+	var composition := WorldCompositionLayer.new()
+	composition.continental_value = PackedInt32Array([20])
+	var geology := GeologyLayer.new()
+	geology.province_id = PackedInt32Array([GeologyCatalog.Province.SEDIMENTARY_BASIN])
+	geology.material_id = PackedInt32Array([GeologyCatalog.MaterialType.SANDSTONE])
+	var strata := SubsurfaceStrataLayer.new()
+	strata.cell_offsets = PackedInt32Array([0, 3])
+	strata.material_ids = PackedInt32Array([
+		GeologyCatalog.MaterialType.SANDSTONE,
+		GeologyCatalog.MaterialType.VOLCANIC_ROCK,
+		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
+	])
+	strata.top_z = PackedFloat32Array([10.0, -10.0, -30.0])
+	var errors := SubsurfaceStrataValidator.validate(
+		graph, composition, terrain, geology, strata, 1
+	)
+	_expect(
+		not errors.is_empty(),
+		"Validator must reject a structurally valid column with an illegal transition"
+	)
+	var reported_transition_error := false
+	for error in errors:
+		if "transition is not allowed" in error:
+			reported_transition_error = true
+			break
+	_expect(reported_transition_error, "Validator must identify the illegal transition")
 
 
 func _test_determinism_and_input_preservation(fixture: Dictionary) -> void:
 	var graph: SpatialGraph = fixture.graph
+	var composition: WorldCompositionLayer = fixture.composition
 	var terrain: TerrainHeightLayer = fixture.terrain
 	var geology: GeologyLayer = fixture.geology
 	var centers_before := graph.cell_centers.duplicate()
+	var continental_values_before := composition.continental_value.duplicate()
 	var heights_before := terrain.terrain_height.duplicate()
 	var provinces_before := geology.province_id.duplicate()
 	var materials_before := geology.material_id.duplicate()
-	var first := SubsurfaceStrataGenerator.generate(graph, terrain, geology, 12345)
-	var second := SubsurfaceStrataGenerator.generate(graph, terrain, geology, 12345)
+	var first := SubsurfaceStrataGenerator.generate(
+		graph, composition, terrain, geology, fixture.world_seed
+	)
+	var second := SubsurfaceStrataGenerator.generate(
+		graph, composition, terrain, geology, fixture.world_seed
+	)
 	_expect(first != null and second != null, "determinism fixture should generate twice")
 	if first != null and second != null:
 		_expect(first.cell_offsets == second.cell_offsets, "cell_offsets must be deterministic")
 		_expect(first.material_ids == second.material_ids, "material_ids must be deterministic")
 		_expect(first.top_z == second.top_z, "top_z must be deterministic")
 	_expect(graph.cell_centers == centers_before, "Generator must not modify SpatialGraph")
+	_expect(
+		composition.continental_value == continental_values_before,
+		"Generator must not modify World Composition"
+	)
 	_expect(terrain.terrain_height == heights_before, "Generator must not modify Final Terrain")
 	_expect(geology.province_id == provinces_before, "Generator must not modify Geology Provinces")
 	_expect(geology.material_id == materials_before, "Generator must not modify Geology Materials")
@@ -140,6 +263,7 @@ func _test_standard_world(fixture: Dictionary) -> void:
 	if fixture.is_empty():
 		return
 	var graph: SpatialGraph = fixture.graph
+	var composition: WorldCompositionLayer = fixture.composition
 	var projected: TerrainHeightLayer = fixture.projected
 	var terrain: TerrainHeightLayer = fixture.terrain
 	var geology: GeologyLayer = fixture.geology
@@ -148,7 +272,12 @@ func _test_standard_world(fixture: Dictionary) -> void:
 	_expect(strata != null, "standard world Strata should generate")
 	if strata == null:
 		return
-	_expect(SubsurfaceStrataValidator.validate(graph, terrain, geology, strata).is_empty(), "standard world must pass Strata validation")
+	_expect(
+		SubsurfaceStrataValidator.validate(
+			graph, composition, terrain, geology, strata, fixture.world_seed
+		).is_empty(),
+		"standard world must pass Strata validation"
+	)
 	var conditioned_changes := 0
 	for cell_id in graph.cell_count():
 		if terrain.terrain_height[cell_id] != projected.terrain_height[cell_id]:
@@ -157,7 +286,9 @@ func _test_standard_world(fixture: Dictionary) -> void:
 		_expect(strata.top_z[begin] == terrain.terrain_height[cell_id], "standard Strata must use conditioned Terrain")
 	_expect(conditioned_changes > 0, "standard fixture should exercise Hydrology-conditioned Terrain")
 
-	var statistics := _strata_statistics(graph, geology, strata)
+	var statistics := _strata_statistics(
+		graph, composition, terrain, geology, strata, fixture.world_seed
+	)
 	print("Subsurface Strata standard 20k statistics:")
 	print("  World layers mean %.4f / P50 %.1f / P95 %.1f / max %.0f" % [statistics.world_mean, statistics.world_p50, statistics.world_p95, statistics.world_max])
 	for province_id in GeologyCatalog.PROVINCE_COUNT:
@@ -165,6 +296,29 @@ func _test_standard_world(fixture: Dictionary) -> void:
 		print("  %s: Cells %d, layers mean %.4f / P50 %.1f / P95 %.1f, terminals %s" % [GeologyCatalog.province_name(province_id), province.count, province.mean, province.p50, province.p95, str(province.terminals)])
 	print("  Material record counts: %s" % str(statistics.material_records))
 	print("  Matching same-province/surface adjacent sequences: %d / %d (%.4f)" % [statistics.matching_pairs, statistics.eligible_pairs, statistics.adjacent_sequence_ratio])
+	print("  Land Cells: %d" % statistics.land_count)
+	print("  Ocean Cells: %d" % statistics.ocean_count)
+	print("  Land + Continental Deep Substrate: %d" % statistics.land_continental_deep_count)
+	print("  Land + Oceanic Deep Substrate: %d" % statistics.land_oceanic_deep_count)
+	print("  Ocean + Continental Deep Substrate: %d (%.4f)" % [statistics.ocean_continental_deep_count, statistics.ocean_continental_deep_ratio])
+	print("  Ocean + Oceanic Deep Substrate: %d (%.4f)" % [statistics.ocean_oceanic_deep_count, statistics.ocean_oceanic_deep_ratio])
+	print("  Surface Land/Water Boundary Edges: %d" % statistics.surface_boundary_edges)
+	print("  Deep Substrate Boundary Edges: %d" % statistics.deep_boundary_edges)
+	print("  Coincident Deep/Surface Boundary Edges: %d" % statistics.coincident_boundary_edges)
+	print("  Deep boundary / surface coincidence ratio: %.4f" % statistics.deep_boundary_surface_coincidence_ratio)
+	_expect(
+		statistics.land_oceanic_deep_count == 0,
+		"normal Land Cells must never use Oceanic Deep Substrate"
+	)
+	for cell_id in graph.cell_count():
+		if terrain.terrain_height[cell_id] < 0.0:
+			continue
+		var record_range := strata.record_range_for_cell(cell_id)
+		_expect(
+			strata.material_ids[record_range.y - 1] \
+					== GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
+			"normal Land Cells must retain Crystalline terminal Material"
+		)
 
 	var basin: Dictionary = statistics.provinces[GeologyCatalog.Province.SEDIMENTARY_BASIN]
 	var craton: Dictionary = statistics.provinces[GeologyCatalog.Province.CRATON]
@@ -173,6 +327,21 @@ func _test_standard_world(fixture: Dictionary) -> void:
 		_expect(basin.mean > craton.mean, "Sedimentary Basin mean layer count must exceed Craton")
 	if orogenic.count >= 100 and craton.count >= 100:
 		_expect(orogenic.metamorphic_ratio > craton.metamorphic_ratio, "Orogenic Metamorphic-column ratio must exceed Craton")
+
+
+func _oceanic_route(
+		continental_value: int, surface_material: int
+) -> SubsurfaceStrataLayer:
+	var graph := SpatialGraph.new()
+	graph.cell_centers = PackedVector2Array([Vector2(100.0, 100.0)])
+	var composition := WorldCompositionLayer.new()
+	composition.continental_value = PackedInt32Array([continental_value])
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height = PackedFloat32Array([-10.0])
+	var geology := GeologyLayer.new()
+	geology.province_id = PackedInt32Array([GeologyCatalog.Province.OCEANIC_CRUST])
+	geology.material_id = PackedInt32Array([surface_material])
+	return SubsurfaceStrataGenerator.generate(graph, composition, terrain, geology, 1)
 
 
 func _synthetic_fixture() -> Dictionary:
@@ -190,6 +359,8 @@ func _synthetic_fixture() -> Dictionary:
 		graph.cell_neighbors[cell_id] = neighbors
 	var terrain := TerrainHeightLayer.new()
 	terrain.terrain_height.resize(count)
+	var composition := WorldCompositionLayer.new()
+	composition.continental_value.resize(count)
 	var geology := GeologyLayer.new()
 	geology.province_id.resize(count)
 	geology.material_id.resize(count)
@@ -217,11 +388,17 @@ func _synthetic_fixture() -> Dictionary:
 		geology.province_id[cell_id] = cell_id / 3
 		geology.material_id[cell_id] = surface_materials[cell_id]
 		terrain.terrain_height[cell_id] = -20.0 - cell_id if geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST else 10.0 + cell_id
+		composition.continental_value[cell_id] = 0 \
+				if geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST else 20
 	return {
 		"graph": graph,
+		"composition": composition,
 		"terrain": terrain,
 		"geology": geology,
-		"strata": SubsurfaceStrataGenerator.generate(graph, terrain, geology, 12345),
+		"world_seed": 12345,
+		"strata": SubsurfaceStrataGenerator.generate(
+			graph, composition, terrain, geology, 12345
+		),
 	}
 
 
@@ -245,21 +422,40 @@ func _standard_world_fixture() -> Dictionary:
 	terrain.terrain_height = conditioning.terrain_height.duplicate()
 	return {
 		"graph": graph,
+		"composition": composition,
 		"projected": projected,
 		"terrain": terrain,
 		"geology": geology,
-		"strata": SubsurfaceStrataGenerator.generate(graph, terrain, geology, 1),
+		"world_seed": 1,
+		"strata": SubsurfaceStrataGenerator.generate(
+			graph, composition, terrain, geology, 1
+		),
 	}
 
 
-func _transition_is_legal(province_id: int, current: int, next: int, layer_index: int) -> bool:
+func _transition_is_legal(
+		province_id: int,
+		current: int,
+		next: int,
+		layer_index: int,
+		is_deep_continental: bool
+) -> bool:
 	for selector in [0.0, 0.29, 0.34, 0.44, 0.49, 0.54, 0.59, 0.64, 0.74, 0.79, 0.99]:
-		if SubsurfaceStrataGenerator.next_material_for(province_id, current, layer_index, selector) == next:
+		if SubsurfaceStrataGenerator.next_material_for(
+			province_id, current, layer_index, selector, is_deep_continental
+		) == next:
 			return true
 	return false
 
 
-func _strata_statistics(graph: SpatialGraph, geology: GeologyLayer, strata: SubsurfaceStrataLayer) -> Dictionary:
+func _strata_statistics(
+		graph: SpatialGraph,
+		composition: WorldCompositionLayer,
+		terrain: TerrainHeightLayer,
+		geology: GeologyLayer,
+		strata: SubsurfaceStrataLayer,
+		world_seed: int
+) -> Dictionary:
 	var layer_counts := PackedFloat32Array()
 	var material_records := {}
 	var province_counts: Array = []
@@ -267,11 +463,43 @@ func _strata_statistics(graph: SpatialGraph, geology: GeologyLayer, strata: Subs
 	var province_terminals: Array = []
 	var province_metamorphic_counts := PackedInt32Array()
 	province_metamorphic_counts.resize(GeologyCatalog.PROVINCE_COUNT)
+	var deep_continental := PackedByteArray()
+	deep_continental.resize(graph.cell_count())
+	var settings := SubsurfaceStrataSettings.new()
+	var base_seed := DeterministicRng.stable_mix(
+		world_seed, SubsurfaceStrataGenerator.STRATA_SEED_SALT
+	)
+	var deep_noise := SubsurfaceStrataGenerator.make_deep_crust_noise(base_seed, settings)
+	var land_count := 0
+	var ocean_count := 0
+	var land_continental_deep_count := 0
+	var land_oceanic_deep_count := 0
+	var ocean_continental_deep_count := 0
+	var ocean_oceanic_deep_count := 0
 	for province_id in GeologyCatalog.PROVINCE_COUNT:
 		province_counts.append(0)
 		province_layers.append(PackedFloat32Array())
 		province_terminals.append({})
 	for cell_id in graph.cell_count():
+		var position := graph.cell_centers[cell_id]
+		var is_deep_continental := SubsurfaceStrataGenerator.is_continental_deep_substrate(
+			composition.continental_value[cell_id],
+			deep_noise.get_noise_2d(position.x, position.y),
+			settings
+		)
+		deep_continental[cell_id] = 1 if is_deep_continental else 0
+		if terrain.terrain_height[cell_id] >= 0.0:
+			land_count += 1
+			if is_deep_continental:
+				land_continental_deep_count += 1
+			else:
+				land_oceanic_deep_count += 1
+		else:
+			ocean_count += 1
+			if is_deep_continental:
+				ocean_continental_deep_count += 1
+			else:
+				ocean_oceanic_deep_count += 1
 		var begin := strata.cell_offsets[cell_id]
 		var end := strata.cell_offsets[cell_id + 1]
 		var count := end - begin
@@ -303,10 +531,26 @@ func _strata_statistics(graph: SpatialGraph, geology: GeologyLayer, strata: Subs
 		})
 	var eligible_pairs := 0
 	var matching_pairs := 0
+	var surface_boundary_edges := 0
+	var deep_boundary_edges := 0
+	var coincident_boundary_edges := 0
 	for cell_id in graph.cell_count():
 		for neighbor_id in graph.cell_neighbors[cell_id]:
-			if neighbor_id <= cell_id \
-					or geology.province_id[neighbor_id] != geology.province_id[cell_id] \
+			if neighbor_id <= cell_id:
+				continue
+			var is_surface_boundary := (
+				terrain.terrain_height[cell_id] >= 0.0
+			) != (
+				terrain.terrain_height[neighbor_id] >= 0.0
+			)
+			var is_deep_boundary := deep_continental[cell_id] != deep_continental[neighbor_id]
+			if is_surface_boundary:
+				surface_boundary_edges += 1
+			if is_deep_boundary:
+				deep_boundary_edges += 1
+				if is_surface_boundary:
+					coincident_boundary_edges += 1
+			if geology.province_id[neighbor_id] != geology.province_id[cell_id] \
 					or geology.material_id[neighbor_id] != geology.material_id[cell_id]:
 				continue
 			eligible_pairs += 1
@@ -322,6 +566,21 @@ func _strata_statistics(graph: SpatialGraph, geology: GeologyLayer, strata: Subs
 		"eligible_pairs": eligible_pairs,
 		"matching_pairs": matching_pairs,
 		"adjacent_sequence_ratio": float(matching_pairs) / maxf(float(eligible_pairs), 1.0),
+		"land_count": land_count,
+		"ocean_count": ocean_count,
+		"land_continental_deep_count": land_continental_deep_count,
+		"land_oceanic_deep_count": land_oceanic_deep_count,
+		"ocean_continental_deep_count": ocean_continental_deep_count,
+		"ocean_oceanic_deep_count": ocean_oceanic_deep_count,
+		"ocean_continental_deep_ratio": float(ocean_continental_deep_count) \
+				/ maxf(float(ocean_count), 1.0),
+		"ocean_oceanic_deep_ratio": float(ocean_oceanic_deep_count) \
+				/ maxf(float(ocean_count), 1.0),
+		"surface_boundary_edges": surface_boundary_edges,
+		"deep_boundary_edges": deep_boundary_edges,
+		"coincident_boundary_edges": coincident_boundary_edges,
+		"deep_boundary_surface_coincidence_ratio": float(coincident_boundary_edges) \
+				/ maxf(float(deep_boundary_edges), 1.0),
 	}
 
 
@@ -370,7 +629,7 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Subsurface Strata: all 16 test groups passed")
+		print("Subsurface Strata: all dedicated test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:

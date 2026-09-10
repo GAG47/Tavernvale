@@ -92,6 +92,7 @@ var _arcane_resource_statistics := {}
 var _arcane_hazard_statistics := {}
 var _arcane_environment_diagnostics := {}
 var _arcane_forcing_diagnostics := {}
+var _deep_crust_noise: FastNoiseLite
 var _show_arcane_domains := false
 
 const _MARGIN := 24.0
@@ -173,6 +174,7 @@ enum ViewMode {
 	STRATA_TRANSECT_Y_25,
 	STRATA_TRANSECT_Y_50,
 	STRATA_TRANSECT_Y_75,
+	DEEP_SUBSTRATE,
 }
 
 const DEBUG_PAGE_NAMES := [
@@ -203,6 +205,7 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.STRATA_TRANSECT_Y_25,
 		ViewMode.STRATA_TRANSECT_Y_50,
 		ViewMode.STRATA_TRANSECT_Y_75,
+		ViewMode.DEEP_SUBSTRATE,
 	],
 	[
 		ViewMode.HYDROLOGY_CONDITIONING,
@@ -567,6 +570,9 @@ func _cell_color(cell_id: int) -> Color:
 			return _strata_slice_color(cell_id, -75.0)
 		ViewMode.STRATA_MATERIAL_Z_150:
 			return _strata_slice_color(cell_id, -150.0)
+		ViewMode.DEEP_SUBSTRATE:
+			return Color(0.68, 0.63, 0.54) \
+					if _is_cell_deep_continental(cell_id) else Color(0.30, 0.07, 0.08)
 		ViewMode.LAKE_EXTENT:
 			return _lake_extent_color(cell_id)
 		ViewMode.LAKE_DEPTH:
@@ -962,6 +968,27 @@ func _strata_slice_color(cell_id: int, z: float) -> Color:
 	return _material_color(material_id)
 
 
+func _deep_noise_for_cell(cell_id: int) -> float:
+	var position := graph.cell_centers[cell_id]
+	return _deep_crust_noise.get_noise_2d(position.x, position.y)
+
+
+func _deep_score_for_cell(cell_id: int) -> float:
+	return SubsurfaceStrataGenerator.deep_score_for(
+		composition.continental_value[cell_id],
+		_deep_noise_for_cell(cell_id),
+		subsurface_strata_settings
+	)
+
+
+func _is_cell_deep_continental(cell_id: int) -> bool:
+	return SubsurfaceStrataGenerator.is_continental_deep_substrate(
+		composition.continental_value[cell_id],
+		_deep_noise_for_cell(cell_id),
+		subsurface_strata_settings
+	)
+
+
 func _draw_strata_transect() -> void:
 	var fraction := _strata_transect_fraction()
 	var row := clampi(roundi(fraction * float(graph.rows - 1)), 0, graph.rows - 1)
@@ -1244,6 +1271,7 @@ func _regenerate_composition() -> void:
 		geology = null
 		terrain = null
 		subsurface_strata = null
+		_deep_crust_noise = null
 		hydrology = null
 		preliminary_flow = null
 		formal_hydrology = null
@@ -1299,8 +1327,14 @@ func _regenerate_composition() -> void:
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
 	subsurface_strata_settings = SubsurfaceStrataSettings.new()
+	var strata_base_seed := DeterministicRng.stable_mix(
+		seed, SubsurfaceStrataGenerator.STRATA_SEED_SALT
+	)
+	_deep_crust_noise = SubsurfaceStrataGenerator.make_deep_crust_noise(
+		strata_base_seed, subsurface_strata_settings
+	)
 	subsurface_strata = null if terrain == null else SubsurfaceStrataGenerator.generate(
-		graph, terrain, geology, seed, subsurface_strata_settings
+		graph, composition, terrain, geology, seed, subsurface_strata_settings
 	)
 	_subsurface_strata_generation_ms = Time.get_ticks_msec() - started
 	started = Time.get_ticks_msec()
@@ -1670,9 +1704,24 @@ func _append_cell_inspector_header(lines: PackedStringArray, cell_id: int) -> vo
 
 
 func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
+	lines.append(
+		"Surface: %s" % ("Land" if terrain.terrain_height[cell_id] >= 0.0 else "Water")
+	)
+	lines.append("Continental Value: %d" % composition.continental_value[cell_id])
 	lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[cell_id]))
+	lines.append("Surface Material: %s" % GeologyCatalog.material_name(
+		geology.material_id[cell_id]
+	))
 	lines.append("Surface Terrain z: %.3f" % terrain.terrain_height[cell_id])
 	var record_range := subsurface_strata.record_range_for_cell(cell_id)
+	lines.append("Terminal Material: %s" % GeologyCatalog.material_name(
+		subsurface_strata.material_ids[record_range.y - 1]
+	))
+	lines.append(
+		"Deep Substrate: %s"
+		% ("Continental" if _is_cell_deep_continental(cell_id) else "Oceanic")
+	)
+	lines.append("Deep Score: %.3f" % _deep_score_for_cell(cell_id))
 	lines.append("Layer Count: %d" % (record_range.y - record_range.x))
 	for record_index in range(record_range.x, record_range.y):
 		var local_index := record_index - record_range.x
@@ -2172,7 +2221,11 @@ func _append_subsurface_strata_statistics(lines: PackedStringArray) -> void:
 			lines.append("%d layers: %d Cells" % [layer_count, counts[layer_count]])
 	elif not _is_strata_transect_view():
 		lines.append("")
-		lines.append("Light blue = above ground / air")
+		if view_mode == ViewMode.DEEP_SUBSTRATE:
+			lines.append("Light gray / earth = Continental")
+			lines.append("Dark red = Oceanic")
+		else:
+			lines.append("Light blue = above terrain / non-rock")
 	else:
 		lines.append("")
 		lines.append("Horizontal: World x")
@@ -3404,6 +3457,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Strata Transect y=50%"
 		ViewMode.STRATA_TRANSECT_Y_75:
 			return "Strata Transect y=75%"
+		ViewMode.DEEP_SUBSTRATE:
+			return "Deep Substrate"
 		_:
 			return "Unknown"
 
@@ -3417,7 +3472,7 @@ func _is_geology_view() -> bool:
 
 func _is_strata_view() -> bool:
 	return view_mode >= ViewMode.STRATA_LAYER_COUNT \
-			and view_mode <= ViewMode.STRATA_TRANSECT_Y_75
+			and view_mode <= ViewMode.DEEP_SUBSTRATE
 
 
 func _is_strata_transect_view() -> bool:
