@@ -16,6 +16,7 @@ var projected_terrain: TerrainHeightLayer
 var geology: GeologyLayer
 var terrain: TerrainHeightLayer
 var subsurface_strata: SubsurfaceStrataLayer
+var groundwater: GroundwaterLayer
 var hydrology: HydrologyConditioningResult
 var preliminary_flow: HydrologyFlowResult
 var formal_hydrology: WorldHydrologyLayer
@@ -41,6 +42,7 @@ var ecology_settings: EcologySettings
 var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
 var subsurface_strata_settings: SubsurfaceStrataSettings
+var groundwater_settings: GroundwaterSettings
 var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
 var arcane_forcing_settings: ArcaneForcingSettings
@@ -58,6 +60,7 @@ var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _geology_generation_ms := 0
 var _subsurface_strata_generation_ms := 0
+var _groundwater_generation_ms := 0
 var _hydrology_conditioning_ms := 0
 var _preliminary_flow_generation_ms := 0
 var _formal_hydrology_generation_ms := 0
@@ -83,6 +86,7 @@ var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
 var _subsurface_strata_statistics := {}
+var _groundwater_statistics := {}
 var _surface_water_statistics := {}
 var _ecology_statistics := {}
 var _soil_statistics := {}
@@ -93,6 +97,8 @@ var _arcane_hazard_statistics := {}
 var _arcane_environment_diagnostics := {}
 var _arcane_forcing_diagnostics := {}
 var _deep_crust_noise: FastNoiseLite
+var _groundwater_recharge_diagnostics := {}
+var _groundwater_marine_influence := PackedFloat32Array()
 var _show_arcane_domains := false
 
 const _MARGIN := 24.0
@@ -102,6 +108,7 @@ enum DebugPage {
 	WORLD,
 	GEOLOGY,
 	SUBSURFACE_STRATA,
+	GROUNDWATER,
 	HYDROLOGY,
 	ECOLOGY_SOIL,
 	RESOURCES,
@@ -175,11 +182,16 @@ enum ViewMode {
 	STRATA_TRANSECT_Y_50,
 	STRATA_TRANSECT_Y_75,
 	DEEP_SUBSTRATE,
+	GROUNDWATER_SUPPLY,
+	WATER_TABLE_DEPTH,
+	GROUNDWATER_SALINITY,
+	AQUIFER_Z_25,
+	AQUIFER_Z_75,
 }
 
 const DEBUG_PAGE_NAMES := [
-	"World", "Geology", "Subsurface Strata", "Hydrology", "Ecology & Soil", "Resources", "Arcane",
-	"Arcane Resources"
+	"World", "Geology", "Subsurface Strata", "Groundwater", "Hydrology", "Ecology & Soil",
+	"Resources", "Arcane", "Arcane Resources"
 ]
 const DEBUG_PAGE_VIEWS := [
 	[
@@ -206,6 +218,13 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.STRATA_TRANSECT_Y_50,
 		ViewMode.STRATA_TRANSECT_Y_75,
 		ViewMode.DEEP_SUBSTRATE,
+	],
+	[
+		ViewMode.GROUNDWATER_SUPPLY,
+		ViewMode.WATER_TABLE_DEPTH,
+		ViewMode.GROUNDWATER_SALINITY,
+		ViewMode.AQUIFER_Z_25,
+		ViewMode.AQUIFER_Z_75,
 	],
 	[
 		ViewMode.HYDROLOGY_CONDITIONING,
@@ -327,6 +346,7 @@ func _draw() -> void:
 			or geology == null \
 			or terrain == null \
 			or subsurface_strata == null \
+			or groundwater == null \
 			or hydrology == null \
 			or preliminary_flow == null \
 			or formal_hydrology == null \
@@ -573,6 +593,16 @@ func _cell_color(cell_id: int) -> Color:
 		ViewMode.DEEP_SUBSTRATE:
 			return Color(0.68, 0.63, 0.54) \
 					if _is_cell_deep_continental(cell_id) else Color(0.30, 0.07, 0.08)
+		ViewMode.GROUNDWATER_SUPPLY:
+			return _groundwater_supply_color(cell_id)
+		ViewMode.WATER_TABLE_DEPTH:
+			return _water_table_depth_color(cell_id)
+		ViewMode.GROUNDWATER_SALINITY:
+			return _groundwater_salinity_color(cell_id)
+		ViewMode.AQUIFER_Z_25:
+			return _aquifer_class_color(cell_id, -25.0)
+		ViewMode.AQUIFER_Z_75:
+			return _aquifer_class_color(cell_id, -75.0)
 		ViewMode.LAKE_EXTENT:
 			return _lake_extent_color(cell_id)
 		ViewMode.LAKE_DEPTH:
@@ -968,6 +998,52 @@ func _strata_slice_color(cell_id: int, z: float) -> Color:
 	return _material_color(material_id)
 
 
+func _groundwater_supply_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.03, 0.15, 0.38)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.05, 0.42, 0.76)
+	var supply := clampf(groundwater.groundwater_supply[cell_id], 0.0, 1.0)
+	return Color(0.58, 0.34, 0.16).lerp(Color(0.10, 0.78, 0.72), supply)
+
+
+func _water_table_depth_color(cell_id: int) -> Color:
+	if terrain.terrain_height[cell_id] < 0.0:
+		return Color(0.03, 0.15, 0.38)
+	if surface_water.lake_id[cell_id] >= 0:
+		return Color(0.05, 0.42, 0.76)
+	var maximum_depth := groundwater.settings.max_water_table_depth \
+			+ groundwater.settings.highland_max_extra_depth
+	var normalized := clampf(
+		groundwater.water_table_depth(cell_id, terrain) / maximum_depth, 0.0, 1.0
+	)
+	return Color(0.20, 0.78, 0.84).lerp(Color(0.30, 0.12, 0.24), normalized)
+
+
+func _groundwater_salinity_color(cell_id: int) -> Color:
+	match groundwater.groundwater_salinity_class[cell_id]:
+		GroundwaterLayer.SalinityClass.FRESH:
+			return Color(0.10, 0.72, 0.90)
+		GroundwaterLayer.SalinityClass.BRACKISH:
+			return Color(0.94, 0.62, 0.10)
+		GroundwaterLayer.SalinityClass.SALINE:
+			return Color(0.76, 0.12, 0.42)
+	return Color.MAGENTA
+
+
+func _aquifer_class_color(cell_id: int, z: float) -> Color:
+	if subsurface_strata.material_at_z(cell_id, z) == SubsurfaceStrataLayer.NO_MATERIAL:
+		return Color(0.50, 0.72, 0.88)
+	match groundwater.aquifer_class_at_z(cell_id, z, subsurface_strata):
+		GroundwaterLayer.AquiferClass.NONE:
+			return Color(0.16, 0.17, 0.20)
+		GroundwaterLayer.AquiferClass.LIGHT:
+			return Color(0.20, 0.76, 0.88)
+		GroundwaterLayer.AquiferClass.HEAVY:
+			return Color(0.98, 0.76, 0.12)
+	return Color.MAGENTA
+
+
 func _deep_noise_for_cell(cell_id: int) -> float:
 	var position := graph.cell_centers[cell_id]
 	return _deep_crust_noise.get_noise_2d(position.x, position.y)
@@ -1271,6 +1347,9 @@ func _regenerate_composition() -> void:
 		geology = null
 		terrain = null
 		subsurface_strata = null
+		groundwater = null
+		_groundwater_recharge_diagnostics = {}
+		_groundwater_marine_influence = PackedFloat32Array()
 		_deep_crust_noise = null
 		hydrology = null
 		preliminary_flow = null
@@ -1359,6 +1438,22 @@ func _regenerate_composition() -> void:
 		surface_water_settings
 	)
 	_surface_water_generation_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	groundwater_settings = GroundwaterSettings.new()
+	groundwater = null if surface_water == null else GroundwaterGenerator.generate(
+		graph, terrain, climate, formal_hydrology, surface_water, groundwater_settings
+	)
+	_groundwater_generation_ms = Time.get_ticks_msec() - started
+	if groundwater != null:
+		_groundwater_recharge_diagnostics = GroundwaterGenerator.recharge_influence_fields(
+			graph, terrain, formal_hydrology, surface_water, groundwater_settings
+		)
+		_groundwater_marine_influence = GroundwaterGenerator.marine_influence_field(
+			graph, terrain, groundwater_settings
+		)
+	else:
+		_groundwater_recharge_diagnostics = {}
+		_groundwater_marine_influence = PackedFloat32Array()
 	started = Time.get_ticks_msec()
 	ecology_settings = EcologySettings.new()
 	ecology = null if surface_water == null else EcologyGenerator.generate(
@@ -1476,6 +1571,7 @@ func _regenerate_composition() -> void:
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	_geology_statistics = _calculate_geology_statistics()
 	_subsurface_strata_statistics = _calculate_subsurface_strata_statistics()
+	_groundwater_statistics = _calculate_groundwater_statistics()
 	_surface_water_statistics = _calculate_surface_water_statistics()
 	_ecology_statistics = _calculate_ecology_statistics()
 	_soil_statistics = _calculate_soil_statistics()
@@ -1528,7 +1624,9 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		_append_cell_inspector_header(lines, selected_cell_id)
-		if _is_strata_view():
+		if _is_groundwater_view():
+			_append_groundwater_cell_inspection(lines, selected_cell_id)
+		elif _is_strata_view():
 			_append_strata_cell_inspection(lines, selected_cell_id)
 		elif view_mode == ViewMode.TEMPERATURE_DELTA:
 			lines.append("Preliminary Temp: %.3f °C" % preliminary_climate.temperature[selected_cell_id])
@@ -1661,6 +1759,7 @@ func _draw_information() -> void:
 			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
+				and not _is_groundwater_view() \
 				and not _is_strata_view() \
 				and not _is_geology_view() \
 				and not _is_surface_water_view() \
@@ -1732,6 +1831,78 @@ func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> v
 		lines.append("  top_z %.3f | %s" % [
 			bounds.x, "terminal" if is_inf(bounds.y) else "bottom_z %.3f" % bounds.y
 		])
+
+
+func _append_groundwater_cell_inspection(
+		lines: PackedStringArray, cell_id: int
+) -> void:
+	var precipitation := climate.precipitation[cell_id]
+	var climate_supply := GroundwaterGenerator.climate_supply_for(
+		precipitation, groundwater.settings.precipitation_reference
+	)
+	var is_river := formal_hydrology.is_river(cell_id)
+	var is_lake := surface_water.lake_id[cell_id] >= 0
+	var river_influence: PackedFloat32Array = _groundwater_recharge_diagnostics.get(
+		"river", PackedFloat32Array()
+	)
+	var lake_influence: PackedFloat32Array = _groundwater_recharge_diagnostics.get(
+		"lake", PackedFloat32Array()
+	)
+	var river_value := river_influence[cell_id] if cell_id < river_influence.size() else 0.0
+	var lake_value := lake_influence[cell_id] if cell_id < lake_influence.size() else 0.0
+	var marine_influence := (
+		_groundwater_marine_influence[cell_id]
+		if cell_id < _groundwater_marine_influence.size() else 0.0
+	)
+	var salinity_pressure := GroundwaterGenerator.salinity_pressure_for(
+		marine_influence, groundwater.groundwater_supply[cell_id]
+	)
+	lines.append("Terrain Z: %.3f" % terrain.terrain_height[cell_id])
+	lines.append("Precipitation: %.3f" % precipitation)
+	lines.append("Climate Supply: %.4f" % climate_supply)
+	lines.append("River?: %s" % ("Yes" if is_river else "No"))
+	if is_river:
+		lines.append("River Strength: %.4f" % EcologyGenerator.river_strength_for(
+			formal_hydrology.flow_accumulation[cell_id],
+			formal_hydrology.settings.river_runoff_threshold
+		))
+	lines.append("River Influence: %.4f" % river_value)
+	lines.append("Lake?: %s" % ("Yes" if is_lake else "No"))
+	lines.append("Lake Influence: %.4f" % lake_value)
+	lines.append("Surface Water Influence: %.4f" % maxf(river_value, lake_value))
+	lines.append("Groundwater Supply: %.4f" % groundwater.groundwater_supply[cell_id])
+	lines.append("Water Table Z: %.3f" % groundwater.water_table_z[cell_id])
+	lines.append("Water Table Depth: %.3f" % groundwater.water_table_depth(cell_id, terrain))
+	lines.append("Groundwater Salinity: %s" % GroundwaterLayer.salinity_class_name(
+		groundwater.groundwater_salinity_class[cell_id]
+	))
+	lines.append("Marine Influence: %.4f" % marine_influence)
+	lines.append("Salinity Pressure: %.4f" % salinity_pressure)
+	if _is_aquifer_view():
+		var slice_z := _aquifer_slice_z()
+		var material := subsurface_strata.material_at_z(cell_id, slice_z)
+		var permeability := 0.0 if material == SubsurfaceStrataLayer.NO_MATERIAL \
+				else GeologyCatalog.permeability_for(material)
+		var aquifer_yield := groundwater.aquifer_yield_at_z(
+			cell_id, slice_z, subsurface_strata
+		)
+		lines.append("Slice Z: %.1f" % slice_z)
+		lines.append("Below Water Table?: %s" % (
+			"Yes" if groundwater.is_below_water_table_at_z(cell_id, slice_z) else "No"
+		))
+		lines.append("Active Groundwater: %.4f" % groundwater.active_groundwater_at_z(
+			cell_id, slice_z
+		))
+		lines.append("Material: %s" % (
+			"Non-rock / above terrain"
+			if material == SubsurfaceStrataLayer.NO_MATERIAL
+			else GeologyCatalog.material_name(material)
+		))
+		lines.append("Permeability: %.3f" % permeability)
+		lines.append("Aquifer Yield: %.4f" % aquifer_yield)
+		lines.append("Aquifer Class: %s" % GroundwaterLayer.aquifer_class_name(
+			groundwater.aquifer_class_at_z(cell_id, slice_z, subsurface_strata)
+		))
 
 
 func _append_arcane_ecology_cell_inspection(
@@ -1973,6 +2144,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 
 
 func _append_mode_statistics(lines: PackedStringArray) -> void:
+	if _is_groundwater_view():
+		_append_groundwater_statistics(lines)
+		return
 	if _is_strata_view():
 		_append_subsurface_strata_statistics(lines)
 		return
@@ -2230,6 +2404,52 @@ func _append_subsurface_strata_statistics(lines: PackedStringArray) -> void:
 		lines.append("")
 		lines.append("Horizontal: World x")
 		lines.append("Vertical: absolute z (-200 to surface)")
+
+
+func _append_groundwater_statistics(lines: PackedStringArray) -> void:
+	lines.append("Generation: %d ms" % _groundwater_generation_ms)
+	if _groundwater_statistics.is_empty():
+		lines.append("No Groundwater data")
+		return
+	match view_mode:
+		ViewMode.GROUNDWATER_SUPPLY:
+			lines.append("Land Only; fixed display [0, 1]")
+			_append_groundwater_continuous_statistics(
+				lines, _groundwater_statistics.land_supply
+			)
+			lines.append("Ocean: dark blue | Lake: blue")
+		ViewMode.WATER_TABLE_DEPTH:
+			lines.append("Land Only; Terrain Z - Water Table Z")
+			_append_groundwater_continuous_statistics(
+				lines, _groundwater_statistics.land_depth
+			)
+			lines.append("Ocean / Lake shown separately")
+		ViewMode.GROUNDWATER_SALINITY:
+			var counts: PackedInt32Array = _groundwater_statistics.world_salinity
+			lines.append("Fresh / Brackish / Saline:")
+			lines.append("  %d / %d / %d" % [counts[0], counts[1], counts[2]])
+			lines.append("Cyan / Amber / Magenta")
+		ViewMode.AQUIFER_Z_25, ViewMode.AQUIFER_Z_75:
+			var counts: PackedInt32Array = _groundwater_statistics.aquifer_25 \
+					if view_mode == ViewMode.AQUIFER_Z_25 \
+					else _groundwater_statistics.aquifer_75
+			lines.append("None / Light / Heavy:")
+			lines.append("  %d / %d / %d" % [counts[0], counts[1], counts[2]])
+			lines.append("Dark / Cyan / Gold")
+			lines.append("Light blue = above terrain / non-rock")
+
+
+func _append_groundwater_continuous_statistics(
+		lines: PackedStringArray, statistics: Dictionary
+) -> void:
+	lines.append("Min / Mean / P25 / P50:")
+	lines.append("  %.3f / %.3f / %.3f / %.3f" % [
+		statistics.min, statistics.mean, statistics.p25, statistics.p50,
+	])
+	lines.append("P75 / P90 / Max:")
+	lines.append("  %.3f / %.3f / %.3f" % [
+		statistics.p75, statistics.p90, statistics.max,
+	])
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -2518,6 +2738,40 @@ func _calculate_subsurface_strata_statistics() -> Dictionary:
 		"mean": total / maxf(float(layer_counts.size()), 1.0),
 		"p50": _percentile(sorted, 0.50),
 		"p95": _percentile(sorted, 0.95),
+	}
+
+
+func _calculate_groundwater_statistics() -> Dictionary:
+	if groundwater == null:
+		return {}
+	var land_supply := PackedFloat32Array()
+	var land_depth := PackedFloat32Array()
+	var world_salinity := PackedInt32Array([0, 0, 0])
+	var aquifer_25 := PackedInt32Array([0, 0, 0])
+	var aquifer_75 := PackedInt32Array([0, 0, 0])
+	for cell_id in graph.cell_count():
+		world_salinity[groundwater.groundwater_salinity_class[cell_id]] += 1
+		if terrain.terrain_height[cell_id] >= 0.0 and surface_water.lake_id[cell_id] < 0:
+			land_supply.append(groundwater.groundwater_supply[cell_id])
+			land_depth.append(groundwater.water_table_depth(cell_id, terrain))
+		aquifer_25[groundwater.aquifer_class_at_z(
+			cell_id, -25.0, subsurface_strata
+		)] += 1
+		aquifer_75[groundwater.aquifer_class_at_z(
+			cell_id, -75.0, subsurface_strata
+		)] += 1
+	var land_supply_statistics := _continuous_statistics(land_supply)
+	var land_depth_statistics := _continuous_statistics(land_depth)
+	land_supply.sort()
+	land_depth.sort()
+	land_supply_statistics["p90"] = _percentile(land_supply, 0.90)
+	land_depth_statistics["p90"] = _percentile(land_depth, 0.90)
+	return {
+		"land_supply": land_supply_statistics,
+		"land_depth": land_depth_statistics,
+		"world_salinity": world_salinity,
+		"aquifer_25": aquifer_25,
+		"aquifer_75": aquifer_75,
 	}
 
 
@@ -3459,6 +3713,16 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Strata Transect y=75%"
 		ViewMode.DEEP_SUBSTRATE:
 			return "Deep Substrate"
+		ViewMode.GROUNDWATER_SUPPLY:
+			return "Groundwater Supply"
+		ViewMode.WATER_TABLE_DEPTH:
+			return "Water Table Depth"
+		ViewMode.GROUNDWATER_SALINITY:
+			return "Groundwater Salinity"
+		ViewMode.AQUIFER_Z_25:
+			return "Aquifer Class z=-25"
+		ViewMode.AQUIFER_Z_75:
+			return "Aquifer Class z=-75"
 		_:
 			return "Unknown"
 
@@ -3478,6 +3742,19 @@ func _is_strata_view() -> bool:
 func _is_strata_transect_view() -> bool:
 	return view_mode >= ViewMode.STRATA_TRANSECT_Y_25 \
 			and view_mode <= ViewMode.STRATA_TRANSECT_Y_75
+
+
+func _is_groundwater_view() -> bool:
+	return view_mode >= ViewMode.GROUNDWATER_SUPPLY \
+			and view_mode <= ViewMode.AQUIFER_Z_75
+
+
+func _is_aquifer_view() -> bool:
+	return view_mode == ViewMode.AQUIFER_Z_25 or view_mode == ViewMode.AQUIFER_Z_75
+
+
+func _aquifer_slice_z() -> float:
+	return -25.0 if view_mode == ViewMode.AQUIFER_Z_25 else -75.0
 
 
 func _is_surface_water_view() -> bool:
