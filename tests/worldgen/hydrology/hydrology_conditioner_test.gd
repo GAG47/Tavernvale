@@ -87,7 +87,7 @@ func _test_same_blocked_valley_with_low_inflow_is_not_breached() -> void:
 		graph,
 		terrain,
 		_preliminary_flow(graph, terrain, 4999.0),
-		_geology(graph, terrain, GeologyCatalog.MaterialType.SHALE_MUDSTONE)
+		_geology(graph, terrain, RockCatalog.RockType.SHALE)
 	)
 	_expect(result != null, "low-inflow blocked valley should produce a conditioning result")
 	if result == null:
@@ -169,10 +169,10 @@ func _test_erodibility_selects_lower_cost_path() -> void:
 	var geology := _geology(
 		graph,
 		terrain,
-		GeologyCatalog.MaterialType.SANDSTONE,
+		RockCatalog.RockType.SANDSTONE,
 		{
-			1: GeologyCatalog.MaterialType.SHALE_MUDSTONE,
-			2: GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
+			1: RockCatalog.RockType.SHALE,
+			2: RockCatalog.RockType.GRANITE,
 		}
 	)
 	var result := HydrologyConditioner.condition(
@@ -200,7 +200,7 @@ func _test_low_inflow_still_blocks_soft_rock() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([5.0, 10.0, 4.0, -10.0])
 	var geology := _geology(
-		graph, terrain, GeologyCatalog.MaterialType.SHALE_MUDSTONE
+		graph, terrain, RockCatalog.RockType.SHALE
 	)
 	var result := HydrologyConditioner.condition(
 		graph, terrain, _preliminary_flow(graph, terrain, 4999.0), geology
@@ -219,7 +219,7 @@ func _test_high_resistance_can_exceed_cost_limit() -> void:
 	var graph := _line_graph(4)
 	var terrain := _terrain([5.0, 14.0, 4.0, -10.0])
 	var geology := _geology(
-		graph, terrain, GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
+		graph, terrain, RockCatalog.RockType.GRANITE
 	)
 	var result := HydrologyConditioner.condition(
 		graph, terrain, _preliminary_flow(graph, terrain, 6000.0), geology
@@ -351,25 +351,25 @@ func _preliminary_flow(
 func _geology(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
-		default_land_material: int = GeologyCatalog.MaterialType.SANDSTONE,
-		material_overrides: Dictionary = {}
+		default_land_rock: int = RockCatalog.RockType.SANDSTONE,
+		rock_overrides: Dictionary = {}
 ) -> GeologyLayer:
 	var geology := GeologyLayer.new()
 	geology.province_id.resize(graph.cell_count())
-	geology.material_id.resize(graph.cell_count())
+	geology.rock_type_id.resize(graph.cell_count())
 	geology.permeability.resize(graph.cell_count())
 	geology.erodibility.resize(graph.cell_count())
 	for cell_id in graph.cell_count():
 		var is_water := terrain.terrain_height[cell_id] < 0.0
 		geology.province_id[cell_id] = GeologyCatalog.Province.OCEANIC_CRUST \
 				if is_water else GeologyCatalog.Province.CRATON
-		var material: int = material_overrides.get(
+		var rock_type: int = rock_overrides.get(
 			cell_id,
-			GeologyCatalog.MaterialType.VOLCANIC_ROCK if is_water else default_land_material
+			RockCatalog.RockType.BASALT if is_water else default_land_rock
 		)
-		geology.material_id[cell_id] = material
-		geology.permeability[cell_id] = GeologyCatalog.permeability_for(material)
-		geology.erodibility[cell_id] = GeologyCatalog.erodibility_for(material)
+		geology.rock_type_id[cell_id] = rock_type
+		geology.permeability[cell_id] = RockCatalog.permeability_for(rock_type)
+		geology.erodibility[cell_id] = RockCatalog.erodibility_for(rock_type)
 	return geology
 
 

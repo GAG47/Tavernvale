@@ -23,17 +23,20 @@ static func validate(
 	if not settings_errors.is_empty():
 		errors.append_array(settings_errors)
 		return errors
+	var rules_errors := RockLayerRules.validate_rules()
+	if not rules_errors.is_empty():
+		errors.append_array(rules_errors)
+		return errors
 	var count := graph.cell_count()
-	var maximum_layers := actual_settings.max_layers
 	if strata.cell_offsets.size() != count + 1:
 		errors.append("cell_offsets size must equal Cell Count + 1")
 		return errors
 	if strata.cell_offsets[0] != 0:
 		errors.append("cell_offsets[0] must equal zero")
-	if strata.material_ids.size() != strata.top_z.size():
-		errors.append("material_ids and top_z must have equal sizes")
+	if strata.rock_type_ids.size() != strata.top_z.size():
+		errors.append("rock_type_ids and top_z must have equal sizes")
 		return errors
-	var record_count := strata.material_ids.size()
+	var record_count := strata.rock_type_ids.size()
 	var previous_offset := 0
 	for offset_index in strata.cell_offsets.size():
 		var offset := strata.cell_offsets[offset_index]
@@ -51,8 +54,14 @@ static func validate(
 			or composition.continental_value.size() != count \
 			or terrain.terrain_height.size() != count \
 			or geology.province_id.size() != count \
-			or geology.material_id.size() != count:
+			or geology.rock_type_id.size() != count:
 		errors.append("Spatial, World Composition, Final Terrain, and Geology arrays must match Cell Count")
+		return errors
+	var rock_region_seed_cells := RockRegionAssigner.assign_seed_cells(
+		graph, geology.province_id, world_seed
+	)
+	if rock_region_seed_cells.size() != count:
+		errors.append("Rock Region assignment failed")
 		return errors
 	var base_seed := DeterministicRng.stable_mix(
 		world_seed, SubsurfaceStrataGenerator.STRATA_SEED_SALT
@@ -60,51 +69,59 @@ static func validate(
 	var deep_crust_noise := SubsurfaceStrataGenerator.make_deep_crust_noise(
 		base_seed, actual_settings
 	)
-
+	var expected_by_region_and_substrate := {}
 	for cell_id in count:
 		var begin := strata.cell_offsets[cell_id]
 		var end := strata.cell_offsets[cell_id + 1]
-		var layer_count := end - begin
-		if layer_count < 1 or layer_count > 4 or layer_count > maximum_layers:
-			errors.append("Cell %d layer count must be inside [1, max_layers]" % cell_id)
+		if end <= begin:
+			errors.append("Cell %d must contain at least one Rock layer" % cell_id)
 			continue
-		if strata.material_ids[begin] != geology.material_id[cell_id]:
-			errors.append("Cell %d first Material must match Geology" % cell_id)
+		if strata.rock_type_ids[begin] != geology.rock_type_id[cell_id]:
+			errors.append("Cell %d first RockType must match Geology" % cell_id)
 		if not is_equal_approx(strata.top_z[begin], terrain.terrain_height[cell_id]):
 			errors.append("Cell %d first top_z must match Final Terrain" % cell_id)
+		for record_index in range(begin, end):
+			var rock_type := strata.rock_type_ids[record_index]
+			var layer_top_z := strata.top_z[record_index]
+			if not RockCatalog.is_valid_rock_type(rock_type):
+				errors.append("rock_type_ids[%d] is invalid" % record_index)
+			if not is_finite(layer_top_z):
+				errors.append("top_z[%d] must be finite" % record_index)
+			if record_index + 1 < end:
+				if strata.top_z[record_index + 1] >= layer_top_z:
+					errors.append("Cell %d top_z must strictly descend" % cell_id)
+				if strata.rock_type_ids[record_index + 1] == rock_type:
+					errors.append("Cell %d adjacent RockTypes must differ" % cell_id)
 		var position := graph.cell_centers[cell_id]
 		var is_deep_continental := SubsurfaceStrataGenerator.is_continental_deep_substrate(
 			composition.continental_value[cell_id],
 			deep_crust_noise.get_noise_2d(position.x, position.y),
 			actual_settings
 		)
-		for record_index in range(begin, end):
-			var material_id := strata.material_ids[record_index]
-			var layer_top_z := strata.top_z[record_index]
-			if material_id < 0 or material_id >= GeologyCatalog.MATERIAL_COUNT:
-				errors.append("material_ids[%d] is invalid" % record_index)
-			if not is_finite(layer_top_z):
-				errors.append("top_z[%d] must be finite" % record_index)
-			if record_index + 1 < end:
-				if strata.top_z[record_index + 1] >= layer_top_z:
-					errors.append("Cell %d top_z must strictly descend" % cell_id)
-				if strata.material_ids[record_index + 1] == material_id:
-					errors.append("Cell %d adjacent Materials must differ" % cell_id)
-				if not SubsurfaceStrataGenerator.transition_is_allowed(
-					geology.province_id[cell_id],
-					material_id,
-					strata.material_ids[record_index + 1],
-					record_index - begin,
-					is_deep_continental
-				):
-					errors.append(
-					"Cell %d layer %d transition is not allowed for its Province"
-					% [cell_id, record_index - begin]
-				)
-		var expected_terminal := GeologyCatalog.MaterialType.CRYSTALLINE_ROCK
-		if geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST \
-				and not is_deep_continental:
-			expected_terminal = GeologyCatalog.MaterialType.VOLCANIC_ROCK
-		if strata.material_ids[end - 1] != expected_terminal:
-			errors.append("Cell %d has the wrong terminal Material" % cell_id)
+		var region_seed_cell_id := rock_region_seed_cells[cell_id]
+		var expected_key := "%d:%d" % [region_seed_cell_id, int(is_deep_continental)]
+		if not expected_by_region_and_substrate.has(expected_key):
+			var expected := RockLayerRules.sequence_for(
+				geology.province_id[cell_id], world_seed, region_seed_cell_id
+			)
+			expected.append(RockLayerRules.basement_for(
+				is_deep_continental, world_seed, region_seed_cell_id
+			))
+			expected_by_region_and_substrate[expected_key] = _normalized_sequence(expected)
+		var expected_sequence: PackedInt32Array = expected_by_region_and_substrate[expected_key]
+		if end - begin != expected_sequence.size():
+			errors.append("Cell %d stored Rock sequence has the wrong length" % cell_id)
+			continue
+		for local_index in expected_sequence.size():
+			if strata.rock_type_ids[begin + local_index] != expected_sequence[local_index]:
+				errors.append("Cell %d stored Rock sequence does not match its Rock Region" % cell_id)
+				break
 	return errors
+
+
+static func _normalized_sequence(sequence: PackedInt32Array) -> PackedInt32Array:
+	var result := PackedInt32Array()
+	for rock_type in sequence:
+		if result.is_empty() or result[-1] != rock_type:
+			result.append(rock_type)
+	return result

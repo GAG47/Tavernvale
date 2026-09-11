@@ -80,7 +80,7 @@ func _test_energy_exact_formula() -> void:
 
 func _test_material_exact_formula() -> void:
 	var province := GeologyCatalog.Province.OROGENIC_BELT
-	var material := GeologyCatalog.MaterialType.VOLCANIC_ROCK
+	var material := RockCatalog.RockType.BASALT
 	var geological_host := sqrt(1.0 * 0.9)
 	var expected := sqrt(0.64) * (0.60 + 0.40 * geological_host)
 	var none_value := ArcaneResourcePotentialGenerator.arcane_material_potential_for(
@@ -110,7 +110,7 @@ func _test_material_exact_formula() -> void:
 	)
 	var weak_geology := ArcaneResourcePotentialGenerator.arcane_material_potential_for(
 		0.64, GeologyCatalog.Province.OCEANIC_CRUST,
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
+		RockCatalog.RockType.SANDSTONE,
 		ArcaneEcologyLayer.ManifestationType.NONE
 	)
 	_expect(strong_geology > weak_geology and weak_geology > 0.0,
@@ -130,23 +130,20 @@ func _test_geology_factor_tables() -> void:
 		_expect(ArcaneResourcePotentialGenerator.arcane_material_province_factor_for(
 			province_id
 		) == province_factors[province_id], "Province factor should match the formal table")
-	var material_factors := {
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK: 0.90,
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK: 0.85,
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK: 0.75,
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE: 0.45,
-		GeologyCatalog.MaterialType.CARBONATE_ROCK: 0.35,
-		GeologyCatalog.MaterialType.SANDSTONE: 0.25,
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK: 0.20,
+	var rock_factors := {
+		RockCatalog.RockType.BASALT: 0.90,
+		RockCatalog.RockType.SCHIST: 0.85,
+		RockCatalog.RockType.GRANITE: 0.75,
+		RockCatalog.RockType.SANDSTONE: 0.30,
 	}
-	for material_id in material_factors:
-		_expect(ArcaneResourcePotentialGenerator.arcane_material_material_factor_for(
-			material_id
-		) == material_factors[material_id], "Material factor should match the formal table")
+	for rock_type in rock_factors:
+		_expect(ArcaneResourcePotentialGenerator.arcane_material_rock_factor_for(
+			rock_type
+		) == rock_factors[rock_type], "RockCategory factor should match the formal table")
 	_expect(ArcaneResourcePotentialGenerator.arcane_material_province_factor_for(99) == 0.0,
 		"Unknown Province should have zero factor")
-	_expect(ArcaneResourcePotentialGenerator.arcane_material_material_factor_for(99) == 0.0,
-		"Unknown Material should have zero factor")
+	_expect(ArcaneResourcePotentialGenerator.arcane_material_rock_factor_for(99) == 0.0,
+		"Unknown RockType should have zero factor")
 
 
 func _test_bioresource_exact_formula() -> void:
@@ -313,16 +310,16 @@ func _fixture() -> Dictionary:
 		GeologyCatalog.Province.PASSIVE_MARGIN,
 		GeologyCatalog.Province.OCEANIC_CRUST,
 	])
-	geology.material_id = PackedInt32Array([
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK,
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK,
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE,
-		GeologyCatalog.MaterialType.SANDSTONE,
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
+	geology.rock_type_id = PackedInt32Array([
+		RockCatalog.RockType.BASALT,
+		RockCatalog.RockType.SCHIST,
+		RockCatalog.RockType.GRANITE,
+		RockCatalog.RockType.SHALE,
+		RockCatalog.RockType.SANDSTONE,
+		RockCatalog.RockType.GABBRO,
 	])
-	geology.permeability = PackedFloat32Array([0.4, 0.12, 0.15, 0.12, 0.65, 0.45])
-	geology.erodibility = PackedFloat32Array([0.3, 0.18, 0.15, 0.75, 0.55, 0.6])
+	geology.permeability = PackedFloat32Array([0.45, 0.12, 0.12, 0.04, 0.60, 0.10])
+	geology.erodibility = PackedFloat32Array([0.20, 0.34, 0.18, 0.82, 0.55, 0.20])
 	var ecology := EcologyLayer.new()
 	ecology.vegetation_potential = PackedFloat32Array([0.81, 0.16, 0.0, 1.0, 0.25, 0.0])
 	var resources := ResourcePotentialLayer.new()
@@ -357,7 +354,7 @@ func _formal_input_hash(fixture: Dictionary) -> int:
 	return hash([
 		fixture.graph.cell_centers,
 		fixture.geology.province_id,
-		fixture.geology.material_id,
+		fixture.geology.rock_type_id,
 		fixture.geology.permeability,
 		fixture.geology.erodibility,
 		fixture.ecology.vegetation_potential,

@@ -107,25 +107,37 @@ func _test_biome_resources() -> void:
 
 
 func _test_geology_resources() -> void:
-	var crystalline := ResourcePotentialGenerator.construction_stone_potential_for(
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK, 0.1
+	var granite := ResourcePotentialGenerator.construction_stone_potential_for(
+		RockCatalog.RockType.GRANITE, 0.1
 	)
 	var shale := ResourcePotentialGenerator.construction_stone_potential_for(
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE, 0.1
+		RockCatalog.RockType.SHALE, 0.1
 	)
-	_expect(crystalline > shale, "Crystalline Rock should outrank Shale for Construction Stone")
-	var deep_crystalline := ResourcePotentialGenerator.construction_stone_potential_for(
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK, 1.0
+	_expect(granite > shale, "Granite strength should outrank Shale for Construction Stone")
+	_expect(is_equal_approx(granite, RockCatalog.rock_strength_for(
+		RockCatalog.RockType.GRANITE
+	) * 0.975), "Construction Stone must use RockCatalog strength and exposure")
+	var deep_granite := ResourcePotentialGenerator.construction_stone_potential_for(
+		RockCatalog.RockType.GRANITE, 1.0
 	)
-	_expect(deep_crystalline > 0.0 and deep_crystalline < crystalline,
+	_expect(deep_granite > 0.0 and deep_granite < granite,
 		"Soil Depth should only mildly reduce Construction Stone Potential")
 	var high_host := ResourcePotentialGenerator.base_metal_host_for(
-		GeologyCatalog.Province.OROGENIC_BELT, GeologyCatalog.MaterialType.VOLCANIC_ROCK
+		GeologyCatalog.Province.OROGENIC_BELT, RockCatalog.RockType.BASALT
 	)
 	var low_host := ResourcePotentialGenerator.base_metal_host_for(
-		GeologyCatalog.Province.PASSIVE_MARGIN, GeologyCatalog.MaterialType.SANDSTONE
+		GeologyCatalog.Province.PASSIVE_MARGIN, RockCatalog.RockType.SANDSTONE
 	)
-	_expect(high_host > low_host, "Favorable province/material should raise Base Metal host suitability")
+	_expect(high_host > low_host, "Favorable Province/Rock category should raise Base Metal host suitability")
+	var category_examples := {
+		RockCatalog.RockType.BASALT: [0.90, 0.90],
+		RockCatalog.RockType.SCHIST: [0.85, 1.00],
+		RockCatalog.RockType.GRANITE: [0.75, 0.80],
+		RockCatalog.RockType.SANDSTONE: [0.30, 0.25],
+	}
+	for rock_type in category_examples:
+		_expect(ResourcePotentialGenerator.base_metal_rock_factor_for(rock_type) == category_examples[rock_type][0], "Base Metal RockCategory factor must match the fixed mapping")
+		_expect(ResourcePotentialGenerator.precious_rock_factor_for(rock_type) == category_examples[rock_type][1], "Precious RockCategory factor must match the fixed mapping")
 
 
 func _test_mineral_channels() -> void:
@@ -292,13 +304,13 @@ func _fixture() -> Dictionary:
 		GeologyCatalog.Province.CRATON, GeologyCatalog.Province.SEDIMENTARY_BASIN,
 		GeologyCatalog.Province.PASSIVE_MARGIN, GeologyCatalog.Province.OCEANIC_CRUST,
 	])
-	geology.material_id = PackedInt32Array([
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK,
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE,
-		GeologyCatalog.MaterialType.SANDSTONE,
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
+	geology.rock_type_id = PackedInt32Array([
+		RockCatalog.RockType.BASALT,
+		RockCatalog.RockType.ANDESITE,
+		RockCatalog.RockType.GRANITE,
+		RockCatalog.RockType.SHALE,
+		RockCatalog.RockType.SANDSTONE,
+		RockCatalog.RockType.GABBRO,
 	])
 	var surface_water := SurfaceWaterLayer.new()
 	surface_water.lake_id = PackedInt32Array([-1, -1, -1, 0, -1, -1])

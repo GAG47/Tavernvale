@@ -36,10 +36,10 @@ func _test_steep_land_has_thinner_soil_than_flat_land() -> void:
 	var result := _make_case(
 		PackedFloat32Array([10.0, 0.0, 10.0, 9.9]),
 		PackedInt32Array([
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
+			RockCatalog.RockType.GRANITE,
+			RockCatalog.RockType.GRANITE,
+			RockCatalog.RockType.GRANITE,
+			RockCatalog.RockType.GRANITE,
 		]),
 		PackedFloat32Array([0.5, 0.5, 0.5, 0.5]),
 		PackedFloat32Array([15.0, 15.0, 15.0, 15.0]),
@@ -72,10 +72,10 @@ func _test_valley_has_deeper_soil_than_ridge() -> void:
 
 func _test_parent_material_texture_semantics() -> void:
 	var sandstone_fineness := SoilGenerator.texture_fineness_for(
-		SoilCatalog.parent_fineness_for(GeologyCatalog.MaterialType.SANDSTONE), 0.0, 0.0
+		SoilCatalog.parent_fineness_for(RockCatalog.RockType.SANDSTONE), 0.0, 0.0
 	)
 	var shale_fineness := SoilGenerator.texture_fineness_for(
-		SoilCatalog.parent_fineness_for(GeologyCatalog.MaterialType.SHALE_MUDSTONE), 0.0, 0.0
+		SoilCatalog.parent_fineness_for(RockCatalog.RockType.SHALE), 0.0, 0.0
 	)
 	_expect(
 		SoilGenerator.texture_for_fineness(sandstone_fineness) == SoilCatalog.TextureType.SANDY,
@@ -118,10 +118,10 @@ func _test_special_surfaces_have_no_soil_and_wetland_does() -> void:
 	var result := _make_case(
 		PackedFloat32Array([-5.0, 5.0, 50.0, 5.0]),
 		PackedInt32Array([
-			GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
-			GeologyCatalog.MaterialType.SHALE_MUDSTONE,
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-			GeologyCatalog.MaterialType.SHALE_MUDSTONE,
+			RockCatalog.RockType.SANDSTONE,
+			RockCatalog.RockType.SHALE,
+			RockCatalog.RockType.GRANITE,
+			RockCatalog.RockType.SHALE,
 		]),
 		PackedFloat32Array([0.6, 0.75, 0.15, 0.75]),
 		PackedFloat32Array([20.0, 20.0, -20.0, 18.0]),
@@ -164,7 +164,7 @@ func _test_arrays_ranges_validation_and_input_preservation() -> void:
 	_expect(result.terrain.terrain_height == result.terrain_before, "Soil must not modify Final Terrain")
 	_expect(result.climate.temperature == result.temperature_before, "Soil must not modify Final Climate")
 	_expect(result.hydrology.flow_accumulation == result.accumulation_before, "Soil must not modify Formal Hydrology")
-	_expect(result.geology.material_id == result.material_before, "Soil must not modify Geology")
+	_expect(result.geology.rock_type_id == result.rock_types_before, "Soil must not modify Geology")
 	_expect(result.surface_water.lake_id == result.lake_before, "Soil must not modify Surface Water")
 	_expect(result.ecology.biome_id == result.biome_before, "Soil must not modify Ecology")
 
@@ -173,12 +173,12 @@ func _mixed_case() -> Dictionary:
 	return _make_case(
 		PackedFloat32Array([-5.0, 0.0, 2.0, 8.0, 20.0, 5.0]),
 		PackedInt32Array([
-			GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK,
-			GeologyCatalog.MaterialType.CRYSTALLINE_ROCK,
-			GeologyCatalog.MaterialType.SANDSTONE,
-			GeologyCatalog.MaterialType.SHALE_MUDSTONE,
-			GeologyCatalog.MaterialType.VOLCANIC_ROCK,
-			GeologyCatalog.MaterialType.CARBONATE_ROCK,
+			RockCatalog.RockType.SANDSTONE,
+			RockCatalog.RockType.GRANITE,
+			RockCatalog.RockType.SANDSTONE,
+			RockCatalog.RockType.SHALE,
+			RockCatalog.RockType.BASALT,
+			RockCatalog.RockType.LIMESTONE,
 		]),
 		PackedFloat32Array([0.6, 0.15, 0.55, 0.75, 0.3, 0.45]),
 		PackedFloat32Array([20.0, -10.0, 5.0, 15.0, 30.0, 12.0]),
@@ -200,9 +200,9 @@ func _mixed_case() -> Dictionary:
 
 func _make_uniform_case(heights: PackedFloat32Array) -> Dictionary:
 	var count := heights.size()
-	var materials := PackedInt32Array()
-	materials.resize(count)
-	materials.fill(GeologyCatalog.MaterialType.CRYSTALLINE_ROCK)
+	var rock_types := PackedInt32Array()
+	rock_types.resize(count)
+	rock_types.fill(RockCatalog.RockType.GRANITE)
 	var erodibility := PackedFloat32Array()
 	erodibility.resize(count)
 	erodibility.fill(0.5)
@@ -227,14 +227,14 @@ func _make_uniform_case(heights: PackedFloat32Array) -> Dictionary:
 	biomes.resize(count)
 	biomes.fill(EcologyCatalog.Biome.GRASSLAND)
 	return _make_case(
-		heights, materials, erodibility, temperature, precipitation, flow,
+		heights, rock_types, erodibility, temperature, precipitation, flow,
 		drainage, moisture, vegetation, biomes
 	)
 
 
 func _make_case(
 		heights: PackedFloat32Array,
-		materials: PackedInt32Array,
+		rock_types: PackedInt32Array,
 		erodibility: PackedFloat32Array,
 		temperature: PackedFloat32Array,
 		precipitation: PackedFloat32Array,
@@ -256,7 +256,7 @@ func _make_case(
 	hydrology.settings = WorldHydrologySettings.new()
 	hydrology.flow_accumulation = flow_accumulation
 	var geology := GeologyLayer.new()
-	geology.material_id = materials
+	geology.rock_type_id = rock_types
 	geology.erodibility = erodibility
 	var surface_water := SurfaceWaterLayer.new()
 	if lake_id.is_empty():
@@ -272,7 +272,7 @@ func _make_case(
 	var terrain_before := heights.duplicate()
 	var temperature_before := temperature.duplicate()
 	var accumulation_before := flow_accumulation.duplicate()
-	var material_before := materials.duplicate()
+	var rock_types_before := rock_types.duplicate()
 	var lake_before := lake_id.duplicate()
 	var biome_before := biomes.duplicate()
 	var layer := SoilGenerator.generate(
@@ -289,7 +289,7 @@ func _make_case(
 		"terrain_before": terrain_before,
 		"temperature_before": temperature_before,
 		"accumulation_before": accumulation_before,
-		"material_before": material_before,
+		"rock_types_before": rock_types_before,
 		"lake_before": lake_before,
 		"biome_before": biome_before,
 		"layer": layer,

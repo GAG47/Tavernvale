@@ -2,9 +2,7 @@ class_name GeologyGenerator
 extends RefCounted
 
 const PROVINCE_TARGET_CELLS_PER_SEED := 800
-const MATERIAL_TARGET_CELLS_PER_SEED := 180
 const MAX_PROVINCE_SEEDS_PER_COMPONENT := 32
-const MAX_MATERIAL_SEEDS_PER_COMPONENT := 96
 const PROVINCE_BASE_PRIOR := [0.0, 0.30, 0.25, 0.25, 0.15, 0.05]
 
 const _MASK := 0x7fffffff
@@ -14,12 +12,16 @@ const _GEOLOGY_SALT := 0x47454f4c # "GEOL"
 static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> GeologyLayer:
 	if not _inputs_are_valid(graph, terrain):
 		return null
+	var rules_errors := RockLayerRules.validate_rules()
+	if not rules_errors.is_empty():
+		push_error("Invalid Rock Layer rules: " + "; ".join(rules_errors))
+		return null
 	var geology := GeologyLayer.new()
 	var count := graph.cell_count()
 	geology.province_id.resize(count)
 	geology.province_id.fill(-1)
-	geology.material_id.resize(count)
-	geology.material_id.fill(-1)
+	geology.rock_type_id.resize(count)
+	geology.rock_type_id.fill(-1)
 	geology.permeability.resize(count)
 	geology.erodibility.resize(count)
 	for cell_id in count:
@@ -43,13 +45,24 @@ static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> Geolog
 			geology.province_id
 		)
 
-	_assign_material_patches(graph, geology.province_id, seed, geology.material_id)
+	var rock_region_seed_cells := RockRegionAssigner.assign_seed_cells(
+		graph, geology.province_id, graph.config.seed
+	)
+	if rock_region_seed_cells.size() != count:
+		return null
+	var surface_rock_by_region := {}
 	for cell_id in count:
-		geology.permeability[cell_id] = GeologyCatalog.permeability_for(
-			geology.material_id[cell_id]
+		var region_seed_cell_id := rock_region_seed_cells[cell_id]
+		if not surface_rock_by_region.has(region_seed_cell_id):
+			surface_rock_by_region[region_seed_cell_id] = RockLayerRules.surface_rock_for(
+				geology.province_id[cell_id], graph.config.seed, region_seed_cell_id
+			)
+		geology.rock_type_id[cell_id] = surface_rock_by_region[region_seed_cell_id]
+		geology.permeability[cell_id] = RockCatalog.permeability_for(
+			geology.rock_type_id[cell_id]
 		)
-		geology.erodibility[cell_id] = GeologyCatalog.erodibility_for(
-			geology.material_id[cell_id]
+		geology.erodibility[cell_id] = RockCatalog.erodibility_for(
+			geology.rock_type_id[cell_id]
 		)
 	var validation_errors := GeologyValidator.validate(graph, terrain, geology)
 	if not validation_errors.is_empty():
@@ -485,158 +498,6 @@ static func _expand_regions(
 			)
 			var next_cost := cost + distances[neighbor_index] / distance_scale \
 					* suitability_cost * variation
-			if next_cost < float(best_cost.get(neighbor_id, INF)):
-				best_cost[neighbor_id] = next_cost
-				output[neighbor_id] = value
-				_heap_push(heap, [next_cost, serial, neighbor_id, value])
-				serial += 1
-
-
-static func _assign_material_patches(
-		graph: SpatialGraph,
-		province_id: PackedInt32Array,
-		seed: int,
-		material_id: PackedInt32Array
-) -> void:
-	var components := _components_by_value(graph, province_id)
-	var patch_serial := 0
-	for component_id in components.components.size():
-		var cells: PackedInt32Array = components.components[component_id]
-		var province := province_id[cells[0]]
-		var patch_count := clampi(
-			ceili(float(cells.size()) / float(MATERIAL_TARGET_CELLS_PER_SEED)),
-			1,
-			mini(MAX_MATERIAL_SEEDS_PER_COMPONENT, cells.size())
-		)
-		var seeds: Array = []
-		var nearest_distance_squared := {}
-		for patch_index in patch_count:
-			var cell_id := _choose_material_seed(
-				graph,
-				cells,
-				nearest_distance_squared,
-				patch_index == 0,
-				seed,
-				component_id * 137 + patch_index
-			)
-			var material := _weighted_material(
-				province, _unit_noise(seed, patch_serial, province * 977 + 53)
-			)
-			seeds.append({"cell_id": cell_id, "value": material})
-			for candidate_id in cells:
-				var distance_squared := graph.cell_centers[candidate_id].distance_squared_to(
-					graph.cell_centers[cell_id]
-				)
-				nearest_distance_squared[candidate_id] = minf(
-					distance_squared,
-					float(nearest_distance_squared.get(candidate_id, INF))
-				)
-			patch_serial += 1
-		_expand_material_component(
-			graph,
-			seeds,
-			component_id,
-			components.component_by_cell,
-			seed,
-			material_id
-		)
-
-
-static func _components_by_value(
-		graph: SpatialGraph,
-		values: PackedInt32Array
-) -> Dictionary:
-	var component_by_cell := PackedInt32Array()
-	component_by_cell.resize(graph.cell_count())
-	component_by_cell.fill(-1)
-	var components: Array = []
-	for seed_id in graph.cell_count():
-		if component_by_cell[seed_id] >= 0:
-			continue
-		var component_id := components.size()
-		var cells := PackedInt32Array([seed_id])
-		component_by_cell[seed_id] = component_id
-		var queue_index := 0
-		while queue_index < cells.size():
-			var cell_id := cells[queue_index]
-			queue_index += 1
-			for neighbor_id in graph.cell_neighbors[cell_id]:
-				if component_by_cell[neighbor_id] < 0 and values[neighbor_id] == values[seed_id]:
-					component_by_cell[neighbor_id] = component_id
-					cells.append(neighbor_id)
-		components.append(cells)
-	return {"components": components, "component_by_cell": component_by_cell}
-
-
-static func _choose_material_seed(
-		graph: SpatialGraph,
-		cells: PackedInt32Array,
-		nearest_distance_squared: Dictionary,
-		first_seed: bool,
-		seed: int,
-		salt: int
-) -> int:
-	var best_cell := cells[0]
-	var best_score := -INF
-	for cell_id in cells:
-		var minimum_distance := float(nearest_distance_squared.get(cell_id, INF))
-		if minimum_distance <= 0.0:
-			continue
-		var score: float = _unit_noise(seed, cell_id, salt) if first_seed \
-				else minimum_distance * (0.92 + _unit_noise(seed, cell_id, salt) * 0.16)
-		if score > best_score or (is_equal_approx(score, best_score) and cell_id < best_cell):
-			best_score = score
-			best_cell = cell_id
-	return best_cell
-
-
-static func _weighted_material(province: int, random_value: float) -> int:
-	var weights := GeologyCatalog.material_weights(province)
-	var cumulative := 0.0
-	for material in weights.size():
-		cumulative += weights[material]
-		if random_value <= cumulative:
-			return material
-	return weights.size() - 1
-
-
-static func _expand_material_component(
-		graph: SpatialGraph,
-		seeds: Array,
-		component_id: int,
-		component_by_cell: PackedInt32Array,
-		seed: int,
-		output: PackedInt32Array
-) -> void:
-	var best_cost := {}
-	var heap: Array = []
-	var serial := 0
-	for patch_seed in seeds:
-		var cell_id: int = patch_seed.cell_id
-		best_cost[cell_id] = 0.0
-		output[cell_id] = patch_seed.value
-		_heap_push(heap, [0.0, serial, cell_id, patch_seed.value])
-		serial += 1
-	var distance_scale := _distance_scale(graph)
-	while not heap.is_empty():
-		var entry: Array = _heap_pop(heap)
-		var cost: float = entry[0]
-		var cell_id: int = entry[2]
-		var value: int = entry[3]
-		if cost > float(best_cost[cell_id]) or output[cell_id] != value:
-			continue
-		var neighbors: PackedInt32Array = graph.cell_neighbors[cell_id]
-		var distances: PackedFloat64Array = graph.cell_neighbor_distances[cell_id]
-		for neighbor_index in neighbors.size():
-			var neighbor_id := neighbors[neighbor_index]
-			if component_by_cell[neighbor_id] != component_id:
-				continue
-			var variation := lerpf(
-				0.90,
-				1.10,
-				_unit_noise(seed, mini(cell_id, neighbor_id), maxi(cell_id, neighbor_id) + value * 193)
-			)
-			var next_cost := cost + distances[neighbor_index] / distance_scale * variation
 			if next_cost < float(best_cost.get(neighbor_id, INF)):
 				best_cost[neighbor_id] = next_cost
 				output[neighbor_id] = value

@@ -14,6 +14,7 @@ func _run_all() -> void:
 	_test_marine_distance_and_salinity()
 	_test_special_cases_and_water_table()
 	_test_active_groundwater_and_aquifer()
+	_test_surface_relative_aquifer_query()
 	_test_validator_rejections()
 	_test_determinism_and_mutation()
 	var standard := _standard_world_fixture()
@@ -136,23 +137,23 @@ func _test_active_groundwater_and_aquifer() -> void:
 	_expect(groundwater.is_below_water_table_at_z(0, 20.0), "Water Table boundary must count as below Water Table")
 	_expect(not groundwater.is_below_water_table_at_z(0, 20.001), "z above Water Table must not count as below")
 
-	var strata := _single_material_strata(GeologyCatalog.MaterialType.SANDSTONE, 60.0)
-	groundwater.groundwater_supply[0] = 0.70
+	var strata := _single_rock_strata(RockCatalog.RockType.SANDSTONE, 60.0)
+	groundwater.groundwater_supply[0] = 0.80
 	groundwater.water_table_z[0] = 21.0
-	_expect(is_equal_approx(groundwater.aquifer_yield_at_z(0, 21.0, strata), 0.455), "Sandstone Aquifer Yield must use Material permeability")
-	_expect(groundwater.aquifer_class_at_z(0, 21.0, strata) == GroundwaterLayer.AquiferClass.HEAVY, "0.455 Sandstone yield must be Heavy")
-	strata.material_ids[0] = GeologyCatalog.MaterialType.SHALE_MUDSTONE
-	_expect(is_equal_approx(groundwater.aquifer_yield_at_z(0, 21.0, strata), 0.084), "Shale yield must use 0.12 permeability")
+	_expect(is_equal_approx(groundwater.aquifer_yield_at_z(0, 21.0, strata), 0.48), "Sandstone Aquifer Yield must use RockCatalog permeability")
+	_expect(groundwater.aquifer_class_at_z(0, 21.0, strata) == GroundwaterLayer.AquiferClass.HEAVY, "0.48 Sandstone yield must be Heavy")
+	strata.rock_type_ids[0] = RockCatalog.RockType.SHALE
+	_expect(is_equal_approx(groundwater.aquifer_yield_at_z(0, 21.0, strata), 0.032), "Shale yield must use fixed 0.04 permeability")
 	_expect(groundwater.aquifer_class_at_z(0, 21.0, strata) == GroundwaterLayer.AquiferClass.NONE, "Shale example must not form an Aquifer")
 
-	strata.material_ids[0] = GeologyCatalog.MaterialType.SANDSTONE
+	strata.rock_type_ids[0] = RockCatalog.RockType.SANDSTONE
 	groundwater.groundwater_supply[0] = 1.0
 	groundwater.water_table_z[0] = 0.0
 	_expect(groundwater.aquifer_class_at_z(0, 0.0, strata) == GroundwaterLayer.AquiferClass.HEAVY, "Sandstone at Water Table must be Heavy at full supply")
 	_expect(groundwater.aquifer_class_at_z(0, -50.0, strata) == GroundwaterLayer.AquiferClass.LIGHT, "depth attenuation must naturally reduce Heavy to Light")
 	_expect(groundwater.aquifer_class_at_z(0, -100.0, strata) == GroundwaterLayer.AquiferClass.NONE, "depth attenuation must naturally reduce Light to None")
 	groundwater.water_table_z[0] = 100.0
-	_expect(groundwater.aquifer_yield_at_z(0, 61.0, strata) == 0.0, "NO_MATERIAL above Terrain must give zero Aquifer Yield")
+	_expect(groundwater.aquifer_yield_at_z(0, 61.0, strata) == 0.0, "NO_ROCK above Terrain must give zero Aquifer Yield")
 
 	_expect(GroundwaterLayer.aquifer_class_for_yield(0.18, groundwater.settings) == GroundwaterLayer.AquiferClass.LIGHT, "Aquifer yield 0.18 must be Light")
 	_expect(GroundwaterLayer.aquifer_class_for_yield(0.45, groundwater.settings) == GroundwaterLayer.AquiferClass.HEAVY, "Aquifer yield 0.45 must be Heavy")
@@ -188,8 +189,8 @@ func _test_determinism_and_mutation() -> void:
 	var river_ids_before := hydrology.river_network_id.duplicate()
 	var lake_before := surface_water.lake_id.duplicate()
 	var surface_depth_before := surface_water.surface_water_depth.duplicate()
-	var strata := _single_material_strata(GeologyCatalog.MaterialType.SANDSTONE, 100.0)
-	var strata_material_before := strata.material_ids.duplicate()
+	var strata := _single_rock_strata(RockCatalog.RockType.SANDSTONE, 100.0)
+	var strata_rocks_before := strata.rock_type_ids.duplicate()
 	var first := GroundwaterGenerator.generate(graph, terrain, climate, hydrology, surface_water)
 	var second := GroundwaterGenerator.generate(graph, terrain, climate, hydrology, surface_water)
 	_expect(first.groundwater_supply == second.groundwater_supply, "Groundwater Supply must be deterministic")
@@ -205,7 +206,7 @@ func _test_determinism_and_mutation() -> void:
 	_expect(hydrology.river_network_id == river_ids_before, "Groundwater must not modify River facts")
 	_expect(surface_water.lake_id == lake_before, "Groundwater must not modify Surface Water")
 	_expect(surface_water.surface_water_depth == surface_depth_before, "Groundwater must not modify Surface Water depth")
-	_expect(strata.material_ids == strata_material_before, "Aquifer query must not modify Strata")
+	_expect(strata.rock_type_ids == strata_rocks_before, "Aquifer query must not modify Strata")
 
 
 func _test_standard_world(fixture: Dictionary) -> void:
@@ -224,8 +225,10 @@ func _test_standard_world(fixture: Dictionary) -> void:
 	_print_distribution("Land Water Table Depth", statistics.land_depth)
 	print("  World Salinity Fresh / Brackish / Saline: %s" % str(statistics.world_salinity))
 	print("  Land Salinity Fresh / Brackish / Saline: %s" % str(statistics.land_salinity))
+	print("  Aquifer @ Surface -25 None / Light / Heavy: %s" % str(statistics.aquifer_surface_25))
 	print("  Aquifer @ z=-25 None / Light / Heavy: %s" % str(statistics.aquifer_25))
 	print("  Aquifer @ z=-75 None / Light / Heavy: %s" % str(statistics.aquifer_75))
+	print("  Aquifer Material @ Surface -25: %s" % str(statistics.material_aquifer_surface_25))
 	print("  Aquifer Material @ z=-25: %s" % str(statistics.material_aquifer_25))
 	print("  Aquifer Material @ z=-75: %s" % str(statistics.material_aquifer_75))
 	_expect(statistics.ocean_non_saline == 0, "all Ocean Cells must be Saline")
@@ -250,6 +253,32 @@ func _small_generation_fixture(generate_groundwater: bool = true) -> Dictionary:
 			graph, terrain, climate, hydrology, surface_water
 		) if generate_groundwater else null,
 	}
+
+
+func _test_surface_relative_aquifer_query() -> void:
+	var terrain := _terrain(PackedFloat32Array([20.0, 80.0]))
+	var groundwater := GroundwaterLayer.new()
+	groundwater.settings = GroundwaterSettings.new()
+	groundwater.groundwater_supply = PackedFloat32Array([1.0, 1.0])
+	groundwater.water_table_z = PackedFloat32Array([20.0, 80.0])
+	groundwater.groundwater_salinity_class = PackedInt32Array([
+		GroundwaterLayer.SalinityClass.FRESH,
+		GroundwaterLayer.SalinityClass.FRESH,
+	])
+	var strata := SubsurfaceStrataLayer.new()
+	strata.cell_offsets = PackedInt32Array([0, 1, 2])
+	strata.rock_type_ids = PackedInt32Array([
+		RockCatalog.RockType.SANDSTONE,
+		RockCatalog.RockType.SANDSTONE,
+	])
+	strata.top_z = PackedFloat32Array([20.0, 80.0])
+	var low_query_z := _surface_depth_query_z(terrain, 0)
+	var high_query_z := _surface_depth_query_z(terrain, 1)
+	_expect(low_query_z == -5.0, "Surface -25 at Terrain z=20 must query absolute z=-5")
+	_expect(high_query_z == 55.0, "Surface -25 at Terrain z=80 must query absolute z=55")
+	_expect(low_query_z != high_query_z, "Surface -25 must not use one fixed absolute z")
+	_expect(groundwater.aquifer_class_at_z(0, low_query_z, strata) == GroundwaterLayer.AquiferClass.LIGHT, "Surface -25 must use the existing Aquifer class query for the low Cell")
+	_expect(groundwater.aquifer_class_at_z(1, high_query_z, strata) == GroundwaterLayer.AquiferClass.LIGHT, "Surface -25 must use the existing Aquifer class query for the high Cell")
 
 
 func _standard_world_fixture() -> Dictionary:
@@ -300,8 +329,10 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 	var land_depth := PackedFloat32Array()
 	var world_salinity := PackedInt32Array([0, 0, 0])
 	var land_salinity := PackedInt32Array([0, 0, 0])
+	var aquifer_surface_25 := PackedInt32Array([0, 0, 0])
 	var aquifer_25 := PackedInt32Array([0, 0, 0])
 	var aquifer_75 := PackedInt32Array([0, 0, 0])
+	var material_aquifer_surface_25 := {}
 	var material_aquifer_25 := {}
 	var material_aquifer_75 := {}
 	var land_count := 0
@@ -325,6 +356,8 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 			land_supply.append(groundwater.groundwater_supply[cell_id])
 			land_depth.append(groundwater.water_table_depth(cell_id, terrain))
 			land_salinity[salinity] += 1
+		var surface_query_z := _surface_depth_query_z(terrain, cell_id)
+		_accumulate_aquifer_statistics(cell_id, surface_query_z, groundwater, strata, aquifer_surface_25, material_aquifer_surface_25)
 		_accumulate_aquifer_statistics(cell_id, -25.0, groundwater, strata, aquifer_25, material_aquifer_25)
 		_accumulate_aquifer_statistics(cell_id, -75.0, groundwater, strata, aquifer_75, material_aquifer_75)
 	return {
@@ -335,13 +368,19 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 		"land_depth": _distribution(land_depth),
 		"world_salinity": world_salinity,
 		"land_salinity": land_salinity,
+		"aquifer_surface_25": aquifer_surface_25,
 		"aquifer_25": aquifer_25,
 		"aquifer_75": aquifer_75,
+		"material_aquifer_surface_25": material_aquifer_surface_25,
 		"material_aquifer_25": material_aquifer_25,
 		"material_aquifer_75": material_aquifer_75,
 		"ocean_non_saline": ocean_non_saline,
 		"lake_non_fresh": lake_non_fresh,
 	}
+
+
+func _surface_depth_query_z(terrain: TerrainHeightLayer, cell_id: int) -> float:
+	return terrain.terrain_height[cell_id] - 25.0
 
 
 func _accumulate_aquifer_statistics(
@@ -352,16 +391,16 @@ func _accumulate_aquifer_statistics(
 		class_counts: PackedInt32Array,
 		material_counts: Dictionary
 ) -> void:
-	var material := strata.material_at_z(cell_id, z)
+	var rock_type := strata.rock_type_at_z(cell_id, z)
 	var aquifer_class := groundwater.aquifer_class_at_z(cell_id, z, strata)
 	class_counts[aquifer_class] += 1
-	if material != SubsurfaceStrataLayer.NO_MATERIAL \
+	if rock_type != SubsurfaceStrataLayer.NO_ROCK \
 			and aquifer_class != GroundwaterLayer.AquiferClass.NONE:
-		if not material_counts.has(material):
-			material_counts[material] = PackedInt32Array([0, 0, 0])
-		var counts: PackedInt32Array = material_counts[material]
+		if not material_counts.has(rock_type):
+			material_counts[rock_type] = PackedInt32Array([0, 0, 0])
+		var counts: PackedInt32Array = material_counts[rock_type]
 		counts[aquifer_class] += 1
-		material_counts[material] = counts
+		material_counts[rock_type] = counts
 
 
 func _line_graph(count: int, spacing: float) -> SpatialGraph:
@@ -410,10 +449,10 @@ func _surface_water(lake_ids: PackedInt32Array) -> SurfaceWaterLayer:
 	return surface_water
 
 
-func _single_material_strata(material_id: int, top_z: float) -> SubsurfaceStrataLayer:
+func _single_rock_strata(rock_type: int, top_z: float) -> SubsurfaceStrataLayer:
 	var strata := SubsurfaceStrataLayer.new()
 	strata.cell_offsets = PackedInt32Array([0, 1])
-	strata.material_ids = PackedInt32Array([material_id])
+	strata.rock_type_ids = PackedInt32Array([rock_type])
 	strata.top_z = PackedFloat32Array([top_z])
 	return strata
 

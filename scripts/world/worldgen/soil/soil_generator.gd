@@ -29,7 +29,7 @@ static func generate(
 		if _has_no_surface_soil(ecology.biome_id[cell_id]):
 			soil.soil_texture_id[cell_id] = SoilCatalog.TextureType.NONE
 			continue
-		var material_id := geology.material_id[cell_id]
+		var rock_type := geology.rock_type_id[cell_id]
 		var slope_factor := slope_factor_for(
 			graph, terrain.terrain_height, cell_id, actual_settings.slope_reference
 		)
@@ -40,7 +40,7 @@ static func generate(
 			actual_settings.weathering_precip_reference
 		)
 		var formation_potential := formation_potential_for(
-			SoilCatalog.weatherability_for(material_id), climate_weathering
+			SoilCatalog.weatherability_for(rock_type), climate_weathering
 		)
 		var erosion_pressure := erosion_pressure_for(
 			slope_factor, geology.erodibility[cell_id]
@@ -55,7 +55,7 @@ static func generate(
 			formation_potential, deposition_tendency, erosion_pressure
 		)
 		var texture_fineness := texture_fineness_for(
-			SoilCatalog.parent_fineness_for(material_id),
+			SoilCatalog.parent_fineness_for(rock_type),
 			climate_weathering,
 			deposition_tendency
 		)
@@ -71,7 +71,7 @@ static func generate(
 			ecology.drainage_index[cell_id]
 		)
 		soil.soil_fertility[cell_id] = soil_fertility_for(
-			SoilCatalog.parent_nutrient_for(material_id),
+			SoilCatalog.parent_nutrient_for(rock_type),
 			soil.organic_matter[cell_id],
 			deposition_tendency,
 			leaching
@@ -236,7 +236,7 @@ static func _inputs_are_valid(
 			or climate.temperature.size() != count \
 			or climate.precipitation.size() != count \
 			or hydrology.flow_accumulation.size() != count \
-			or geology.material_id.size() != count \
+			or geology.rock_type_id.size() != count \
 			or geology.erodibility.size() != count \
 			or surface_water.lake_id.size() != count \
 			or ecology.drainage_index.size() != count \
@@ -270,8 +270,7 @@ static func _inputs_are_valid(
 				or climate.precipitation[cell_id] < 0.0 \
 				or not is_finite(hydrology.flow_accumulation[cell_id]) \
 				or hydrology.flow_accumulation[cell_id] < 0.0 \
-				or geology.material_id[cell_id] < 0 \
-				or geology.material_id[cell_id] >= GeologyCatalog.MATERIAL_COUNT \
+				or not RockCatalog.is_valid_rock_type(geology.rock_type_id[cell_id]) \
 				or not is_finite(geology.erodibility[cell_id]) \
 				or geology.erodibility[cell_id] < 0.0 \
 				or geology.erodibility[cell_id] > 1.0 \

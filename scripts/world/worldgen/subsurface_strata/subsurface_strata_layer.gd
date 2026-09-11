@@ -1,11 +1,11 @@
 class_name SubsurfaceStrataLayer
 extends RefCounted
 
-## World-scale major subsurface materials stored in CSR-like PackedArrays.
-const NO_MATERIAL := -1
+## World-scale major subsurface RockTypes stored in CSR-like PackedArrays.
+const NO_ROCK := -1
 
 var cell_offsets := PackedInt32Array()
-var material_ids := PackedInt32Array()
+var rock_type_ids := PackedInt32Array()
 var top_z := PackedFloat32Array()
 
 
@@ -18,17 +18,17 @@ func record_range_for_cell(cell_id: int) -> Vector2i:
 		return Vector2i(-1, -1)
 	var begin := cell_offsets[cell_id]
 	var end := cell_offsets[cell_id + 1]
-	if begin < 0 or end < begin or end > material_ids.size() or end > top_z.size():
+	if begin < 0 or end < begin or end > rock_type_ids.size() or end > top_z.size():
 		return Vector2i(-1, -1)
 	return Vector2i(begin, end)
 
 
-func material_at_z(cell_id: int, z: float) -> int:
+func rock_type_at_z(cell_id: int, z: float) -> int:
 	var local_index := layer_index_at_z(cell_id, z)
 	if local_index < 0:
-		return NO_MATERIAL
+		return NO_ROCK
 	var record_range := record_range_for_cell(cell_id)
-	return material_ids[record_range.x + local_index]
+	return rock_type_ids[record_range.x + local_index]
 
 
 func layer_index_at_z(cell_id: int, z: float) -> int:

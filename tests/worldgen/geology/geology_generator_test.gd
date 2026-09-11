@@ -11,9 +11,11 @@ func _run_all() -> void:
 	_test_determinism()
 	_test_array_sizes_ranges_and_validator()
 	_test_oceanic_crust_assignment()
-	_test_material_lookup_and_weight_tables()
+	_test_rock_catalog()
+	_test_rock_region_assignment()
+	_test_rock_layer_rules()
 	_test_province_regions_are_continuous()
-	_test_material_patches_are_continuous()
+	_test_rock_regions_are_continuous()
 	_test_flat_landmass_does_not_force_orogenic_quota()
 	_test_local_mountain_seed_increases_orogenic_weight()
 	_test_local_lowland_seed_increases_sedimentary_weight()
@@ -33,7 +35,7 @@ func _test_determinism() -> void:
 	if first == null or second == null:
 		return
 	_expect(first.province_id == second.province_id, "Province generation should be deterministic")
-	_expect(first.material_id == second.material_id, "Material generation should be deterministic")
+	_expect(first.rock_type_id == second.rock_type_id, "RockType generation should be deterministic")
 	_expect(first.permeability == second.permeability, "Permeability should be deterministic")
 	_expect(first.erodibility == second.erodibility, "Erodibility should be deterministic")
 
@@ -47,7 +49,7 @@ func _test_array_sizes_ranges_and_validator() -> void:
 		return
 	for values in [
 		geology.province_id,
-		geology.material_id,
+		geology.rock_type_id,
 		geology.permeability,
 		geology.erodibility,
 	]:
@@ -82,32 +84,116 @@ func _test_oceanic_crust_assignment() -> void:
 			)
 
 
-func _test_material_lookup_and_weight_tables() -> void:
-	var expected_permeability := [0.15, 0.12, 0.65, 0.12, 0.80, 0.40, 0.45]
-	var expected_erodibility := [0.15, 0.18, 0.55, 0.75, 0.45, 0.30, 0.60]
-	for material_id in GeologyCatalog.MATERIAL_COUNT:
-		_expect(
-			is_equal_approx(
-				GeologyCatalog.permeability_for(material_id), expected_permeability[material_id]
-			),
-			"Material %d permeability lookup should match the v1.7 table" % material_id
-		)
-		_expect(
-			is_equal_approx(
-				GeologyCatalog.erodibility_for(material_id), expected_erodibility[material_id]
-			),
-			"Material %d erodibility lookup should match the v1.7 table" % material_id
-		)
-	for province_id in GeologyCatalog.PROVINCE_COUNT:
-		var weights := GeologyCatalog.material_weights(province_id)
-		var total := 0.0
-		var non_zero := 0
-		for weight in weights:
-			total += weight
-			if weight > 0.0:
-				non_zero += 1
-		_expect(is_equal_approx(total, 1.0), "Province Material weights should total one")
-		_expect(non_zero >= 2, "no Province should map one-to-one to a single Material")
+func _test_rock_catalog() -> void:
+	var intrusive := RockCatalog.RockCategory.IGNEOUS_INTRUSIVE
+	var extrusive := RockCatalog.RockCategory.IGNEOUS_EXTRUSIVE
+	var metamorphic := RockCatalog.RockCategory.METAMORPHIC
+	var sedimentary := RockCatalog.RockCategory.SEDIMENTARY
+	var none := RockCatalog.IgneousComposition.NONE
+	var expected_categories := [
+		intrusive, intrusive, intrusive,
+		extrusive, extrusive, extrusive, extrusive,
+		sedimentary, sedimentary, sedimentary, sedimentary, sedimentary, sedimentary,
+		sedimentary, sedimentary,
+		metamorphic, metamorphic, metamorphic, metamorphic, metamorphic, metamorphic,
+	]
+	var expected_compositions := [
+		RockCatalog.IgneousComposition.FELSIC,
+		RockCatalog.IgneousComposition.INTERMEDIATE,
+		RockCatalog.IgneousComposition.MAFIC,
+		RockCatalog.IgneousComposition.FELSIC,
+		RockCatalog.IgneousComposition.INTERMEDIATE,
+		RockCatalog.IgneousComposition.INTERMEDIATE,
+		RockCatalog.IgneousComposition.MAFIC,
+		none, none, none, none, none, none, none, none, none, none, none, none, none, none,
+	]
+	var expected_permeability := [
+		0.12, 0.10, 0.10, 0.15, 0.20, 0.18, 0.45, 0.60, 0.04, 0.03, 0.50,
+		0.30, 0.32, 0.30, 0.05, 0.07, 0.08, 0.12, 0.12, 0.20, 0.05,
+	]
+	var expected_erodibility := [
+		0.18, 0.17, 0.20, 0.25, 0.23, 0.24, 0.20, 0.55, 0.82, 0.88, 0.48,
+		0.48, 0.40, 0.88, 0.10, 0.30, 0.38, 0.34, 0.20, 0.36, 0.08,
+	]
+	var expected_strength := [
+		0.82, 0.85, 0.88, 0.75, 0.80, 0.78, 0.88, 0.45, 0.28, 0.20, 0.55,
+		0.55, 0.62, 0.15, 0.90, 0.55, 0.48, 0.62, 0.80, 0.60, 0.95,
+	]
+	var karst_types := [
+		RockCatalog.RockType.LIMESTONE, RockCatalog.RockType.DOLOMITE,
+		RockCatalog.RockType.CHALK, RockCatalog.RockType.MARBLE,
+	]
+	_expect(RockCatalog.ROCK_TYPE_COUNT == 21, "RockCatalog must contain exactly 21 RockTypes")
+	for rock_type in RockCatalog.ROCK_TYPE_COUNT:
+		_expect(RockCatalog.is_valid_rock_type(rock_type), "every declared RockType must be valid")
+		_expect(RockCatalog.category_for(rock_type) == expected_categories[rock_type], "Rock category must match the fixed table")
+		_expect(RockCatalog.igneous_composition_for(rock_type) == expected_compositions[rock_type], "Rock composition must match the fixed table")
+		_expect(is_equal_approx(RockCatalog.permeability_for(rock_type), expected_permeability[rock_type]), "Rock permeability must match the fixed table")
+		_expect(is_equal_approx(RockCatalog.erodibility_for(rock_type), expected_erodibility[rock_type]), "Rock erodibility must match the fixed table")
+		_expect(is_equal_approx(RockCatalog.rock_strength_for(rock_type), expected_strength[rock_type]), "Rock strength must match the fixed table")
+		_expect(RockCatalog.karst_capable(rock_type) == (rock_type in karst_types), "only the four fixed RockTypes may be karst-capable")
+		_expect(not RockCatalog.name_for(rock_type).begins_with("Unknown"), "every RockType must have a name")
+		for value in [RockCatalog.permeability_for(rock_type), RockCatalog.erodibility_for(rock_type), RockCatalog.rock_strength_for(rock_type)]:
+			_expect(value >= 0.0 and value <= 1.0, "continuous Rock properties must stay inside [0, 1]")
+	_expect(not RockCatalog.is_valid_rock_type(-1) and not RockCatalog.is_valid_rock_type(21), "out-of-range RockTypes must be invalid")
+
+
+func _test_rock_region_assignment() -> void:
+	var graph := _line_graph(720, 1234)
+	var provinces := PackedInt32Array()
+	provinces.resize(graph.cell_count())
+	for cell_id in graph.cell_count():
+		provinces[cell_id] = GeologyCatalog.Province.CRATON \
+				if cell_id < 360 else GeologyCatalog.Province.SEDIMENTARY_BASIN
+	var first := RockRegionAssigner.assign_seed_cells(graph, provinces, 41)
+	var repeated := RockRegionAssigner.assign_seed_cells(graph, provinces, 41)
+	var different := RockRegionAssigner.assign_seed_cells(graph, provinces, 42)
+	_expect(first == repeated, "Rock Region assignment must be deterministic")
+	_expect(first != different, "different world seeds should change Rock Regions")
+	for cell_id in graph.cell_count():
+		var seed_cell_id := first[cell_id]
+		_expect(seed_cell_id >= 0 and seed_cell_id < graph.cell_count(), "every Cell must receive a valid Rock Region seed")
+		_expect(provinces[seed_cell_id] == provinces[cell_id], "Rock Regions must not cross Province components")
+
+
+func _test_rock_layer_rules() -> void:
+	_expect(RockLayerRules.validate_rules().is_empty(), "all Rock Layer roots must terminate at BOTTOM without cycles")
+	var n := RockLayerRules.LayerNode
+	var r := RockCatalog.RockType
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.OCEANIC_CRUST) == PackedInt32Array([n.EXTRUSIVE]), "Oceanic root pool must be EXTRUSIVE")
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.CRATON) == PackedInt32Array([n.INTRUSIVE, n.MM_HIGH_GRADE]), "Craton root pool must match the fixed mapping")
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.OROGENIC_BELT) == PackedInt32Array([n.UPLIFT, n.UPLIFT, n.UPLIFT, n.SEDIMENTARY]), "Orogenic root pool must be 75% UPLIFT")
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.SEDIMENTARY_BASIN) == PackedInt32Array([n.SEDIMENTARY]), "Basin root must be SEDIMENTARY")
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.PASSIVE_MARGIN) == PackedInt32Array([n.SEDIMENTARY]), "Passive Margin root must be SEDIMENTARY")
+	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.VOLCANIC_PROVINCE) == PackedInt32Array([n.EXTRUSIVE, n.EXTRUSIVE_X2, n.INTRUSIVE]), "Volcanic root pool must match the fixed mapping")
+	_expect(RockLayerRules.transition_is_defined(n.SEDIMENTARY, r.SANDSTONE, n.MM_QUARTZITE), "Sandstone must transition to MM_QUARTZITE")
+	var continental_pool := RockLayerRules.continental_basement_pool()
+	_expect(continental_pool == PackedInt32Array([r.GNEISS, r.SCHIST, r.DIORITE, r.GRANITE, r.GABBRO]), "Continental basement pool must match the fixed five rocks")
+	for seed_cell_id in 32:
+		_expect(RockLayerRules.basement_for(false, 1, seed_cell_id) == r.GABBRO, "Oceanic basement must always be Gabbro")
+		_expect(RockLayerRules.basement_for(true, 1, seed_cell_id) in continental_pool, "Continental basement must come from the fixed pool")
+	_test_all_transition_choices()
+
+
+func _test_all_transition_choices() -> void:
+	var n := RockLayerRules.LayerNode
+	var r := RockCatalog.RockType
+	var expected := {
+		n.FELSIC: [Vector2i(r.GRANITE, n.BOTTOM)],
+		n.INTERMEDIATE: [Vector2i(r.DIORITE, n.BOTTOM)],
+		n.MAFIC: [Vector2i(r.GABBRO, n.BOTTOM)],
+		n.EXTRUSIVE: [Vector2i(r.RHYOLITE, n.FELSIC), Vector2i(r.ANDESITE, n.INTERMEDIATE), Vector2i(r.DACITE, n.INTERMEDIATE), Vector2i(r.BASALT, n.MAFIC)],
+		n.EXTRUSIVE_X2: [Vector2i(r.RHYOLITE, n.EXTRUSIVE), Vector2i(r.ANDESITE, n.EXTRUSIVE), Vector2i(r.DACITE, n.EXTRUSIVE), Vector2i(r.BASALT, n.EXTRUSIVE)],
+		n.INTRUSIVE: [Vector2i(r.GRANITE, n.FELSIC), Vector2i(r.DIORITE, n.INTERMEDIATE), Vector2i(r.GABBRO, n.MAFIC)],
+		n.MM_HIGH_GRADE: [Vector2i(r.SCHIST, n.BOTTOM), Vector2i(r.GNEISS, n.BOTTOM)],
+		n.MM_LOW_GRADE: [Vector2i(r.PHYLLITE, n.MM_HIGH_GRADE), Vector2i(r.SLATE, n.MM_HIGH_GRADE)],
+		n.MM_MARBLE: [Vector2i(r.MARBLE, n.BOTTOM)],
+		n.MM_QUARTZITE: [Vector2i(r.QUARTZITE, n.BOTTOM)],
+		n.SEDIMENTARY: [Vector2i(r.SHALE, n.MM_LOW_GRADE), Vector2i(r.CLAYSTONE, n.MM_LOW_GRADE), Vector2i(r.CONGLOMERATE, n.MM_LOW_GRADE), Vector2i(r.LIMESTONE, n.MM_MARBLE), Vector2i(r.DOLOMITE, n.MM_MARBLE), Vector2i(r.CHALK, n.MM_MARBLE), Vector2i(r.CHERT, n.MM_QUARTZITE), Vector2i(r.SANDSTONE, n.MM_QUARTZITE)],
+		n.UPLIFT: [Vector2i(r.SLATE, n.MM_HIGH_GRADE), Vector2i(r.PHYLLITE, n.MM_HIGH_GRADE), Vector2i(r.SCHIST, n.MM_HIGH_GRADE), Vector2i(r.GNEISS, n.MM_HIGH_GRADE), Vector2i(r.MARBLE, n.BOTTOM), Vector2i(r.QUARTZITE, n.BOTTOM), Vector2i(r.DIORITE, n.MM_LOW_GRADE), Vector2i(r.GRANITE, n.MM_LOW_GRADE), Vector2i(r.GABBRO, n.MM_LOW_GRADE)],
+	}
+	for node in expected:
+		_expect(RockLayerRules.choices_for(node) == expected[node], "Rock Layer node %d choices must exactly match the fixed graph" % node)
 
 
 func _test_province_regions_are_continuous() -> void:
@@ -131,24 +217,24 @@ func _test_province_regions_are_continuous() -> void:
 	)
 
 
-func _test_material_patches_are_continuous() -> void:
+func _test_rock_regions_are_continuous() -> void:
 	var count := 400
 	var graph := _line_graph(count, 123)
 	var terrain := _all_land_terrain(count)
 	var geology := GeologyGenerator.generate(graph, terrain)
-	_expect(geology != null, "Material continuity world should generate")
+	_expect(geology != null, "Rock Region continuity world should generate")
 	if geology == null:
 		return
 	var expected_patch_count := ceili(
-		float(count) / float(GeologyGenerator.MATERIAL_TARGET_CELLS_PER_SEED)
+		float(count) / float(RockRegionAssigner.ROCK_REGION_TARGET_CELLS_PER_SEED)
 	)
 	_expect(
-		_count_transitions(geology.material_id) <= expected_patch_count,
-		"Material seed expansion should create patches, not independent Cell draws"
+		_count_transitions(geology.rock_type_id) <= expected_patch_count,
+		"Rock Region expansion should create patches, not independent Cell draws"
 	)
 	_expect(
-		_minimum_run_length(geology.material_id) > 2,
-		"Material generation should not create one- or two-Cell patches on the test line"
+		_minimum_run_length(geology.rock_type_id) > 2,
+		"Rock Region generation should not create one- or two-Cell patches on the test line"
 	)
 
 
@@ -386,10 +472,10 @@ func _expect(condition: bool, message: String) -> void:
 
 func _finish() -> void:
 	if _failures.is_empty():
-		print("Geology / Subsurface Foundation: all 13 test groups passed")
+		print("Geology RockType refactor: all dedicated test groups passed")
 		quit(0)
 	else:
 		for failure in _failures:
 			printerr("FAIL: " + failure)
-		printerr("Geology / Subsurface Foundation: %d failures" % _failures.size())
+		printerr("Geology RockType refactor: %d failures" % _failures.size())
 		quit(1)

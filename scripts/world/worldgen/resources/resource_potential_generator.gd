@@ -59,13 +59,13 @@ static func generate(
 				soil.soil_fertility[cell_id], actual_settings
 			)
 			resources.construction_stone_potential[cell_id] = construction_stone_potential_for(
-				geology.material_id[cell_id], soil.soil_depth[cell_id]
+				geology.rock_type_id[cell_id], soil.soil_depth[cell_id]
 			)
 			var base_host := base_metal_host_for(
-				geology.province_id[cell_id], geology.material_id[cell_id]
+				geology.province_id[cell_id], geology.rock_type_id[cell_id]
 			)
 			var precious_host := precious_mineral_host_for(
-				geology.province_id[cell_id], geology.material_id[cell_id]
+				geology.province_id[cell_id], geology.rock_type_id[cell_id]
 			)
 			var position: Vector2 = graph.cell_centers[cell_id]
 			var normalized_x := position.x / graph.config.world_width
@@ -167,20 +167,20 @@ static func forage_growth_support_for(
 	)
 
 
-static func construction_stone_potential_for(material_id: int, soil_depth: float) -> float:
+static func construction_stone_potential_for(rock_type: int, soil_depth: float) -> float:
 	var exposure := 1.0 - 0.25 * clampf(soil_depth, 0.0, 1.0)
-	return clampf(construction_material_factor_for(material_id) * exposure, 0.0, 1.0)
+	return clampf(RockCatalog.rock_strength_for(rock_type) * exposure, 0.0, 1.0)
 
 
-static func base_metal_host_for(province_id: int, material_id: int) -> float:
+static func base_metal_host_for(province_id: int, rock_type: int) -> float:
 	return sqrt(
-		base_metal_province_factor_for(province_id) * base_metal_material_factor_for(material_id)
+		base_metal_province_factor_for(province_id) * base_metal_rock_factor_for(rock_type)
 	)
 
 
-static func precious_mineral_host_for(province_id: int, material_id: int) -> float:
+static func precious_mineral_host_for(province_id: int, rock_type: int) -> float:
 	return sqrt(
-		precious_province_factor_for(province_id) * precious_material_factor_for(material_id)
+		precious_province_factor_for(province_id) * precious_rock_factor_for(rock_type)
 	)
 
 
@@ -351,26 +351,6 @@ static func forage_biome_factor_for(biome_id: int) -> float:
 			return 0.0
 
 
-static func construction_material_factor_for(material_id: int) -> float:
-	match material_id:
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
-			return 1.00
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
-			return 0.95
-		GeologyCatalog.MaterialType.CARBONATE_ROCK:
-			return 0.90
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
-			return 0.85
-		GeologyCatalog.MaterialType.SANDSTONE:
-			return 0.80
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
-			return 0.35
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
-			return 0.25
-		_:
-			return 0.0
-
-
 static func base_metal_province_factor_for(province_id: int) -> float:
 	match province_id:
 		GeologyCatalog.Province.OROGENIC_BELT:
@@ -389,24 +369,17 @@ static func base_metal_province_factor_for(province_id: int) -> float:
 			return 0.0
 
 
-static func base_metal_material_factor_for(material_id: int) -> float:
-	match material_id:
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+static func base_metal_rock_factor_for(rock_type: int) -> float:
+	match RockCatalog.category_for(rock_type):
+		RockCatalog.RockCategory.IGNEOUS_EXTRUSIVE:
 			return 0.90
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
+		RockCatalog.RockCategory.METAMORPHIC:
 			return 0.85
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
+		RockCatalog.RockCategory.IGNEOUS_INTRUSIVE:
 			return 0.75
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
-			return 0.45
-		GeologyCatalog.MaterialType.CARBONATE_ROCK:
-			return 0.35
-		GeologyCatalog.MaterialType.SANDSTONE:
-			return 0.25
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
-			return 0.20
-		_:
-			return 0.0
+		RockCatalog.RockCategory.SEDIMENTARY:
+			return 0.30
+	return 0.0
 
 
 static func precious_province_factor_for(province_id: int) -> float:
@@ -427,24 +400,17 @@ static func precious_province_factor_for(province_id: int) -> float:
 			return 0.0
 
 
-static func precious_material_factor_for(material_id: int) -> float:
-	match material_id:
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
+static func precious_rock_factor_for(rock_type: int) -> float:
+	match RockCatalog.category_for(rock_type):
+		RockCatalog.RockCategory.METAMORPHIC:
 			return 1.00
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+		RockCatalog.RockCategory.IGNEOUS_EXTRUSIVE:
 			return 0.90
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
+		RockCatalog.RockCategory.IGNEOUS_INTRUSIVE:
 			return 0.80
-		GeologyCatalog.MaterialType.CARBONATE_ROCK:
-			return 0.35
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
-			return 0.30
-		GeologyCatalog.MaterialType.SANDSTONE:
-			return 0.20
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
-			return 0.15
-		_:
-			return 0.0
+		RockCatalog.RockCategory.SEDIMENTARY:
+			return 0.25
+	return 0.0
 
 
 static func _make_noise(seed: int) -> FastNoiseLite:
@@ -514,7 +480,7 @@ static func _inputs_are_valid(
 			or climate.temperature.size() != count or climate.precipitation.size() != count \
 			or hydrology.flow_accumulation.size() != count or hydrology.flow_to.size() != count \
 			or hydrology.river_network_id.size() != count or hydrology.settings == null \
-			or geology.province_id.size() != count or geology.material_id.size() != count \
+			or geology.province_id.size() != count or geology.rock_type_id.size() != count \
 			or surface_water.lake_id.size() != count \
 			or ecology.drainage_index.size() != count \
 			or ecology.ecological_moisture.size() != count \

@@ -133,7 +133,7 @@ enum ViewMode {
 	RIVER_NETWORKS,
 	WATERSHEDS,
 	GEOLOGIC_PROVINCE,
-	DOMINANT_MATERIAL,
+	SURFACE_ROCK_TYPE,
 	PERMEABILITY,
 	ERODIBILITY,
 	TEMPERATURE_DELTA,
@@ -175,9 +175,9 @@ enum ViewMode {
 	ARCANE_HAZARD_SEVERITY,
 	ARCANE_HAZARD_PROPAGATION,
 	STRATA_LAYER_COUNT,
-	STRATA_MATERIAL_Z_25,
-	STRATA_MATERIAL_Z_75,
-	STRATA_MATERIAL_Z_150,
+	STRATA_ROCK_TYPE_Z_25,
+	STRATA_ROCK_TYPE_Z_75,
+	STRATA_ROCK_TYPE_Z_150,
 	STRATA_TRANSECT_Y_25,
 	STRATA_TRANSECT_Y_50,
 	STRATA_TRANSECT_Y_75,
@@ -185,6 +185,7 @@ enum ViewMode {
 	GROUNDWATER_SUPPLY,
 	WATER_TABLE_DEPTH,
 	GROUNDWATER_SALINITY,
+	AQUIFER_SURFACE_25,
 	AQUIFER_Z_25,
 	AQUIFER_Z_75,
 }
@@ -205,15 +206,15 @@ const DEBUG_PAGE_VIEWS := [
 	],
 	[
 		ViewMode.GEOLOGIC_PROVINCE,
-		ViewMode.DOMINANT_MATERIAL,
+		ViewMode.SURFACE_ROCK_TYPE,
 		ViewMode.PERMEABILITY,
 		ViewMode.ERODIBILITY,
 	],
 	[
 		ViewMode.STRATA_LAYER_COUNT,
-		ViewMode.STRATA_MATERIAL_Z_25,
-		ViewMode.STRATA_MATERIAL_Z_75,
-		ViewMode.STRATA_MATERIAL_Z_150,
+		ViewMode.STRATA_ROCK_TYPE_Z_25,
+		ViewMode.STRATA_ROCK_TYPE_Z_75,
+		ViewMode.STRATA_ROCK_TYPE_Z_150,
 		ViewMode.STRATA_TRANSECT_Y_25,
 		ViewMode.STRATA_TRANSECT_Y_50,
 		ViewMode.STRATA_TRANSECT_Y_75,
@@ -223,6 +224,7 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.GROUNDWATER_SUPPLY,
 		ViewMode.WATER_TABLE_DEPTH,
 		ViewMode.GROUNDWATER_SALINITY,
+		ViewMode.AQUIFER_SURFACE_25,
 		ViewMode.AQUIFER_Z_25,
 		ViewMode.AQUIFER_Z_75,
 	],
@@ -572,8 +574,8 @@ func _cell_color(cell_id: int) -> Color:
 			return _watershed_color(cell_id)
 		ViewMode.GEOLOGIC_PROVINCE:
 			return _province_color(geology.province_id[cell_id])
-		ViewMode.DOMINANT_MATERIAL:
-			return _material_color(geology.material_id[cell_id])
+		ViewMode.SURFACE_ROCK_TYPE:
+			return _rock_type_color(geology.rock_type_id[cell_id])
 		ViewMode.PERMEABILITY:
 			return Color(0.24, 0.14, 0.10).lerp(
 				Color(0.08, 0.78, 0.86), geology.permeability[cell_id]
@@ -584,11 +586,11 @@ func _cell_color(cell_id: int) -> Color:
 			)
 		ViewMode.STRATA_LAYER_COUNT:
 			return _strata_layer_count_color(cell_id)
-		ViewMode.STRATA_MATERIAL_Z_25:
+		ViewMode.STRATA_ROCK_TYPE_Z_25:
 			return _strata_slice_color(cell_id, -25.0)
-		ViewMode.STRATA_MATERIAL_Z_75:
+		ViewMode.STRATA_ROCK_TYPE_Z_75:
 			return _strata_slice_color(cell_id, -75.0)
-		ViewMode.STRATA_MATERIAL_Z_150:
+		ViewMode.STRATA_ROCK_TYPE_Z_150:
 			return _strata_slice_color(cell_id, -150.0)
 		ViewMode.DEEP_SUBSTRATE:
 			return Color(0.68, 0.63, 0.54) \
@@ -599,6 +601,8 @@ func _cell_color(cell_id: int) -> Color:
 			return _water_table_depth_color(cell_id)
 		ViewMode.GROUNDWATER_SALINITY:
 			return _groundwater_salinity_color(cell_id)
+		ViewMode.AQUIFER_SURFACE_25:
+			return _aquifer_class_color(cell_id, terrain.terrain_height[cell_id] - 25.0)
 		ViewMode.AQUIFER_Z_25:
 			return _aquifer_class_color(cell_id, -25.0)
 		ViewMode.AQUIFER_Z_75:
@@ -958,22 +962,17 @@ func _province_color(province_id: int) -> Color:
 			return Color(0.72, 0.16, 0.68)
 
 
-func _material_color(material_id: int) -> Color:
-	match material_id:
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
-			return Color(0.58, 0.60, 0.64)
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
-			return Color(0.48, 0.30, 0.60)
-		GeologyCatalog.MaterialType.SANDSTONE:
-			return Color(0.82, 0.62, 0.30)
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
-			return Color(0.34, 0.24, 0.18)
-		GeologyCatalog.MaterialType.CARBONATE_ROCK:
-			return Color(0.70, 0.84, 0.82)
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
-			return Color(0.34, 0.12, 0.12)
-		_:
-			return Color(0.18, 0.42, 0.62)
+func _rock_type_color(rock_type: int) -> Color:
+	const COLORS := [
+		Color(0.72, 0.69, 0.67), Color(0.47, 0.49, 0.51), Color(0.20, 0.22, 0.25),
+		Color(0.76, 0.54, 0.54), Color(0.48, 0.43, 0.39), Color(0.63, 0.48, 0.43),
+		Color(0.16, 0.18, 0.20), Color(0.82, 0.62, 0.30), Color(0.34, 0.24, 0.18),
+		Color(0.57, 0.39, 0.27), Color(0.63, 0.43, 0.25), Color(0.70, 0.84, 0.82),
+		Color(0.58, 0.72, 0.69), Color(0.88, 0.86, 0.72), Color(0.35, 0.34, 0.31),
+		Color(0.38, 0.42, 0.49), Color(0.49, 0.39, 0.52), Color(0.48, 0.30, 0.60),
+		Color(0.42, 0.47, 0.53), Color(0.82, 0.76, 0.79), Color(0.86, 0.84, 0.78),
+	]
+	return COLORS[rock_type] if RockCatalog.is_valid_rock_type(rock_type) else Color.MAGENTA
 
 
 func _strata_layer_count_color(cell_id: int) -> Color:
@@ -992,10 +991,10 @@ func _strata_layer_count_color(cell_id: int) -> Color:
 
 
 func _strata_slice_color(cell_id: int, z: float) -> Color:
-	var material_id := subsurface_strata.material_at_z(cell_id, z)
-	if material_id == SubsurfaceStrataLayer.NO_MATERIAL:
+	var rock_type := subsurface_strata.rock_type_at_z(cell_id, z)
+	if rock_type == SubsurfaceStrataLayer.NO_ROCK:
 		return Color(0.50, 0.72, 0.88)
-	return _material_color(material_id)
+	return _rock_type_color(rock_type)
 
 
 func _groundwater_supply_color(cell_id: int) -> Color:
@@ -1032,7 +1031,7 @@ func _groundwater_salinity_color(cell_id: int) -> Color:
 
 
 func _aquifer_class_color(cell_id: int, z: float) -> Color:
-	if subsurface_strata.material_at_z(cell_id, z) == SubsurfaceStrataLayer.NO_MATERIAL:
+	if subsurface_strata.rock_type_at_z(cell_id, z) == SubsurfaceStrataLayer.NO_ROCK:
 		return Color(0.50, 0.72, 0.88)
 	match groundwater.aquifer_class_at_z(cell_id, z, subsurface_strata):
 		GroundwaterLayer.AquiferClass.NONE:
@@ -1129,7 +1128,7 @@ func _draw_matching_strata_interval(
 		_draw_strata_polygon(
 			left_x, right_x, left_top, right_top, left_bottom, right_bottom,
 			minimum_z, maximum_z, map_rect,
-			_material_color(subsurface_strata.material_ids[left_record])
+			_rock_type_color(subsurface_strata.rock_type_ids[left_record])
 		)
 
 
@@ -1147,7 +1146,7 @@ func _draw_strata_column(
 		var bottom := minimum_z if record_index + 1 == record_range.y else subsurface_strata.top_z[record_index + 1]
 		_draw_strata_polygon(
 			left_x, right_x, top, top, bottom, bottom, minimum_z, maximum_z, map_rect,
-			_material_color(subsurface_strata.material_ids[record_index])
+			_rock_type_color(subsurface_strata.rock_type_ids[record_index])
 		)
 
 
@@ -1191,8 +1190,8 @@ func _strata_sequences_match(cell_a: int, cell_b: int) -> bool:
 	if range_a.y - range_a.x != range_b.y - range_b.x:
 		return false
 	for local_index in range_a.y - range_a.x:
-		if subsurface_strata.material_ids[range_a.x + local_index] \
-				!= subsurface_strata.material_ids[range_b.x + local_index]:
+		if subsurface_strata.rock_type_ids[range_a.x + local_index] \
+				!= subsurface_strata.rock_type_ids[range_b.x + local_index]:
 			return false
 	return true
 
@@ -1682,8 +1681,8 @@ func _draw_information() -> void:
 			)
 		elif _is_soil_view():
 			lines.append(
-				"Material: %s"
-				% GeologyCatalog.material_name(geology.material_id[selected_cell_id])
+				"Rock Type: %s"
+				% RockCatalog.name_for(geology.rock_type_id[selected_cell_id])
 			)
 			lines.append("Soil Depth: %.4f" % soil.soil_depth[selected_cell_id])
 			lines.append(
@@ -1733,10 +1732,10 @@ func _draw_information() -> void:
 			lines.append("Conditioned Height: %.3f" % hydrology.terrain_height[selected_cell_id])
 			lines.append("Height Delta: %+.3f" % hydrology.height_delta[selected_cell_id])
 			lines.append("Action: %s" % hydrology.action_name(selected_cell_id))
-			lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[selected_cell_id]))
+			lines.append("Rock Type: %s" % RockCatalog.name_for(geology.rock_type_id[selected_cell_id]))
 			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 			lines.append(
-				"Material Resistance: %.3f"
+				"Rock Resistance: %.3f"
 				% HydrologyConditioner.material_resistance(geology.erodibility[selected_cell_id])
 			)
 		elif _is_surface_water_view():
@@ -1754,7 +1753,7 @@ func _draw_information() -> void:
 		elif _is_geology_view():
 			lines.append("Projected Height: %.3f" % projected_terrain.terrain_height[selected_cell_id])
 			lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[selected_cell_id]))
-			lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[selected_cell_id]))
+			lines.append("Rock Type: %s" % RockCatalog.name_for(geology.rock_type_id[selected_cell_id]))
 			lines.append("Permeability: %.2f" % geology.permeability[selected_cell_id])
 			lines.append("Erodibility: %.2f" % geology.erodibility[selected_cell_id])
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
@@ -1808,13 +1807,13 @@ func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> v
 	)
 	lines.append("Continental Value: %d" % composition.continental_value[cell_id])
 	lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[cell_id]))
-	lines.append("Surface Material: %s" % GeologyCatalog.material_name(
-		geology.material_id[cell_id]
+	lines.append("Surface Rock Type: %s" % RockCatalog.name_for(
+		geology.rock_type_id[cell_id]
 	))
 	lines.append("Surface Terrain z: %.3f" % terrain.terrain_height[cell_id])
 	var record_range := subsurface_strata.record_range_for_cell(cell_id)
-	lines.append("Terminal Material: %s" % GeologyCatalog.material_name(
-		subsurface_strata.material_ids[record_range.y - 1]
+	lines.append("Terminal Rock Type: %s" % RockCatalog.name_for(
+		subsurface_strata.rock_type_ids[record_range.y - 1]
 	))
 	lines.append(
 		"Deep Substrate: %s"
@@ -1826,7 +1825,7 @@ func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> v
 		var local_index := record_index - record_range.x
 		var bounds := subsurface_strata.layer_bounds(cell_id, local_index)
 		lines.append("Layer %d: %s" % [
-			local_index, GeologyCatalog.material_name(subsurface_strata.material_ids[record_index])
+			local_index, RockCatalog.name_for(subsurface_strata.rock_type_ids[record_index])
 		])
 		lines.append("  top_z %.3f | %s" % [
 			bounds.x, "terminal" if is_inf(bounds.y) else "bottom_z %.3f" % bounds.y
@@ -1879,29 +1878,33 @@ func _append_groundwater_cell_inspection(
 	lines.append("Marine Influence: %.4f" % marine_influence)
 	lines.append("Salinity Pressure: %.4f" % salinity_pressure)
 	if _is_aquifer_view():
-		var slice_z := _aquifer_slice_z()
-		var material := subsurface_strata.material_at_z(cell_id, slice_z)
-		var permeability := 0.0 if material == SubsurfaceStrataLayer.NO_MATERIAL \
-				else GeologyCatalog.permeability_for(material)
+		var query_z := _aquifer_query_z(cell_id)
+		var rock_type := subsurface_strata.rock_type_at_z(cell_id, query_z)
+		var permeability := 0.0 if rock_type == SubsurfaceStrataLayer.NO_ROCK \
+				else RockCatalog.permeability_for(rock_type)
 		var aquifer_yield := groundwater.aquifer_yield_at_z(
-			cell_id, slice_z, subsurface_strata
+			cell_id, query_z, subsurface_strata
 		)
-		lines.append("Slice Z: %.1f" % slice_z)
+		if view_mode == ViewMode.AQUIFER_SURFACE_25:
+			lines.append("Slice Mode: Surface -25")
+			lines.append("Query Z: %.3f (Terrain Z - 25)" % query_z)
+		else:
+			lines.append("Slice Z: %.1f" % query_z)
 		lines.append("Below Water Table?: %s" % (
-			"Yes" if groundwater.is_below_water_table_at_z(cell_id, slice_z) else "No"
+			"Yes" if groundwater.is_below_water_table_at_z(cell_id, query_z) else "No"
 		))
 		lines.append("Active Groundwater: %.4f" % groundwater.active_groundwater_at_z(
-			cell_id, slice_z
+			cell_id, query_z
 		))
-		lines.append("Material: %s" % (
+		lines.append("Rock Type: %s" % (
 			"Non-rock / above terrain"
-			if material == SubsurfaceStrataLayer.NO_MATERIAL
-			else GeologyCatalog.material_name(material)
+			if rock_type == SubsurfaceStrataLayer.NO_ROCK
+			else RockCatalog.name_for(rock_type)
 		))
 		lines.append("Permeability: %.3f" % permeability)
 		lines.append("Aquifer Yield: %.4f" % aquifer_yield)
 		lines.append("Aquifer Class: %s" % GroundwaterLayer.aquifer_class_name(
-			groundwater.aquifer_class_at_z(cell_id, slice_z, subsurface_strata)
+			groundwater.aquifer_class_at_z(cell_id, query_z, subsurface_strata)
 		))
 
 
@@ -1948,7 +1951,7 @@ func _append_arcane_resource_cell_inspection(
 			lines.append("Mana Flowability: %.4f" % flowability)
 		ViewMode.ARCANE_MATERIAL_POTENTIAL:
 			var geology_host := ArcaneResourcePotentialGenerator.arcane_material_geology_host_for(
-				geology.province_id[cell_id], geology.material_id[cell_id]
+				geology.province_id[cell_id], geology.rock_type_id[cell_id]
 			)
 			var manifestation_factor := (
 				ArcaneResourcePotentialGenerator.manifestation_material_factor_for(manifestation)
@@ -2050,7 +2053,7 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 	lines.append("Vegetation Potential: %.4f" % ecology.vegetation_potential[cell_id])
 	lines.append("Soil Depth: %.4f" % soil.soil_depth[cell_id])
 	lines.append("Soil Fertility: %.4f" % soil.soil_fertility[cell_id])
-	lines.append("Material: %s" % GeologyCatalog.material_name(geology.material_id[cell_id]))
+	lines.append("Rock Type: %s" % RockCatalog.name_for(geology.rock_type_id[cell_id]))
 	lines.append("Province: %s" % GeologyCatalog.province_name(geology.province_id[cell_id]))
 	lines.append("Formal River: %s" % ("Yes" if formal_hydrology.is_river(cell_id) else "No"))
 	lines.append("Lake ID: %d" % surface_water.lake_id[cell_id])
@@ -2091,13 +2094,13 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 		))
 		lines.append("Soil Support: %.4f" % (0.75 + 0.25 * soil.soil_fertility[cell_id]))
 	elif view_mode == ViewMode.CONSTRUCTION_STONE_POTENTIAL:
-		lines.append("Material Suitability: %.3f" % ResourcePotentialGenerator.construction_material_factor_for(
-			geology.material_id[cell_id]
+		lines.append("Rock Strength: %.3f" % RockCatalog.rock_strength_for(
+			geology.rock_type_id[cell_id]
 		))
 		lines.append("Exposure: %.4f" % (1.0 - 0.25 * soil.soil_depth[cell_id]))
 	elif view_mode == ViewMode.BASE_METAL_POTENTIAL:
 		lines.append("Host Suitability: %.4f" % ResourcePotentialGenerator.base_metal_host_for(
-			geology.province_id[cell_id], geology.material_id[cell_id]
+			geology.province_id[cell_id], geology.rock_type_id[cell_id]
 		))
 		var base_raw := ResourcePotentialGenerator.base_metal_raw_concentration_at(
 			graph, cell_id, resource_settings
@@ -2105,7 +2108,7 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 		lines.append("Concentration: %.4f" % ResourcePotentialGenerator.base_metal_concentration_for(base_raw))
 	elif view_mode == ViewMode.PRECIOUS_MINERAL_POTENTIAL:
 		lines.append("Host Suitability: %.4f" % ResourcePotentialGenerator.precious_mineral_host_for(
-			geology.province_id[cell_id], geology.material_id[cell_id]
+			geology.province_id[cell_id], geology.rock_type_id[cell_id]
 		))
 		var precious_raw := ResourcePotentialGenerator.precious_mineral_raw_concentration_at(
 			graph, cell_id, resource_settings
@@ -2295,13 +2298,13 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 						float(count) / float(graph.cell_count()) * 100.0,
 					]
 				)
-		ViewMode.DOMINANT_MATERIAL:
-			for material_id in GeologyCatalog.MATERIAL_COUNT:
-				var count: int = _geology_statistics.material_counts[material_id]
+		ViewMode.SURFACE_ROCK_TYPE:
+			for rock_type in RockCatalog.ROCK_TYPE_COUNT:
+				var count: int = _geology_statistics.rock_type_counts[rock_type]
 				lines.append(
 					"%s: %d (%.2f%%)"
 					% [
-						GeologyCatalog.material_name(material_id),
+						RockCatalog.name_for(rock_type),
 						count,
 						float(count) / float(graph.cell_count()) * 100.0,
 					]
@@ -2391,7 +2394,7 @@ func _append_subsurface_strata_statistics(lines: PackedStringArray) -> void:
 		lines.append("")
 		lines.append("Legend:")
 		var counts: PackedInt32Array = _subsurface_strata_statistics.counts_by_layer
-		for layer_count in range(1, 5):
+		for layer_count in range(1, counts.size()):
 			lines.append("%d layers: %d Cells" % [layer_count, counts[layer_count]])
 	elif not _is_strata_transect_view():
 		lines.append("")
@@ -2429,10 +2432,8 @@ func _append_groundwater_statistics(lines: PackedStringArray) -> void:
 			lines.append("Fresh / Brackish / Saline:")
 			lines.append("  %d / %d / %d" % [counts[0], counts[1], counts[2]])
 			lines.append("Cyan / Amber / Magenta")
-		ViewMode.AQUIFER_Z_25, ViewMode.AQUIFER_Z_75:
-			var counts: PackedInt32Array = _groundwater_statistics.aquifer_25 \
-					if view_mode == ViewMode.AQUIFER_Z_25 \
-					else _groundwater_statistics.aquifer_75
+		ViewMode.AQUIFER_SURFACE_25, ViewMode.AQUIFER_Z_25, ViewMode.AQUIFER_Z_75:
+			var counts: PackedInt32Array = _aquifer_statistics_for_view()
 			lines.append("None / Light / Heavy:")
 			lines.append("  %d / %d / %d" % [counts[0], counts[1], counts[2]])
 			lines.append("Dark / Cyan / Gold")
@@ -2450,6 +2451,16 @@ func _append_groundwater_continuous_statistics(
 	lines.append("  %.3f / %.3f / %.3f" % [
 		statistics.p75, statistics.p90, statistics.max,
 	])
+
+
+func _aquifer_statistics_for_view() -> PackedInt32Array:
+	match view_mode:
+		ViewMode.AQUIFER_SURFACE_25:
+			return _groundwater_statistics.aquifer_surface_25
+		ViewMode.AQUIFER_Z_25:
+			return _groundwater_statistics.aquifer_25
+		_:
+			return _groundwater_statistics.aquifer_75
 
 
 func _append_land_water_statistics(lines: PackedStringArray) -> void:
@@ -2687,8 +2698,8 @@ func _calculate_formal_hydrology_statistics() -> Dictionary:
 func _calculate_geology_statistics() -> Dictionary:
 	var province_counts := PackedInt32Array()
 	province_counts.resize(GeologyCatalog.PROVINCE_COUNT)
-	var material_counts := PackedInt32Array()
-	material_counts.resize(GeologyCatalog.MATERIAL_COUNT)
+	var rock_type_counts := PackedInt32Array()
+	rock_type_counts.resize(RockCatalog.ROCK_TYPE_COUNT)
 	var min_permeability := INF
 	var max_permeability := -INF
 	var permeability_sum := 0.0
@@ -2697,7 +2708,7 @@ func _calculate_geology_statistics() -> Dictionary:
 	var erodibility_sum := 0.0
 	for cell_id in geology.cell_count():
 		province_counts[geology.province_id[cell_id]] += 1
-		material_counts[geology.material_id[cell_id]] += 1
+		rock_type_counts[geology.rock_type_id[cell_id]] += 1
 		min_permeability = minf(min_permeability, geology.permeability[cell_id])
 		max_permeability = maxf(max_permeability, geology.permeability[cell_id])
 		permeability_sum += geology.permeability[cell_id]
@@ -2706,7 +2717,7 @@ func _calculate_geology_statistics() -> Dictionary:
 		erodibility_sum += geology.erodibility[cell_id]
 	return {
 		"province_counts": province_counts,
-		"material_counts": material_counts,
+		"rock_type_counts": rock_type_counts,
 		"min_permeability": min_permeability,
 		"max_permeability": max_permeability,
 		"mean_permeability": permeability_sum / float(geology.cell_count()),
@@ -2720,14 +2731,17 @@ func _calculate_subsurface_strata_statistics() -> Dictionary:
 	if subsurface_strata == null:
 		return {}
 	var layer_counts := PackedFloat32Array()
-	var counts_by_layer := PackedInt32Array()
-	counts_by_layer.resize(5)
+	var maximum_layer_count := 0
 	for cell_id in graph.cell_count():
 		var record_range := subsurface_strata.record_range_for_cell(cell_id)
 		var layer_count := record_range.y - record_range.x
 		layer_counts.append(layer_count)
-		if layer_count >= 1 and layer_count <= 4:
-			counts_by_layer[layer_count] += 1
+		maximum_layer_count = maxi(maximum_layer_count, layer_count)
+	var counts_by_layer := PackedInt32Array()
+	counts_by_layer.resize(maximum_layer_count + 1)
+	for layer_count in layer_counts:
+		if layer_count >= 0:
+			counts_by_layer[int(layer_count)] += 1
 	var sorted := layer_counts.duplicate()
 	sorted.sort()
 	var total := 0.0
@@ -2747,6 +2761,7 @@ func _calculate_groundwater_statistics() -> Dictionary:
 	var land_supply := PackedFloat32Array()
 	var land_depth := PackedFloat32Array()
 	var world_salinity := PackedInt32Array([0, 0, 0])
+	var aquifer_surface_25 := PackedInt32Array([0, 0, 0])
 	var aquifer_25 := PackedInt32Array([0, 0, 0])
 	var aquifer_75 := PackedInt32Array([0, 0, 0])
 	for cell_id in graph.cell_count():
@@ -2754,6 +2769,9 @@ func _calculate_groundwater_statistics() -> Dictionary:
 		if terrain.terrain_height[cell_id] >= 0.0 and surface_water.lake_id[cell_id] < 0:
 			land_supply.append(groundwater.groundwater_supply[cell_id])
 			land_depth.append(groundwater.water_table_depth(cell_id, terrain))
+		aquifer_surface_25[groundwater.aquifer_class_at_z(
+			cell_id, terrain.terrain_height[cell_id] - 25.0, subsurface_strata
+		)] += 1
 		aquifer_25[groundwater.aquifer_class_at_z(
 			cell_id, -25.0, subsurface_strata
 		)] += 1
@@ -2770,6 +2788,7 @@ func _calculate_groundwater_statistics() -> Dictionary:
 		"land_supply": land_supply_statistics,
 		"land_depth": land_depth_statistics,
 		"world_salinity": world_salinity,
+		"aquifer_surface_25": aquifer_surface_25,
 		"aquifer_25": aquifer_25,
 		"aquifer_75": aquifer_75,
 	}
@@ -3615,8 +3634,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Watersheds"
 		ViewMode.GEOLOGIC_PROVINCE:
 			return "Province"
-		ViewMode.DOMINANT_MATERIAL:
-			return "Material"
+		ViewMode.SURFACE_ROCK_TYPE:
+			return "Surface Rock Type"
 		ViewMode.PERMEABILITY:
 			return "Permeability"
 		ViewMode.ERODIBILITY:
@@ -3699,12 +3718,12 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Hazard Propagation"
 		ViewMode.STRATA_LAYER_COUNT:
 			return "Strata Layer Count"
-		ViewMode.STRATA_MATERIAL_Z_25:
-			return "Strata Material z=-25"
-		ViewMode.STRATA_MATERIAL_Z_75:
-			return "Strata Material z=-75"
-		ViewMode.STRATA_MATERIAL_Z_150:
-			return "Strata Material z=-150"
+		ViewMode.STRATA_ROCK_TYPE_Z_25:
+			return "Strata Rock Type z=-25"
+		ViewMode.STRATA_ROCK_TYPE_Z_75:
+			return "Strata Rock Type z=-75"
+		ViewMode.STRATA_ROCK_TYPE_Z_150:
+			return "Strata Rock Type z=-150"
 		ViewMode.STRATA_TRANSECT_Y_25:
 			return "Strata Transect y=25%"
 		ViewMode.STRATA_TRANSECT_Y_50:
@@ -3719,6 +3738,8 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Water Table Depth"
 		ViewMode.GROUNDWATER_SALINITY:
 			return "Groundwater Salinity"
+		ViewMode.AQUIFER_SURFACE_25:
+			return "Aquifer Class Surface -25"
 		ViewMode.AQUIFER_Z_25:
 			return "Aquifer Class z=-25"
 		ViewMode.AQUIFER_Z_75:
@@ -3729,7 +3750,7 @@ func _view_mode_name(mode: int = -1) -> String:
 
 func _is_geology_view() -> bool:
 	return view_mode == ViewMode.GEOLOGIC_PROVINCE \
-			or view_mode == ViewMode.DOMINANT_MATERIAL \
+			or view_mode == ViewMode.SURFACE_ROCK_TYPE \
 			or view_mode == ViewMode.PERMEABILITY \
 			or view_mode == ViewMode.ERODIBILITY
 
@@ -3750,11 +3771,17 @@ func _is_groundwater_view() -> bool:
 
 
 func _is_aquifer_view() -> bool:
-	return view_mode == ViewMode.AQUIFER_Z_25 or view_mode == ViewMode.AQUIFER_Z_75
+	return view_mode >= ViewMode.AQUIFER_SURFACE_25 and view_mode <= ViewMode.AQUIFER_Z_75
 
 
-func _aquifer_slice_z() -> float:
-	return -25.0 if view_mode == ViewMode.AQUIFER_Z_25 else -75.0
+func _aquifer_query_z(cell_id: int) -> float:
+	match view_mode:
+		ViewMode.AQUIFER_SURFACE_25:
+			return terrain.terrain_height[cell_id] - 25.0
+		ViewMode.AQUIFER_Z_25:
+			return -25.0
+		_:
+			return -75.0
 
 
 func _is_surface_water_view() -> bool:

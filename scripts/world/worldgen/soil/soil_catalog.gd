@@ -11,11 +11,6 @@ enum TextureType {
 
 const TEXTURE_COUNT := 5
 
-const _PARENT_FINENESS := [0.25, 0.35, 0.15, 0.80, 0.50, 0.55, 0.70]
-const _WEATHERABILITY := [0.25, 0.35, 0.45, 0.75, 0.70, 0.70, 0.60]
-const _PARENT_NUTRIENT := [0.35, 0.50, 0.20, 0.65, 0.65, 0.80, 0.55]
-
-
 static func texture_name(texture_id: int) -> String:
 	match texture_id:
 		TextureType.NONE:
@@ -32,19 +27,34 @@ static func texture_name(texture_id: int) -> String:
 			return "Unknown Texture"
 
 
-static func parent_fineness_for(material_id: int) -> float:
-	return _property_for(_PARENT_FINENESS, material_id)
+static func parent_fineness_for(rock_type: int) -> float:
+	return _parent_properties_for(rock_type).x
 
 
-static func weatherability_for(material_id: int) -> float:
-	return _property_for(_WEATHERABILITY, material_id)
+static func weatherability_for(rock_type: int) -> float:
+	return _parent_properties_for(rock_type).y
 
 
-static func parent_nutrient_for(material_id: int) -> float:
-	return _property_for(_PARENT_NUTRIENT, material_id)
+static func parent_nutrient_for(rock_type: int) -> float:
+	return _parent_properties_for(rock_type).z
 
 
-static func _property_for(values: Array, material_id: int) -> float:
-	if material_id < 0 or material_id >= GeologyCatalog.MATERIAL_COUNT:
-		return 0.0
-	return float(values[material_id])
+static func _parent_properties_for(rock_type: int) -> Vector3:
+	match rock_type:
+		RockCatalog.RockType.GRANITE, RockCatalog.RockType.DIORITE, RockCatalog.RockType.GABBRO:
+			return Vector3(0.25, 0.25, 0.35)
+		RockCatalog.RockType.RHYOLITE, RockCatalog.RockType.ANDESITE, \
+				RockCatalog.RockType.DACITE, RockCatalog.RockType.BASALT:
+			return Vector3(0.55, 0.70, 0.80)
+		RockCatalog.RockType.SANDSTONE, RockCatalog.RockType.CONGLOMERATE:
+			return Vector3(0.15, 0.45, 0.20)
+		RockCatalog.RockType.SHALE, RockCatalog.RockType.CLAYSTONE:
+			return Vector3(0.80, 0.75, 0.65)
+		RockCatalog.RockType.LIMESTONE, RockCatalog.RockType.DOLOMITE, \
+				RockCatalog.RockType.CHALK, RockCatalog.RockType.CHERT:
+			return Vector3(0.50, 0.70, 0.65)
+		RockCatalog.RockType.SLATE, RockCatalog.RockType.PHYLLITE, \
+				RockCatalog.RockType.SCHIST, RockCatalog.RockType.GNEISS, \
+				RockCatalog.RockType.MARBLE, RockCatalog.RockType.QUARTZITE:
+			return Vector3(0.35, 0.35, 0.50)
+	return Vector3.ZERO

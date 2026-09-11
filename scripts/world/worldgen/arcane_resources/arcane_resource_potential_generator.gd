@@ -38,7 +38,7 @@ static func generate(
 		var material := arcane_material_potential_for(
 			concentration,
 			geology.province_id[cell_id],
-			geology.material_id[cell_id],
+			geology.rock_type_id[cell_id],
 			manifestation
 		)
 		var biological_host := biological_host_for(
@@ -76,10 +76,10 @@ static func arcane_energy_potential_for(concentration: float, flowability: float
 
 
 static func arcane_material_potential_for(
-		concentration: float, province_id: int, material_id: int, manifestation: int
+		concentration: float, province_id: int, rock_type: int, manifestation: int
 ) -> float:
 	var mana_support := sqrt(clampf(concentration, 0.0, 1.0))
-	var geological_host := arcane_material_geology_host_for(province_id, material_id)
+	var geological_host := arcane_material_geology_host_for(province_id, rock_type)
 	var geology_support := 0.60 + 0.40 * geological_host
 	var manifestation_support := 0.75 + 0.25 * manifestation_material_factor_for(
 		manifestation
@@ -87,10 +87,10 @@ static func arcane_material_potential_for(
 	return clampf(mana_support * geology_support * manifestation_support, 0.0, 1.0)
 
 
-static func arcane_material_geology_host_for(province_id: int, material_id: int) -> float:
+static func arcane_material_geology_host_for(province_id: int, rock_type: int) -> float:
 	return sqrt(
 		arcane_material_province_factor_for(province_id)
-		* arcane_material_material_factor_for(material_id)
+		* arcane_material_rock_factor_for(rock_type)
 	)
 
 
@@ -112,24 +112,17 @@ static func arcane_material_province_factor_for(province_id: int) -> float:
 			return 0.0
 
 
-static func arcane_material_material_factor_for(material_id: int) -> float:
-	match material_id:
-		GeologyCatalog.MaterialType.VOLCANIC_ROCK:
+static func arcane_material_rock_factor_for(rock_type: int) -> float:
+	match RockCatalog.category_for(rock_type):
+		RockCatalog.RockCategory.IGNEOUS_EXTRUSIVE:
 			return 0.90
-		GeologyCatalog.MaterialType.METAMORPHIC_ROCK:
+		RockCatalog.RockCategory.METAMORPHIC:
 			return 0.85
-		GeologyCatalog.MaterialType.CRYSTALLINE_ROCK:
+		RockCatalog.RockCategory.IGNEOUS_INTRUSIVE:
 			return 0.75
-		GeologyCatalog.MaterialType.SHALE_MUDSTONE:
-			return 0.45
-		GeologyCatalog.MaterialType.CARBONATE_ROCK:
-			return 0.35
-		GeologyCatalog.MaterialType.SANDSTONE:
-			return 0.25
-		GeologyCatalog.MaterialType.MARINE_SEDIMENTARY_ROCK:
-			return 0.20
-		_:
-			return 0.0
+		RockCatalog.RockCategory.SEDIMENTARY:
+			return 0.30
+	return 0.0
 
 
 static func manifestation_material_factor_for(manifestation: int) -> float:
@@ -286,7 +279,7 @@ static func _inputs_are_valid(
 			or not is_finite(graph.config.world_height) \
 			or graph.config.world_width <= 0.0 or graph.config.world_height <= 0.0 \
 			or graph.cell_centers.size() != count \
-			or geology.province_id.size() != count or geology.material_id.size() != count \
+			or geology.province_id.size() != count or geology.rock_type_id.size() != count \
 			or ecology.vegetation_potential.size() != count \
 			or resource_potential.freshwater_aquatic_potential.size() != count \
 			or resource_potential.coastal_aquatic_potential.size() != count \

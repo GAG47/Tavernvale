@@ -57,10 +57,10 @@ func aquifer_yield_at_z(
 	var active := active_groundwater_at_z(cell_id, z)
 	if active <= 0.0:
 		return 0.0
-	var material_id := strata.material_at_z(cell_id, z)
-	if material_id == SubsurfaceStrataLayer.NO_MATERIAL:
+	var rock_type := strata.rock_type_at_z(cell_id, z)
+	if rock_type == SubsurfaceStrataLayer.NO_ROCK:
 		return 0.0
-	return clampf(active * GeologyCatalog.permeability_for(material_id), 0.0, 1.0)
+	return clampf(active * RockCatalog.permeability_for(rock_type), 0.0, 1.0)
 
 
 func aquifer_class_at_z(
