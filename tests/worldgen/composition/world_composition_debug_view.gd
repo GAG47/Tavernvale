@@ -15,6 +15,7 @@ var composition: WorldCompositionLayer
 var projected_terrain: TerrainHeightLayer
 var geology: GeologyLayer
 var terrain: TerrainHeightLayer
+var tectonic_plates: TectonicPlateLayer
 var subsurface_strata: SubsurfaceStrataLayer
 var groundwater: GroundwaterLayer
 var hydrology: HydrologyConditioningResult
@@ -43,6 +44,7 @@ var soil_settings: SoilSettings
 var resource_settings: ResourcePotentialSettings
 var subsurface_strata_settings: SubsurfaceStrataSettings
 var groundwater_settings: GroundwaterSettings
+var tectonic_plate_settings: TectonicPlateSettings
 var arcane_settings: ArcaneFieldSettings
 var arcane_web_settings: ArcaneWebSettings
 var arcane_forcing_settings: ArcaneForcingSettings
@@ -59,6 +61,7 @@ var _spatial_generation_ms := 0
 var _composition_generation_ms := 0
 var _terrain_projection_ms := 0
 var _geology_generation_ms := 0
+var _tectonic_plate_generation_ms := 0
 var _subsurface_strata_generation_ms := 0
 var _groundwater_generation_ms := 0
 var _hydrology_conditioning_ms := 0
@@ -85,6 +88,7 @@ var _climate_statistics := {}
 var _climate_delta_statistics := {}
 var _formal_hydrology_statistics := {}
 var _geology_statistics := {}
+var _tectonic_plate_statistics := {}
 var _subsurface_strata_statistics := {}
 var _groundwater_statistics := {}
 var _surface_water_statistics := {}
@@ -96,6 +100,7 @@ var _arcane_resource_statistics := {}
 var _arcane_hazard_statistics := {}
 var _arcane_environment_diagnostics := {}
 var _arcane_forcing_diagnostics := {}
+var _tectonic_plate_diagnostics := {}
 var _groundwater_recharge_diagnostics := {}
 var _groundwater_marine_influence := PackedFloat32Array()
 var _show_arcane_domains := false
@@ -106,6 +111,7 @@ const _INFO_WIDTH := 350.0
 enum DebugPage {
 	WORLD,
 	GEOLOGY,
+	TECTONICS,
 	SUBSURFACE_STRATA,
 	GROUNDWATER,
 	HYDROLOGY,
@@ -135,6 +141,10 @@ enum ViewMode {
 	SURFACE_ROCK_TYPE,
 	PERMEABILITY,
 	ERODIBILITY,
+	TECTONIC_STRUCTURE,
+	TECTONIC_PLATES,
+	TECTONIC_ANCHORS,
+	TECTONIC_VELOCITY,
 	TEMPERATURE_DELTA,
 	PRECIPITATION_DELTA,
 	LAKE_EXTENT,
@@ -189,8 +199,8 @@ enum ViewMode {
 }
 
 const DEBUG_PAGE_NAMES := [
-	"World", "Geology", "Subsurface Strata", "Groundwater", "Hydrology", "Ecology & Soil",
-	"Resources", "Arcane", "Arcane Resources"
+	"World", "Geology", "Tectonics", "Subsurface Strata", "Groundwater", "Hydrology",
+	"Ecology & Soil", "Resources", "Arcane", "Arcane Resources"
 ]
 const DEBUG_PAGE_VIEWS := [
 	[
@@ -207,6 +217,12 @@ const DEBUG_PAGE_VIEWS := [
 		ViewMode.SURFACE_ROCK_TYPE,
 		ViewMode.PERMEABILITY,
 		ViewMode.ERODIBILITY,
+	],
+	[
+		ViewMode.TECTONIC_STRUCTURE,
+		ViewMode.TECTONIC_PLATES,
+		ViewMode.TECTONIC_ANCHORS,
+		ViewMode.TECTONIC_VELOCITY,
 	],
 	[
 		ViewMode.STRATA_LAYER_COUNT,
@@ -344,6 +360,7 @@ func _draw() -> void:
 			or projected_terrain == null \
 			or geology == null \
 			or terrain == null \
+			or tectonic_plates == null \
 			or subsurface_strata == null \
 			or groundwater == null \
 			or hydrology == null \
@@ -377,6 +394,10 @@ func _draw() -> void:
 		for cell_id in graph.cell_count():
 			var color := _cell_color(cell_id)
 			_draw_cell_triangle_fan(cell_id, color)
+		if view_mode == ViewMode.TECTONIC_ANCHORS:
+			_draw_tectonic_anchors()
+		elif view_mode == ViewMode.TECTONIC_VELOCITY:
+			_draw_tectonic_velocities()
 	if selected_cell_id >= 0 and not _is_arcane_overlay_view() and not _is_strata_transect_view():
 		draw_polyline(
 			_closed_screen_polygon(graph.cell_polygons[selected_cell_id]),
@@ -386,6 +407,67 @@ func _draw() -> void:
 		)
 	_mask_outside_logical_world()
 	_draw_information()
+
+
+func _draw_tectonic_anchors() -> void:
+	var anchor_ids: PackedInt32Array = _tectonic_plate_diagnostics.anchor_cell_ids
+	for plate_id in anchor_ids.size():
+		var center := _to_screen(graph.cell_centers[anchor_ids[plate_id]])
+		var color := _tectonic_plate_color(plate_id)
+		draw_circle(center, 8.0, Color(0.03, 0.04, 0.06, 0.95))
+		draw_circle(center, 5.0, color)
+		draw_arc(center, 9.0, 0.0, TAU, 24, Color.WHITE, 1.5, true)
+
+
+func _draw_tectonic_velocities() -> void:
+	var position_sum := PackedVector2Array()
+	var cell_count_by_plate := PackedInt32Array()
+	position_sum.resize(tectonic_plates.plate_count())
+	cell_count_by_plate.resize(tectonic_plates.plate_count())
+	for cell_id in graph.cell_count():
+		var plate_id := tectonic_plates.plate_id[cell_id]
+		position_sum[plate_id] += graph.cell_centers[cell_id]
+		cell_count_by_plate[plate_id] += 1
+	for plate_id in tectonic_plates.plate_count():
+		if cell_count_by_plate[plate_id] <= 0:
+			continue
+		var center_world := position_sum[plate_id] / float(cell_count_by_plate[plate_id])
+		var velocity := tectonic_plates.plate_velocity[plate_id]
+		var end_world := center_world + velocity.normalized() * 100.0 * velocity.length()
+		var start := _to_screen(center_world)
+		var end := _to_screen(end_world)
+		var color := Color.WHITE
+		draw_line(start, end, Color(0.02, 0.03, 0.05, 0.92), 6.0, true)
+		draw_line(start, end, color, 3.0, true)
+		var direction := (end - start).normalized()
+		var normal := Vector2(-direction.y, direction.x)
+		var head_length := 10.0
+		var head_width := 6.0
+		draw_colored_polygon(PackedVector2Array([
+			end,
+			end - direction * head_length + normal * head_width,
+			end - direction * head_length - normal * head_width,
+		]), color)
+		draw_circle(start, 4.0, _tectonic_plate_color(plate_id))
+
+
+func _tectonic_plate_color(plate_id: int) -> Color:
+	return Color.from_hsv(fmod(float(plate_id) * 0.61803398875, 1.0), 0.68, 0.88)
+
+
+func _tectonic_structure_color(value: float) -> Color:
+	var normalized := clampf(value, 0.0, 1.0)
+	if normalized < 0.35:
+		return Color(0.04, 0.08, 0.20).lerp(
+			Color(0.08, 0.62, 0.66), normalized / 0.35
+		)
+	if normalized < 0.70:
+		return Color(0.08, 0.62, 0.66).lerp(
+			Color(0.96, 0.78, 0.18), (normalized - 0.35) / 0.35
+		)
+	return Color(0.96, 0.78, 0.18).lerp(
+		Color(0.82, 0.12, 0.10), (normalized - 0.70) / 0.30
+	)
 
 
 func _draw_arcane_web() -> void:
@@ -581,6 +663,12 @@ func _cell_color(cell_id: int) -> Color:
 			return Color(0.16, 0.20, 0.26).lerp(
 				Color(0.96, 0.48, 0.08), geology.erodibility[cell_id]
 			)
+		ViewMode.TECTONIC_STRUCTURE:
+			return _tectonic_structure_color(
+				_tectonic_plate_diagnostics.terrain_structure[cell_id]
+			)
+		ViewMode.TECTONIC_PLATES, ViewMode.TECTONIC_ANCHORS, ViewMode.TECTONIC_VELOCITY:
+			return _tectonic_plate_color(tectonic_plates.plate_id[cell_id])
 		ViewMode.STRATA_LAYER_COUNT:
 			return _strata_layer_count_color(cell_id)
 		ViewMode.STRATA_ROCK_TYPE_Z_25:
@@ -1318,6 +1406,8 @@ func _regenerate_composition() -> void:
 		projected_terrain = null
 		geology = null
 		terrain = null
+		tectonic_plates = null
+		_tectonic_plate_diagnostics = {}
 		subsurface_strata = null
 		groundwater = null
 		_groundwater_recharge_diagnostics = {}
@@ -1377,6 +1467,16 @@ func _regenerate_composition() -> void:
 		terrain = TerrainHeightLayer.new()
 		terrain.terrain_height = hydrology.terrain_height.duplicate()
 	_hydrology_conditioning_ms = Time.get_ticks_msec() - started
+	started = Time.get_ticks_msec()
+	tectonic_plate_settings = TectonicPlateSettings.new()
+	tectonic_plates = null if terrain == null else TectonicPlateGenerator.generate(
+		graph, composition, terrain, seed, tectonic_plate_settings
+	)
+	_tectonic_plate_generation_ms = Time.get_ticks_msec() - started
+	_tectonic_plate_diagnostics = (
+		TectonicPlateGenerator.last_generation_diagnostics()
+		if tectonic_plates != null else {}
+	)
 	started = Time.get_ticks_msec()
 	subsurface_strata_settings = SubsurfaceStrataSettings.new()
 	subsurface_strata = null if terrain == null else SubsurfaceStrataGenerator.generate(
@@ -1537,6 +1637,7 @@ func _regenerate_composition() -> void:
 	_climate_delta_statistics = _calculate_climate_delta_statistics()
 	_formal_hydrology_statistics = _calculate_formal_hydrology_statistics()
 	_geology_statistics = _calculate_geology_statistics()
+	_tectonic_plate_statistics = _calculate_tectonic_plate_statistics()
 	_subsurface_strata_statistics = _calculate_subsurface_strata_statistics()
 	_groundwater_statistics = _calculate_groundwater_statistics()
 	_surface_water_statistics = _calculate_surface_water_statistics()
@@ -1591,7 +1692,9 @@ func _draw_information() -> void:
 	if selected_cell_id >= 0:
 		lines.append("")
 		_append_cell_inspector_header(lines, selected_cell_id)
-		if _is_groundwater_view():
+		if _is_tectonics_view():
+			_append_tectonic_cell_inspection(lines, selected_cell_id)
+		elif _is_groundwater_view():
 			_append_groundwater_cell_inspection(lines, selected_cell_id)
 		elif _is_strata_view():
 			_append_strata_cell_inspection(lines, selected_cell_id)
@@ -1727,6 +1830,7 @@ func _draw_information() -> void:
 		if view_mode != ViewMode.TEMPERATURE_DELTA \
 				and view_mode != ViewMode.PRECIPITATION_DELTA \
 				and not _is_groundwater_view() \
+				and not _is_tectonics_view() \
 				and not _is_strata_view() \
 				and not _is_geology_view() \
 				and not _is_surface_water_view() \
@@ -1767,6 +1871,20 @@ func _append_cell_inspector_header(lines: PackedStringArray, cell_id: int) -> vo
 	lines.append("Cell ID: %d" % cell_id)
 	lines.append("Height: %.3f" % terrain.terrain_height[cell_id])
 	lines.append("Biome: %s" % EcologyCatalog.biome_name(ecology.biome_id[cell_id]))
+
+
+func _append_tectonic_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
+	var plate_id := tectonic_plates.plate_id[cell_id]
+	var velocity := tectonic_plates.plate_velocity[plate_id]
+	lines.append("Terrain Height: %.3f" % terrain.terrain_height[cell_id])
+	lines.append("Continental Value: %d" % composition.continental_value[cell_id])
+	lines.append(
+		"Terrain Structure: %.4f"
+		% _tectonic_plate_diagnostics.terrain_structure[cell_id]
+	)
+	lines.append("Plate ID: %d" % plate_id)
+	lines.append("Plate Velocity: (%.4f, %.4f)" % [velocity.x, velocity.y])
+	lines.append("Plate Speed: %.4f" % velocity.length())
 
 
 func _append_strata_cell_inspection(lines: PackedStringArray, cell_id: int) -> void:
@@ -2110,6 +2228,9 @@ func _append_resource_cell_inspection(lines: PackedStringArray, cell_id: int) ->
 
 
 func _append_mode_statistics(lines: PackedStringArray) -> void:
+	if _is_tectonics_view():
+		_append_tectonic_plate_statistics(lines)
+		return
 	if _is_groundwater_view():
 		_append_groundwater_statistics(lines)
 		return
@@ -2340,6 +2461,36 @@ func _append_mode_statistics(lines: PackedStringArray) -> void:
 			lines.append("Min Delta: %+.4f" % _climate_delta_statistics.min_precipitation_delta)
 			lines.append("Max Delta: %+.4f" % _climate_delta_statistics.max_precipitation_delta)
 			lines.append("Mean Absolute Delta: %.4f" % _climate_delta_statistics.mean_abs_precipitation_delta)
+
+
+func _append_tectonic_plate_statistics(lines: PackedStringArray) -> void:
+	lines.append("Generation: %d ms" % _tectonic_plate_generation_ms)
+	if _tectonic_plate_statistics.is_empty():
+		lines.append("No Tectonic Plate data")
+		return
+	lines.append("Plate Count: %d" % tectonic_plates.plate_count())
+	for plate_id in tectonic_plates.plate_count():
+		var velocity := tectonic_plates.plate_velocity[plate_id]
+		lines.append("Plate %d: %d Cells | v=(%.3f, %.3f) | speed %.3f" % [
+			plate_id,
+			_tectonic_plate_statistics.cell_counts[plate_id],
+			velocity.x,
+			velocity.y,
+			velocity.length(),
+		])
+	lines.append("Structure Min / Mean / Max:")
+	lines.append("  %.4f / %.4f / %.4f" % [
+		_tectonic_plate_statistics.structure_min,
+		_tectonic_plate_statistics.structure_mean,
+		_tectonic_plate_statistics.structure_max,
+	])
+	lines.append("Terrain Boundary Pairs: %d" % _tectonic_plate_diagnostics.boundary_pair_count)
+	if view_mode == ViewMode.TECTONIC_STRUCTURE:
+		lines.append("Continuous terrain structure: 0 to 1")
+	elif view_mode == ViewMode.TECTONIC_ANCHORS:
+		lines.append("Ring markers = generation-only anchors")
+	elif view_mode == ViewMode.TECTONIC_VELOCITY:
+		lines.append("Arrows originate near mean plate positions")
 
 
 func _append_subsurface_strata_statistics(lines: PackedStringArray) -> void:
@@ -2651,6 +2802,29 @@ func _calculate_formal_hydrology_statistics() -> Dictionary:
 		"river_cell_count": river_cell_count,
 		"max_river_order": max_river_order,
 		"largest_discharge": largest_discharge,
+	}
+
+
+func _calculate_tectonic_plate_statistics() -> Dictionary:
+	if tectonic_plates == null or _tectonic_plate_diagnostics.is_empty():
+		return {}
+	var cell_counts := PackedInt32Array()
+	cell_counts.resize(tectonic_plates.plate_count())
+	for plate_id in tectonic_plates.plate_id:
+		cell_counts[plate_id] += 1
+	var structure: PackedFloat32Array = _tectonic_plate_diagnostics.terrain_structure
+	var structure_min := INF
+	var structure_max := -INF
+	var structure_sum := 0.0
+	for value in structure:
+		structure_min = minf(structure_min, value)
+		structure_max = maxf(structure_max, value)
+		structure_sum += value
+	return {
+		"cell_counts": cell_counts,
+		"structure_min": structure_min,
+		"structure_mean": structure_sum / maxf(float(structure.size()), 1.0),
+		"structure_max": structure_max,
 	}
 
 
@@ -3599,6 +3773,14 @@ func _view_mode_name(mode: int = -1) -> String:
 			return "Permeability"
 		ViewMode.ERODIBILITY:
 			return "Erodibility"
+		ViewMode.TECTONIC_STRUCTURE:
+			return "Terrain Structure"
+		ViewMode.TECTONIC_PLATES:
+			return "Tectonic Plates"
+		ViewMode.TECTONIC_ANCHORS:
+			return "Plate Anchors"
+		ViewMode.TECTONIC_VELOCITY:
+			return "Plate Velocity"
 		ViewMode.LAKE_EXTENT:
 			return "Lake Extent"
 		ViewMode.LAKE_DEPTH:
@@ -3710,6 +3892,11 @@ func _is_geology_view() -> bool:
 			or view_mode == ViewMode.SURFACE_ROCK_TYPE \
 			or view_mode == ViewMode.PERMEABILITY \
 			or view_mode == ViewMode.ERODIBILITY
+
+
+func _is_tectonics_view() -> bool:
+	return view_mode >= ViewMode.TECTONIC_STRUCTURE \
+			and view_mode <= ViewMode.TECTONIC_VELOCITY
 
 
 func _is_strata_view() -> bool:
