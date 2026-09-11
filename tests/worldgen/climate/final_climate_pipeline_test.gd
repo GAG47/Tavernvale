@@ -3,12 +3,12 @@ extends SceneTree
 var _failures := PackedStringArray()
 var _pipeline := {}
 
-const ROCKTYPE_REFACTOR_V1_HASH := 2930052603
-const ROCKTYPE_REFACTOR_ARCANE_WEB_HASH := 958429298
-const ROCKTYPE_REFACTOR_ARCANE_CIRCULATION_HASH := 500316615
+const PROVINCE_BOTTOM_REFACTOR_V1_HASH := 1208000482
+const PROVINCE_BOTTOM_REFACTOR_ARCANE_WEB_HASH := 3648647983
+const PROVINCE_BOTTOM_REFACTOR_ARCANE_CIRCULATION_HASH := 2725573914
 const E1EAD01_ARCANE_FORCING_HASH := 1720515922
 const E1EAD01_ARCANE_ENVIRONMENT_HASH := 138486197
-const ROCKTYPE_REFACTOR_ARCANE_FIELD_HASH := 2305000384
+const PROVINCE_BOTTOM_REFACTOR_ARCANE_FIELD_HASH := 1292901883
 
 
 func _init() -> void:
@@ -50,7 +50,7 @@ func _build_fixed_pipeline() -> Dictionary:
 	if composition == null:
 		return {}
 	var projected := TerrainHeightProjector.project(composition.continental_value)
-	var geology := GeologyGenerator.generate(graph, projected)
+	var geology := GeologyGenerator.generate(graph, composition, projected)
 	var settings := WorldClimateSettings.new()
 	var hydrology_settings := WorldHydrologySettings.new()
 	# Preliminary and Final Climate intentionally call the same generator implementation.
@@ -608,14 +608,14 @@ func _test_v201_downstream_zero_regression() -> void:
 	var circulation: ArcaneCirculationLayer = _pipeline.arcane_circulation
 	var forcing: ArcaneForcingLayer = _pipeline.arcane_forcing
 	var environment: ArcaneEnvironmentLayer = _pipeline.arcane_environment
-	_expect(_v1_pipeline_hash(_pipeline) == ROCKTYPE_REFACTOR_V1_HASH,
-		"v1 formal outputs must match the RockType refactor baseline exactly")
+	_expect(_v1_pipeline_hash(_pipeline) == PROVINCE_BOTTOM_REFACTOR_V1_HASH,
+		"v1 formal outputs must match the Province/Bottom refactor baseline exactly")
 	_expect(_v21_pipeline_hash(_pipeline.v2_hash_before_web, field, web)
-			== ROCKTYPE_REFACTOR_ARCANE_WEB_HASH,
-		"Arcane Web formal outputs must match the RockType refactor baseline exactly")
+			== PROVINCE_BOTTOM_REFACTOR_ARCANE_WEB_HASH,
+		"Arcane Web formal outputs must match the Province/Bottom refactor baseline exactly")
 	_expect(_v22_pipeline_hash(_pipeline.v2_hash_before_web, field, web, circulation)
-			== ROCKTYPE_REFACTOR_ARCANE_CIRCULATION_HASH,
-		"Arcane Circulation formal outputs must match the RockType refactor baseline exactly")
+			== PROVINCE_BOTTOM_REFACTOR_ARCANE_CIRCULATION_HASH,
+		"Arcane Circulation formal outputs must match the Province/Bottom refactor baseline exactly")
 	_expect(_arcane_forcing_hash(forcing) == E1EAD01_ARCANE_FORCING_HASH,
 		"Arcane Forcing formal outputs must match the e1ead01 baseline exactly")
 	_expect(_arcane_environment_hash(environment) == E1EAD01_ARCANE_ENVIRONMENT_HASH,
@@ -653,8 +653,8 @@ func _test_arcane_ecology_follows_environment_and_preserves_upstream() -> void:
 		"Arcane Ecology should contain one classification per Environment Cell")
 	_expect(ArcaneEcologyValidator.validate(field, environment, arcane_ecology).is_empty(),
 		"Arcane Ecology should validate after Arcane Environment")
-	_expect(_pipeline.v201_hash_before_web == ROCKTYPE_REFACTOR_ARCANE_FIELD_HASH,
-		"v2.0/v2.0.1 Arcane Field must match the RockType refactor baseline exactly")
+	_expect(_pipeline.v201_hash_before_web == PROVINCE_BOTTOM_REFACTOR_ARCANE_FIELD_HASH,
+		"v2.0/v2.0.1 Arcane Field must match the Province/Bottom refactor baseline exactly")
 	_expect(environment.mana_concentration
 			== _pipeline.arcane_environment_before_ecology[0],
 		"Arcane Ecology generation must not modify Mana Concentration")
@@ -665,14 +665,14 @@ func _test_arcane_ecology_follows_environment_and_preserves_upstream() -> void:
 			== _pipeline.arcane_environment_before_ecology[2],
 		"Arcane Ecology generation must not modify Mana Stability")
 	_expect(_v21_pipeline_hash(_pipeline.v2_hash_before_web, field, _pipeline.arcane_web)
-			== ROCKTYPE_REFACTOR_ARCANE_WEB_HASH,
+			== PROVINCE_BOTTOM_REFACTOR_ARCANE_WEB_HASH,
 		"Arcane Ecology generation must not modify Arcane Web")
 	_expect(_v22_pipeline_hash(
 		_pipeline.v2_hash_before_web,
 		field,
 		_pipeline.arcane_web,
 		_pipeline.arcane_circulation
-	) == ROCKTYPE_REFACTOR_ARCANE_CIRCULATION_HASH,
+	) == PROVINCE_BOTTOM_REFACTOR_ARCANE_CIRCULATION_HASH,
 		"Arcane Ecology generation must not modify Arcane Circulation")
 	_expect(_arcane_forcing_hash(_pipeline.arcane_forcing) == E1EAD01_ARCANE_FORCING_HASH,
 		"Arcane Ecology generation must not modify Arcane Forcing")
@@ -690,9 +690,9 @@ func _test_arcane_resources_follow_ecology_and_preserve_upstream() -> void:
 	_expect(_pipeline.upstream_hash_before_arcane_resources
 			== _pipeline.upstream_hash_after_arcane_resources,
 		"Arcane Resource Potential generation must preserve every upstream output")
-	_expect(_pipeline.v1_hash_before_arcane == ROCKTYPE_REFACTOR_V1_HASH,
+	_expect(_pipeline.v1_hash_before_arcane == PROVINCE_BOTTOM_REFACTOR_V1_HASH,
 		"Arcane Resource Potential must preserve Natural Resource Potential")
-	_expect(_pipeline.v201_hash_before_web == ROCKTYPE_REFACTOR_ARCANE_FIELD_HASH,
+	_expect(_pipeline.v201_hash_before_web == PROVINCE_BOTTOM_REFACTOR_ARCANE_FIELD_HASH,
 		"Arcane Resource Potential must preserve all Background Arcane fields")
 	_expect(_arcane_forcing_hash(_pipeline.arcane_forcing) == E1EAD01_ARCANE_FORCING_HASH,
 		"Arcane Resource Potential must preserve Arcane Forcing")
@@ -711,9 +711,9 @@ func _test_arcane_hazards_follow_resources_and_preserve_upstream() -> void:
 	_expect(_pipeline.upstream_hash_before_arcane_hazards
 			== _pipeline.upstream_hash_after_arcane_hazards,
 		"Arcane Hazard generation must preserve the complete v2.5 upstream snapshot")
-	_expect(_pipeline.v1_hash_before_arcane == ROCKTYPE_REFACTOR_V1_HASH,
+	_expect(_pipeline.v1_hash_before_arcane == PROVINCE_BOTTOM_REFACTOR_V1_HASH,
 		"Arcane Hazard generation must preserve Natural Resource Potential")
-	_expect(_pipeline.v201_hash_before_web == ROCKTYPE_REFACTOR_ARCANE_FIELD_HASH,
+	_expect(_pipeline.v201_hash_before_web == PROVINCE_BOTTOM_REFACTOR_ARCANE_FIELD_HASH,
 		"Arcane Hazard generation must preserve all Background Arcane fields")
 	_expect(_arcane_environment_hash(environment) == E1EAD01_ARCANE_ENVIRONMENT_HASH,
 		"Arcane Hazard generation must preserve Arcane Environment")

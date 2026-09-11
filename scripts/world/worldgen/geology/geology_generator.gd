@@ -3,14 +3,19 @@ extends RefCounted
 
 const PROVINCE_TARGET_CELLS_PER_SEED := 800
 const MAX_PROVINCE_SEEDS_PER_COMPONENT := 32
+const CONTINENTAL_PROVINCE_SUPPORT_THRESHOLD := 14
 const PROVINCE_BASE_PRIOR := [0.0, 0.30, 0.25, 0.25, 0.15, 0.05]
 
 const _MASK := 0x7fffffff
 const _GEOLOGY_SALT := 0x47454f4c # "GEOL"
 
 
-static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> GeologyLayer:
-	if not _inputs_are_valid(graph, terrain):
+static func generate(
+		graph: SpatialGraph,
+		composition: WorldCompositionLayer,
+		terrain: TerrainHeightLayer
+) -> GeologyLayer:
+	if not _inputs_are_valid(graph, composition, terrain):
 		return null
 	var rules_errors := RockLayerRules.validate_rules()
 	if not rules_errors.is_empty():
@@ -19,26 +24,29 @@ static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> Geolog
 	var geology := GeologyLayer.new()
 	var count := graph.cell_count()
 	geology.province_id.resize(count)
-	geology.province_id.fill(-1)
+	geology.province_id.fill(GeologyCatalog.Province.OCEANIC_CRUST)
 	geology.rock_type_id.resize(count)
 	geology.rock_type_id.fill(-1)
 	geology.permeability.resize(count)
 	geology.erodibility.resize(count)
-	for cell_id in count:
-		if terrain.terrain_height[cell_id] < 0.0:
-			geology.province_id[cell_id] = GeologyCatalog.Province.OCEANIC_CRUST
-
 	var seed := _geology_seed(graph.config.seed)
 	var suitability := _province_suitability(graph, terrain)
 	var coast_steps := _coast_steps(graph, terrain)
-	var land_components := _components_by_land(graph, terrain)
-	for component_id in land_components.components.size():
+	var support_components := _components_by_continental_support(graph, composition)
+	for component_id in support_components.components.size():
+		var support_cells: PackedInt32Array = support_components.components[component_id]
+		var land_cells := PackedInt32Array()
+		for cell_id in support_cells:
+			if terrain.terrain_height[cell_id] >= 0.0:
+				land_cells.append(cell_id)
+		if land_cells.is_empty():
+			continue
 		_assign_province_component(
 			graph,
 			terrain,
-			land_components.components[component_id],
+			land_cells,
 			component_id,
-			land_components.component_by_cell,
+			support_components.component_by_cell,
 			suitability,
 			coast_steps,
 			seed,
@@ -64,19 +72,23 @@ static func generate(graph: SpatialGraph, terrain: TerrainHeightLayer) -> Geolog
 		geology.erodibility[cell_id] = RockCatalog.erodibility_for(
 			geology.rock_type_id[cell_id]
 		)
-	var validation_errors := GeologyValidator.validate(graph, terrain, geology)
+	var validation_errors := GeologyValidator.validate(graph, composition, terrain, geology)
 	if not validation_errors.is_empty():
 		push_error("Geology generation failed validation: " + "; ".join(validation_errors))
 		return null
 	return geology
 
 
-static func _inputs_are_valid(graph: SpatialGraph, terrain: TerrainHeightLayer) -> bool:
-	if graph == null or terrain == null or graph.config == null:
-		push_error("GeologyGenerator requires Spatial and projected terrain inputs")
+static func _inputs_are_valid(
+		graph: SpatialGraph,
+		composition: WorldCompositionLayer,
+		terrain: TerrainHeightLayer
+) -> bool:
+	if graph == null or composition == null or terrain == null or graph.config == null:
+		push_error("GeologyGenerator requires Spatial, Composition, and projected terrain inputs")
 		return false
 	var count := graph.cell_count()
-	if count == 0 or terrain.cell_count() != count:
+	if count == 0 or composition.cell_count() != count or terrain.cell_count() != count:
 		push_error("GeologyGenerator inputs must contain the same non-zero Cell Count")
 		return false
 	if graph.cell_neighbors.size() != count \
@@ -92,6 +104,10 @@ static func _inputs_are_valid(graph: SpatialGraph, terrain: TerrainHeightLayer) 
 				or terrain.terrain_height[cell_id] < -100.0 \
 				or terrain.terrain_height[cell_id] > 100.0:
 			push_error("GeologyGenerator terrain_height must be finite and inside [-100, 100]")
+			return false
+		if composition.continental_value[cell_id] < 0 \
+				or composition.continental_value[cell_id] > 100:
+			push_error("GeologyGenerator continental_value must be inside [0, 100]")
 			return false
 	return true
 
@@ -193,16 +209,17 @@ static func _coast_steps(
 	return steps
 
 
-static func _components_by_land(
+static func _components_by_continental_support(
 		graph: SpatialGraph,
-		terrain: TerrainHeightLayer
+		composition: WorldCompositionLayer
 ) -> Dictionary:
 	var component_by_cell := PackedInt32Array()
 	component_by_cell.resize(graph.cell_count())
 	component_by_cell.fill(-1)
 	var components: Array = []
 	for seed_id in graph.cell_count():
-		if terrain.terrain_height[seed_id] < 0.0 or component_by_cell[seed_id] >= 0:
+		if composition.continental_value[seed_id] < CONTINENTAL_PROVINCE_SUPPORT_THRESHOLD \
+				or component_by_cell[seed_id] >= 0:
 			continue
 		var component_id := components.size()
 		var cells := PackedInt32Array([seed_id])
@@ -212,7 +229,8 @@ static func _components_by_land(
 			var cell_id := cells[queue_index]
 			queue_index += 1
 			for neighbor_id in graph.cell_neighbors[cell_id]:
-				if terrain.terrain_height[neighbor_id] >= 0.0 \
+				if composition.continental_value[neighbor_id] \
+						>= CONTINENTAL_PROVINCE_SUPPORT_THRESHOLD \
 						and component_by_cell[neighbor_id] < 0:
 					component_by_cell[neighbor_id] = component_id
 					cells.append(neighbor_id)
@@ -223,7 +241,7 @@ static func _components_by_land(
 static func _assign_province_component(
 		graph: SpatialGraph,
 		terrain: TerrainHeightLayer,
-		cells: PackedInt32Array,
+		land_cells: PackedInt32Array,
 		component_id: int,
 		component_by_cell: PackedInt32Array,
 		suitability: Array,
@@ -232,15 +250,15 @@ static func _assign_province_component(
 		province_id: PackedInt32Array
 ) -> void:
 	var seed_count := clampi(
-		ceili(float(cells.size()) / float(PROVINCE_TARGET_CELLS_PER_SEED)),
+		ceili(float(land_cells.size()) / float(PROVINCE_TARGET_CELLS_PER_SEED)),
 		1,
-		mini(MAX_PROVINCE_SEEDS_PER_COMPONENT, cells.size())
+		mini(MAX_PROVINCE_SEEDS_PER_COMPONENT, land_cells.size())
 	)
 	var seeds: Array = []
-	var landmass_suitability := _landmass_suitability(cells, suitability)
+	var landmass_suitability := _landmass_suitability(land_cells, suitability)
 	for seed_index in seed_count:
 		var cell_id := _choose_region_seed(
-			graph, cells, seeds, seed, component_id * 101 + seed_index
+			graph, land_cells, seeds, seed, component_id * 101 + seed_index
 		)
 		var local_suitability := _local_province_suitability(
 			graph, terrain, cell_id, coast_steps
@@ -253,6 +271,7 @@ static func _assign_province_component(
 		seeds.append({"cell_id": cell_id, "value": province})
 	_expand_regions(
 		graph,
+		terrain,
 		seeds,
 		component_id,
 		component_by_cell,
@@ -458,6 +477,7 @@ static func _choose_region_seed(
 
 static func _expand_regions(
 		graph: SpatialGraph,
+		terrain: TerrainHeightLayer,
 		seeds: Array,
 		component_id: int,
 		component_by_cell: PackedInt32Array,
@@ -488,9 +508,11 @@ static func _expand_regions(
 			var neighbor_id := neighbors[neighbor_index]
 			if component_by_cell[neighbor_id] != component_id:
 				continue
-			var suitability_cost := lerpf(1.75, 0.75, suitability[value][neighbor_id])
-			if value == GeologyCatalog.Province.VOLCANIC_PROVINCE:
-				suitability_cost *= 1.60
+			var suitability_cost := 1.0
+			if terrain.terrain_height[neighbor_id] >= 0.0:
+				suitability_cost = lerpf(1.75, 0.75, suitability[value][neighbor_id])
+				if value == GeologyCatalog.Province.VOLCANIC_PROVINCE:
+					suitability_cost *= 1.60
 			var variation := lerpf(
 				0.92,
 				1.08,

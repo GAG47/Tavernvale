@@ -11,7 +11,7 @@ func _run_all() -> void:
 	var fixture := _world_fixture(1200)
 	_test_structure_surface_and_validator(fixture)
 	_test_queries_and_bounds(fixture)
-	_test_settings_thickness_and_deep_substrate()
+	_test_settings_and_thickness()
 	_test_adjacent_duplicate_normalization()
 	_test_determinism_and_input_preservation(fixture)
 	_test_validator_rejects_wrong_sequence(fixture)
@@ -39,7 +39,7 @@ func _test_structure_surface_and_validator(fixture: Dictionary) -> void:
 	_expect(strata.cell_offsets[-1] == strata.rock_type_ids.size(), "last offset must match records")
 	_expect(strata.rock_type_ids.size() == strata.top_z.size(), "record arrays must have equal sizes")
 	_expect(SubsurfaceStrataValidator.validate(
-		graph, fixture.composition, terrain, geology, strata, 1
+		graph, terrain, geology, strata, 1
 	).is_empty(), "generated Strata must pass its Validator")
 	for cell_id in graph.cell_count():
 		var record_range := strata.record_range_for_cell(cell_id)
@@ -83,7 +83,7 @@ func _test_queries_and_bounds(fixture: Dictionary) -> void:
 	_expect(strata.rock_type_at_z(999999, 0.0) == SubsurfaceStrataLayer.NO_ROCK, "invalid Cell Rock query must be safe")
 
 
-func _test_settings_thickness_and_deep_substrate() -> void:
+func _test_settings_and_thickness() -> void:
 	var settings := SubsurfaceStrataSettings.new()
 	var property_names := PackedStringArray()
 	for property in settings.get_property_list():
@@ -102,48 +102,14 @@ func _test_settings_thickness_and_deep_substrate() -> void:
 	var base_seed := DeterministicRng.stable_mix(1, SubsurfaceStrataGenerator.STRATA_SEED_SALT)
 	_expect(SubsurfaceStrataGenerator.stable_layer_offset(base_seed, 2, 300.0) == SubsurfaceStrataGenerator.stable_layer_offset(base_seed, 2, 300.0), "thickness layer offset must be deterministic")
 	_expect(SubsurfaceStrataGenerator.stable_layer_offset(base_seed, 1, 300.0) != SubsurfaceStrataGenerator.stable_layer_offset(base_seed, 2, 300.0), "logical layers must use distinct stable noise offsets")
-	_expect(SubsurfaceStrataGenerator.is_continental_deep_substrate(20, -1.0, settings), "Deep Substrate formula must retain continental behavior")
-	_expect(SubsurfaceStrataGenerator.is_continental_deep_substrate(14, 0.0, settings), "Deep Substrate threshold must be lower-inclusive")
-	_expect(not SubsurfaceStrataGenerator.is_continental_deep_substrate(13, 0.0, settings), "Deep score below threshold must be Oceanic")
 
 
 func _test_adjacent_duplicate_normalization() -> void:
-	var found_seed := -1
-	for world_seed in 256:
-		var sequence := RockLayerRules.sequence_for(
-			GeologyCatalog.Province.CRATON, world_seed, 0
-		)
-		var basement := RockLayerRules.basement_for(true, world_seed, 0)
-		var logical := sequence.duplicate()
-		logical.append(basement)
-		for index in range(1, logical.size()):
-			if logical[index] == logical[index - 1]:
-				found_seed = world_seed
-				break
-		if found_seed >= 0:
-			break
-	_expect(found_seed >= 0, "test search must find a natural repeated logical RockType")
-	if found_seed < 0:
-		return
-	var graph := _single_cell_graph(found_seed)
-	var composition := WorldCompositionLayer.new()
-	composition.continental_value = PackedInt32Array([100])
-	var terrain := TerrainHeightLayer.new()
-	terrain.terrain_height = PackedFloat32Array([40.0])
-	var geology := GeologyLayer.new()
-	geology.province_id = PackedInt32Array([GeologyCatalog.Province.CRATON])
-	geology.rock_type_id = PackedInt32Array([
-		RockLayerRules.surface_rock_for(GeologyCatalog.Province.CRATON, found_seed, 0)
-	])
-	var strata := SubsurfaceStrataGenerator.generate(
-		graph, composition, terrain, geology, found_seed
-	)
-	_expect(strata != null, "duplicate normalization fixture must generate")
-	if strata == null:
-		return
-	var record_range := strata.record_range_for_cell(0)
-	for record_index in range(record_range.x, record_range.y - 1):
-		_expect(strata.rock_type_ids[record_index] != strata.rock_type_ids[record_index + 1], "logical duplicate RockTypes must merge before storage")
+	for province_id in GeologyCatalog.PROVINCE_COUNT:
+		for region_seed in 1024:
+			var sequence := RockLayerRules.sequence_for(province_id, 1, region_seed)
+			for index in range(1, sequence.size()):
+				_expect(sequence[index] != sequence[index - 1], "sequence_for must normalize adjacent BOTTOM duplicates")
 
 
 func _test_determinism_and_input_preservation(fixture: Dictionary) -> void:
@@ -158,8 +124,8 @@ func _test_determinism_and_input_preservation(fixture: Dictionary) -> void:
 	var heights_before := terrain.terrain_height.duplicate()
 	var provinces_before := geology.province_id.duplicate()
 	var rocks_before := geology.rock_type_id.duplicate()
-	var first := SubsurfaceStrataGenerator.generate(graph, composition, terrain, geology, 1)
-	var second := SubsurfaceStrataGenerator.generate(graph, composition, terrain, geology, 1)
+	var first := SubsurfaceStrataGenerator.generate(graph, terrain, geology, 1)
+	var second := SubsurfaceStrataGenerator.generate(graph, terrain, geology, 1)
 	_expect(first != null and second != null, "Strata must generate twice")
 	if first != null and second != null:
 		_expect(first.cell_offsets == second.cell_offsets, "cell_offsets must be deterministic")
@@ -186,7 +152,7 @@ func _test_validator_rejects_wrong_sequence(fixture: Dictionary) -> void:
 		break
 	_expect(changed, "validator fixture must contain a multi-layer Cell")
 	var errors := SubsurfaceStrataValidator.validate(
-		fixture.graph, fixture.composition, fixture.terrain, fixture.geology, bad, 1
+		fixture.graph, fixture.terrain, fixture.geology, bad, 1
 	)
 	_expect(not errors.is_empty(), "Validator must reject a structurally plausible wrong Rock sequence")
 
@@ -196,22 +162,25 @@ func _test_standard_world(fixture: Dictionary) -> void:
 	if fixture.is_empty() or fixture.strata == null:
 		return
 	var statistics := _standard_statistics(fixture)
-	print("RockType / Strata standard Seed 1 Continents 20k statistics:")
+	print("Province / RockType / Strata standard Seed 1 Continents 20k statistics:")
 	print("  Surface RockType counts: %s" % str(statistics.surface_rock_counts))
 	print("  Surface RockCategory counts: %s" % str(statistics.surface_category_counts))
-	print("  Province counts: %s" % str(statistics.province_counts))
+	print("  Province counts total: %s" % str(statistics.province_counts))
+	print("  Province counts land: %s" % str(statistics.land_province_counts))
+	print("  Province counts ocean: %s" % str(statistics.ocean_province_counts))
+	print("  Province components min/P50/P90/max: %s" % str(statistics.province_component_summary))
+	print("  Cell 14185: %s" % str(statistics.cell_14185))
+	print("  Rock Regions total/min/P10/P50/P90/max/size1/size2/size3-5/disconnected/cross: %s" % str(statistics.rock_region_summary))
 	print("  Stored layer count mean/P50/P95/max: %.4f / %.1f / %.1f / %d" % [statistics.layer_mean, statistics.layer_p50, statistics.layer_p95, statistics.layer_max])
-	print("  Continental terminal basement counts: %s" % str(statistics.continental_basement_counts))
-	print("  Oceanic terminal Gabbro count: %d" % statistics.oceanic_gabbro_count)
+	print("  Terminal RockType counts [Gneiss, Schist, Diorite, Granite, Gabbro, Other]: %s" % str(statistics.terminal_counts))
 	print("  Same Province + surface Rock neighbor exact sequence: %d/%d (%.6f)" % [statistics.sequence_match_count, statistics.sequence_pair_count, statistics.sequence_match_ratio])
 	print("  Invalid Rocks / adjacent duplicates / unterminated: %d / %d / %d" % [statistics.invalid_rocks, statistics.adjacent_duplicates, statistics.unterminated])
-	print("  Coast/deep-boundary decoupled Cells: %d" % statistics.coast_deep_mismatch_count)
 	_expect(statistics.invalid_rocks == 0, "standard world must contain no invalid RockType")
 	_expect(statistics.adjacent_duplicates == 0, "standard world must contain no adjacent stored duplicate")
 	_expect(statistics.unterminated == 0, "standard world must contain no unterminated sequence")
-	_expect(statistics.oceanic_non_gabbro_count == 0, "all Oceanic Deep basement must be Gabbro")
-	_expect(statistics.continental_invalid_basement_count == 0, "Continental basement must use its fixed pool")
-	_expect(statistics.coast_deep_mismatch_count > 0, "coastline and Deep Substrate boundary must remain decoupled")
+	_expect(statistics.terminal_counts[5] == 0, "all terminal Rocks must use the unified BOTTOM pool")
+	_expect(statistics.rock_region_summary.disconnected == 0, "all Rock Regions must be connected")
+	_expect(statistics.rock_region_summary.cross_province == 0, "Rock Regions must not cross Province")
 
 
 func _standard_statistics(fixture: Dictionary) -> Dictionary:
@@ -220,28 +189,25 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 	var terrain: TerrainHeightLayer = fixture.terrain
 	var geology: GeologyLayer = fixture.geology
 	var strata: SubsurfaceStrataLayer = fixture.strata
-	var settings := SubsurfaceStrataSettings.new()
-	var base_seed := DeterministicRng.stable_mix(1, SubsurfaceStrataGenerator.STRATA_SEED_SALT)
-	var deep_noise := SubsurfaceStrataGenerator.make_deep_crust_noise(base_seed, settings)
 	var surface_rock_counts := PackedInt32Array()
 	surface_rock_counts.resize(RockCatalog.ROCK_TYPE_COUNT)
 	var surface_category_counts := PackedInt32Array()
 	surface_category_counts.resize(RockCatalog.ROCK_CATEGORY_COUNT)
 	var province_counts := PackedInt32Array()
 	province_counts.resize(GeologyCatalog.PROVINCE_COUNT)
-	var continental_basement_counts := PackedInt32Array()
-	continental_basement_counts.resize(RockCatalog.ROCK_TYPE_COUNT)
+	var land_province_counts := PackedInt32Array()
+	land_province_counts.resize(GeologyCatalog.PROVINCE_COUNT)
+	var ocean_province_counts := PackedInt32Array()
+	ocean_province_counts.resize(GeologyCatalog.PROVINCE_COUNT)
+	var terminal_counts := PackedInt32Array()
+	terminal_counts.resize(6)
 	var layer_counts := PackedFloat32Array()
 	var layer_total := 0.0
 	var layer_max := 0
 	var invalid_rocks := 0
 	var adjacent_duplicates := 0
 	var unterminated := 0
-	var oceanic_gabbro_count := 0
-	var oceanic_non_gabbro_count := 0
-	var continental_invalid_basement_count := 0
-	var coast_deep_mismatch_count := 0
-	var continental_pool := RockLayerRules.continental_basement_pool()
+	var bottom_pool := RockLayerRules.bottom_pool()
 	for cell_id in graph.cell_count():
 		var surface_rock := geology.rock_type_id[cell_id]
 		if RockCatalog.is_valid_rock_type(surface_rock):
@@ -250,6 +216,10 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 		else:
 			invalid_rocks += 1
 		province_counts[geology.province_id[cell_id]] += 1
+		if terrain.terrain_height[cell_id] >= 0.0:
+			land_province_counts[geology.province_id[cell_id]] += 1
+		else:
+			ocean_province_counts[geology.province_id[cell_id]] += 1
 		var record_range := strata.record_range_for_cell(cell_id)
 		var layer_count := record_range.y - record_range.x
 		layer_counts.append(layer_count)
@@ -265,25 +235,8 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 					and strata.rock_type_ids[record_index] == strata.rock_type_ids[record_index + 1]:
 				adjacent_duplicates += 1
 		var terminal := strata.rock_type_ids[record_range.y - 1]
-		var position := graph.cell_centers[cell_id]
-		var deep_continental := SubsurfaceStrataGenerator.is_continental_deep_substrate(
-			composition.continental_value[cell_id],
-			deep_noise.get_noise_2d(position.x, position.y),
-			settings
-		)
-		if deep_continental:
-			if terminal in continental_pool:
-				continental_basement_counts[terminal] += 1
-			else:
-				continental_invalid_basement_count += 1
-		else:
-			if terminal == RockCatalog.RockType.GABBRO:
-				oceanic_gabbro_count += 1
-			else:
-				oceanic_non_gabbro_count += 1
-		var is_ocean := terrain.terrain_height[cell_id] < 0.0
-		if is_ocean == deep_continental:
-			coast_deep_mismatch_count += 1
+		var bottom_index := bottom_pool.find(terminal)
+		terminal_counts[bottom_index if bottom_index >= 0 else 5] += 1
 	var sequence_pair_count := 0
 	var sequence_match_count := 0
 	for cell_id in graph.cell_count():
@@ -296,26 +249,154 @@ func _standard_statistics(fixture: Dictionary) -> Dictionary:
 			if _stored_sequence_equal(strata, cell_id, neighbor_id):
 				sequence_match_count += 1
 	layer_counts.sort()
+	var province_component_summary := _province_component_summary(graph, geology)
+	var rock_region_seed_cells := RockRegionAssigner.assign_seed_cells(graph, geology.province_id, 1)
+	var rock_region_summary := _rock_region_summary(graph, geology, rock_region_seed_cells)
+	var cell_14185 := _cell_regression_statistics(
+		14185, graph, composition, terrain, geology, rock_region_seed_cells
+	)
 	return {
 		"surface_rock_counts": surface_rock_counts,
 		"surface_category_counts": surface_category_counts,
 		"province_counts": province_counts,
+		"land_province_counts": land_province_counts,
+		"ocean_province_counts": ocean_province_counts,
+		"province_component_summary": province_component_summary,
+		"cell_14185": cell_14185,
+		"rock_region_summary": rock_region_summary,
 		"layer_mean": layer_total / float(graph.cell_count()),
 		"layer_p50": _percentile(layer_counts, 0.50),
 		"layer_p95": _percentile(layer_counts, 0.95),
 		"layer_max": layer_max,
-		"continental_basement_counts": continental_basement_counts,
-		"oceanic_gabbro_count": oceanic_gabbro_count,
-		"oceanic_non_gabbro_count": oceanic_non_gabbro_count,
-		"continental_invalid_basement_count": continental_invalid_basement_count,
+		"terminal_counts": terminal_counts,
 		"sequence_pair_count": sequence_pair_count,
 		"sequence_match_count": sequence_match_count,
 		"sequence_match_ratio": float(sequence_match_count) / maxf(float(sequence_pair_count), 1.0),
 		"invalid_rocks": invalid_rocks,
 		"adjacent_duplicates": adjacent_duplicates,
 		"unterminated": unterminated,
-		"coast_deep_mismatch_count": coast_deep_mismatch_count,
 	}
+
+
+func _province_component_summary(graph: SpatialGraph, geology: GeologyLayer) -> Dictionary:
+	var visited := PackedByteArray()
+	visited.resize(graph.cell_count())
+	var sizes_by_province := {}
+	for province_id in GeologyCatalog.PROVINCE_COUNT:
+		sizes_by_province[province_id] = PackedFloat32Array()
+	for start in graph.cell_count():
+		if visited[start] != 0:
+			continue
+		var province_id := geology.province_id[start]
+		var queue := PackedInt32Array([start])
+		visited[start] = 1
+		var index := 0
+		while index < queue.size():
+			var cell_id := queue[index]
+			index += 1
+			for neighbor_id in graph.cell_neighbors[cell_id]:
+				if visited[neighbor_id] == 0 and geology.province_id[neighbor_id] == province_id:
+					visited[neighbor_id] = 1
+					queue.append(neighbor_id)
+		sizes_by_province[province_id].append(queue.size())
+	var result := {}
+	for province_id in GeologyCatalog.PROVINCE_COUNT:
+		var sizes: PackedFloat32Array = sizes_by_province[province_id]
+		sizes.sort()
+		result[GeologyCatalog.province_name(province_id)] = {
+			"components": sizes.size(),
+			"min": 0.0 if sizes.is_empty() else sizes[0],
+			"p50": _percentile(sizes, 0.50),
+			"p90": _percentile(sizes, 0.90),
+			"max": 0.0 if sizes.is_empty() else sizes[-1],
+		}
+	return result
+
+
+func _rock_region_summary(
+		graph: SpatialGraph, geology: GeologyLayer, seeds: PackedInt32Array
+) -> Dictionary:
+	var cells_by_seed := {}
+	for cell_id in graph.cell_count():
+		var seed := seeds[cell_id]
+		if not cells_by_seed.has(seed):
+			cells_by_seed[seed] = PackedInt32Array()
+		cells_by_seed[seed].append(cell_id)
+	var sizes := PackedFloat32Array()
+	var size_1 := 0
+	var size_2 := 0
+	var size_3_5 := 0
+	var disconnected := 0
+	var cross_province := 0
+	for seed in cells_by_seed:
+		var cells: PackedInt32Array = cells_by_seed[seed]
+		sizes.append(cells.size())
+		size_1 += int(cells.size() == 1)
+		size_2 += int(cells.size() == 2)
+		size_3_5 += int(cells.size() >= 3 and cells.size() <= 5)
+		var allowed := {}
+		for cell_id in cells:
+			allowed[cell_id] = true
+			if geology.province_id[cell_id] != geology.province_id[seed]:
+				cross_province += 1
+				break
+		var reached := {cells[0]: true}
+		var queue := PackedInt32Array([cells[0]])
+		var index := 0
+		while index < queue.size():
+			var cell_id := queue[index]
+			index += 1
+			for neighbor_id in graph.cell_neighbors[cell_id]:
+				if allowed.has(neighbor_id) and not reached.has(neighbor_id):
+					reached[neighbor_id] = true
+					queue.append(neighbor_id)
+		if reached.size() != cells.size():
+			disconnected += 1
+	sizes.sort()
+	return {
+		"total": sizes.size(), "min": sizes[0], "p10": _percentile(sizes, 0.10),
+		"p50": _percentile(sizes, 0.50), "p90": _percentile(sizes, 0.90),
+		"max": sizes[-1], "size_1": size_1, "size_2": size_2, "size_3_5": size_3_5,
+		"disconnected": disconnected, "cross_province": cross_province,
+	}
+
+
+func _cell_regression_statistics(
+		cell_id: int, graph: SpatialGraph, composition: WorldCompositionLayer,
+		terrain: TerrainHeightLayer, geology: GeologyLayer, region_seeds: PackedInt32Array
+) -> Dictionary:
+	var support := GeologyGenerator._components_by_continental_support(graph, composition)
+	var support_component_id: int = support.component_by_cell[cell_id]
+	var support_size: int = 0 if support_component_id < 0 \
+			else support.components[support_component_id].size()
+	var region_seed := region_seeds[cell_id]
+	var terrain_component_size := _matching_component_size(graph, cell_id, func(id: int) -> bool: return terrain.terrain_height[id] >= 0.0)
+	var province_component_size := _matching_component_size(graph, cell_id, func(id: int) -> bool: return geology.province_id[id] == geology.province_id[cell_id])
+	var region_size := _matching_component_size(graph, cell_id, func(id: int) -> bool: return region_seeds[id] == region_seed)
+	return {
+		"terrain_land_component_size": terrain_component_size,
+		"continental_support_component_size": support_size,
+		"province": GeologyCatalog.province_name(geology.province_id[cell_id]),
+		"province_component_size": province_component_size,
+		"rock_region_size": region_size,
+		"surface_rock": RockCatalog.name_for(geology.rock_type_id[cell_id]),
+	}
+
+
+func _matching_component_size(graph: SpatialGraph, start: int, predicate: Callable) -> int:
+	if not predicate.call(start):
+		return 0
+	var reached := {start: true}
+	var queue := PackedInt32Array([start])
+	var index := 0
+	while index < queue.size():
+		var cell_id := queue[index]
+		index += 1
+		for neighbor_id in graph.cell_neighbors[cell_id]:
+			if not reached.has(neighbor_id) and predicate.call(neighbor_id):
+				reached[neighbor_id] = true
+				queue.append(neighbor_id)
+	return reached.size()
 
 
 func _world_fixture(cell_count: int) -> Dictionary:
@@ -328,7 +409,7 @@ func _world_fixture(cell_count: int) -> Dictionary:
 		graph, WorldCompositionConfig.new(1, &"continents")
 	)
 	var projected := TerrainHeightProjector.project(composition.continental_value)
-	var geology := GeologyGenerator.generate(graph, projected)
+	var geology := GeologyGenerator.generate(graph, composition, projected)
 	var climate_settings := WorldClimateSettings.new(70.0, -20.0)
 	var preliminary_climate := WorldClimateGenerator.generate(graph, projected, climate_settings)
 	var hydrology_settings := WorldHydrologySettings.new()
@@ -341,7 +422,7 @@ func _world_fixture(cell_count: int) -> Dictionary:
 	var terrain := TerrainHeightLayer.new()
 	terrain.terrain_height = conditioning.terrain_height.duplicate()
 	var strata := SubsurfaceStrataGenerator.generate(
-		graph, composition, terrain, geology, 1, SubsurfaceStrataSettings.new()
+		graph, terrain, geology, 1, SubsurfaceStrataSettings.new()
 	)
 	return {
 		"graph": graph,

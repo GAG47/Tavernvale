@@ -2,7 +2,6 @@ class_name RockLayerRules
 extends RefCounted
 
 const ROCK_SEQUENCE_SALT := 0x52534551 # "RSEQ"
-const BASEMENT_SALT := 0x42415345 # "BASE"
 
 enum LayerNode {
 	BOTTOM,
@@ -129,8 +128,15 @@ static func sequence_for(
 		if choices.is_empty():
 			return PackedInt32Array()
 		var choice := choices[_choice_index(rng.next_float(), choices.size())]
-		sequence.append(choice.x)
+		if sequence.is_empty() or sequence[-1] != choice.x:
+			sequence.append(choice.x)
 		node = choice.y
+	var bottom_pool := bottom_pool()
+	if bottom_pool.is_empty():
+		return PackedInt32Array()
+	var terminal_rock := bottom_pool[_choice_index(rng.next_float(), bottom_pool.size())]
+	if sequence.is_empty() or sequence[-1] != terminal_rock:
+		sequence.append(terminal_rock)
 	return sequence
 
 
@@ -141,7 +147,7 @@ static func surface_rock_for(
 	return sequence[0] if not sequence.is_empty() else -1
 
 
-static func continental_basement_pool() -> PackedInt32Array:
+static func bottom_pool() -> PackedInt32Array:
 	return PackedInt32Array([
 		RockCatalog.RockType.GNEISS,
 		RockCatalog.RockType.SCHIST,
@@ -149,20 +155,6 @@ static func continental_basement_pool() -> PackedInt32Array:
 		RockCatalog.RockType.GRANITE,
 		RockCatalog.RockType.GABBRO,
 	])
-
-
-static func basement_for(
-		is_deep_continental: bool, world_seed: int, rock_region_seed_cell_id: int
-) -> int:
-	if not is_deep_continental:
-		return RockCatalog.RockType.GABBRO
-	var pool := continental_basement_pool()
-	var basement_seed := DeterministicRng.stable_mix(
-		DeterministicRng.stable_mix(world_seed, ROCK_SEQUENCE_SALT),
-		DeterministicRng.stable_mix(rock_region_seed_cell_id, BASEMENT_SALT)
-	)
-	var rng := DeterministicRng.new(basement_seed)
-	return pool[_choice_index(rng.next_float(), pool.size())]
 
 
 static func transition_is_defined(node: int, rock_type: int, next_node: int) -> bool:
@@ -186,9 +178,12 @@ static func validate_rules() -> PackedStringArray:
 	state[LayerNode.BOTTOM] = 2
 	for node in range(1, NODE_COUNT):
 		_validate_node(node, state, errors)
-	for rock_type in continental_basement_pool():
+	var terminal_pool := bottom_pool()
+	if terminal_pool.is_empty():
+		errors.append("Rock Layer bottom pool must not be empty")
+	for rock_type in terminal_pool:
 		if not RockCatalog.is_valid_rock_type(rock_type):
-			errors.append("Continental basement pool contains an invalid RockType")
+			errors.append("Rock Layer bottom pool contains an invalid RockType")
 	return errors
 
 

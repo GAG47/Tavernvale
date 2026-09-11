@@ -10,7 +10,7 @@ func _init() -> void:
 func _run_all() -> void:
 	_test_determinism()
 	_test_array_sizes_ranges_and_validator()
-	_test_oceanic_crust_assignment()
+	_test_continental_support_semantics()
 	_test_rock_catalog()
 	_test_rock_region_assignment()
 	_test_rock_layer_rules()
@@ -29,8 +29,9 @@ func _run_all() -> void:
 func _test_determinism() -> void:
 	var graph := _line_graph(600, 42)
 	var terrain := _mixed_terrain(600)
-	var first := GeologyGenerator.generate(graph, terrain)
-	var second := GeologyGenerator.generate(graph, terrain)
+	var composition := _uniform_composition(600, 20)
+	var first := GeologyGenerator.generate(graph, composition, terrain)
+	var second := GeologyGenerator.generate(graph, composition, terrain)
 	_expect(first != null and second != null, "determinism world should generate twice")
 	if first == null or second == null:
 		return
@@ -43,7 +44,8 @@ func _test_determinism() -> void:
 func _test_array_sizes_ranges_and_validator() -> void:
 	var graph := _line_graph(600, 42)
 	var terrain := _mixed_terrain(600)
-	var geology := GeologyGenerator.generate(graph, terrain)
+	var composition := _uniform_composition(600, 20)
+	var geology := GeologyGenerator.generate(graph, composition, terrain)
 	_expect(geology != null, "range test world should generate")
 	if geology == null:
 		return
@@ -64,24 +66,39 @@ func _test_array_sizes_ranges_and_validator() -> void:
 			"erodibility should remain inside [0, 1]"
 		)
 	_expect(
-		GeologyValidator.validate(graph, terrain, geology).is_empty(),
+		GeologyValidator.validate(graph, composition, terrain, geology).is_empty(),
 		"generated Geology should pass its Validator"
 	)
 
 
-func _test_oceanic_crust_assignment() -> void:
-	var graph := _line_graph(120, 7)
-	var terrain := _mixed_terrain(120)
-	var geology := GeologyGenerator.generate(graph, terrain)
-	_expect(geology != null, "Ocean assignment world should generate")
-	if geology == null:
-		return
-	for cell_id in graph.cell_count():
-		if terrain.terrain_height[cell_id] < 0.0:
-			_expect(
-				geology.province_id[cell_id] == GeologyCatalog.Province.OCEANIC_CRUST,
-				"every Ocean Cell should use Oceanic Crust"
-			)
+func _test_continental_support_semantics() -> void:
+	var graph := _line_graph(7, 7)
+	var terrain := TerrainHeightLayer.new()
+	terrain.terrain_height = PackedFloat32Array([20.0, 20.0, -10.0, -10.0, -10.0, 20.0, 20.0])
+	var joined := _uniform_composition(7, GeologyGenerator.CONTINENTAL_PROVINCE_SUPPORT_THRESHOLD)
+	var joined_geology := GeologyGenerator.generate(graph, joined, terrain)
+	_expect(joined_geology != null, "submerged support bridge world should generate")
+	if joined_geology != null:
+		var province := joined_geology.province_id[0]
+		for cell_id in graph.cell_count():
+			_expect(joined_geology.province_id[cell_id] == province, "submerged support must connect and receive the land-seeded Province")
+		_expect(province != GeologyCatalog.Province.OCEANIC_CRUST, "land-backed continental support must not remain Oceanic Crust")
+	var split := _uniform_composition(7, 20)
+	split.continental_value[3] = GeologyGenerator.CONTINENTAL_PROVINCE_SUPPORT_THRESHOLD - 1
+	var split_components := GeologyGenerator._components_by_continental_support(graph, split)
+	_expect(split_components.component_by_cell[3] == -1, "below-threshold Ocean must not belong to Province support")
+	_expect(split_components.component_by_cell[2] != split_components.component_by_cell[4], "below-threshold Ocean must split continental support components")
+	var split_geology := GeologyGenerator.generate(graph, split, terrain)
+	_expect(split_geology != null, "split support world should generate")
+	if split_geology != null:
+		_expect(split_geology.province_id[3] == GeologyCatalog.Province.OCEANIC_CRUST, "below-threshold Cell must be Oceanic Crust")
+	var submerged_terrain := TerrainHeightLayer.new()
+	submerged_terrain.terrain_height = PackedFloat32Array([-10.0, -10.0, -10.0, -10.0, -10.0, -10.0, -10.0])
+	var submerged_geology := GeologyGenerator.generate(graph, joined, submerged_terrain)
+	_expect(submerged_geology != null, "pure submerged support world should generate")
+	if submerged_geology != null:
+		for province_id in submerged_geology.province_id:
+			_expect(province_id == GeologyCatalog.Province.OCEANIC_CRUST, "support without a true-land seed must remain Oceanic Crust")
 
 
 func _test_rock_catalog() -> void:
@@ -154,6 +171,13 @@ func _test_rock_region_assignment() -> void:
 		var seed_cell_id := first[cell_id]
 		_expect(seed_cell_id >= 0 and seed_cell_id < graph.cell_count(), "every Cell must receive a valid Rock Region seed")
 		_expect(provinces[seed_cell_id] == provinces[cell_id], "Rock Regions must not cross Province components")
+	var region_cells := {}
+	for cell_id in graph.cell_count():
+		if not region_cells.has(first[cell_id]):
+			region_cells[first[cell_id]] = PackedInt32Array()
+		region_cells[first[cell_id]].append(cell_id)
+	for region_seed in region_cells:
+		_expect(_cells_are_connected(graph, region_cells[region_seed]), "every Rock Region must be graph-connected")
 
 
 func _test_rock_layer_rules() -> void:
@@ -167,12 +191,48 @@ func _test_rock_layer_rules() -> void:
 	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.PASSIVE_MARGIN) == PackedInt32Array([n.SEDIMENTARY]), "Passive Margin root must be SEDIMENTARY")
 	_expect(RockLayerRules.root_pool_for(GeologyCatalog.Province.VOLCANIC_PROVINCE) == PackedInt32Array([n.EXTRUSIVE, n.EXTRUSIVE_X2, n.INTRUSIVE]), "Volcanic root pool must match the fixed mapping")
 	_expect(RockLayerRules.transition_is_defined(n.SEDIMENTARY, r.SANDSTONE, n.MM_QUARTZITE), "Sandstone must transition to MM_QUARTZITE")
-	var continental_pool := RockLayerRules.continental_basement_pool()
-	_expect(continental_pool == PackedInt32Array([r.GNEISS, r.SCHIST, r.DIORITE, r.GRANITE, r.GABBRO]), "Continental basement pool must match the fixed five rocks")
-	for seed_cell_id in 32:
-		_expect(RockLayerRules.basement_for(false, 1, seed_cell_id) == r.GABBRO, "Oceanic basement must always be Gabbro")
-		_expect(RockLayerRules.basement_for(true, 1, seed_cell_id) in continental_pool, "Continental basement must come from the fixed pool")
+	var bottom_pool := RockLayerRules.bottom_pool()
+	_expect(bottom_pool == PackedInt32Array([r.GNEISS, r.SCHIST, r.DIORITE, r.GRANITE, r.GABBRO]), "unified BOTTOM pool must match the fixed five rocks")
+	var observed_terminals := {}
+	var found_terminal_duplicate := false
+	for province_id in GeologyCatalog.PROVINCE_COUNT:
+		for seed_cell_id in 512:
+			var sequence := RockLayerRules.sequence_for(province_id, 1, seed_cell_id)
+			var raw := _raw_sequence_terminal(province_id, 1, seed_cell_id)
+			_expect(not sequence.is_empty(), "every Province sequence must terminate")
+			if sequence.is_empty():
+				continue
+			_expect(sequence[-1] in bottom_pool, "every sequence terminal must come from unified BOTTOM pool")
+			observed_terminals[sequence[-1]] = true
+			for index in range(1, sequence.size()):
+				_expect(sequence[index] != sequence[index - 1], "complete sequence must remove an adjacent duplicate at BOTTOM")
+			if raw.last_transition_rock == raw.terminal_rock:
+				found_terminal_duplicate = true
+				_expect(sequence[-1] == raw.terminal_rock, "deduplicated BOTTOM Rock must remain terminal")
+				_expect(sequence.size() == 1 or sequence[-2] != raw.terminal_rock, "equal transition and BOTTOM Rock must be stored once")
+	_expect(observed_terminals.size() == bottom_pool.size(), "deterministic coverage must observe all five BOTTOM rocks")
+	_expect(found_terminal_duplicate, "deterministic coverage must include a transition/BOTTOM duplicate case")
 	_test_all_transition_choices()
+
+
+func _raw_sequence_terminal(province_id: int, world_seed: int, region_seed: int) -> Dictionary:
+	var roots := RockLayerRules.root_pool_for(province_id)
+	var rng_seed := DeterministicRng.stable_mix(
+		DeterministicRng.stable_mix(world_seed, RockLayerRules.ROCK_SEQUENCE_SALT), region_seed
+	)
+	var rng := DeterministicRng.new(rng_seed)
+	var node := roots[RockLayerRules._choice_index(rng.next_float(), roots.size())]
+	var last_transition_rock := -1
+	while node != RockLayerRules.LayerNode.BOTTOM:
+		var choices := RockLayerRules.choices_for(node)
+		var choice := choices[RockLayerRules._choice_index(rng.next_float(), choices.size())]
+		last_transition_rock = choice.x
+		node = choice.y
+	var bottom_pool := RockLayerRules.bottom_pool()
+	var terminal_rock := bottom_pool[
+		RockLayerRules._choice_index(rng.next_float(), bottom_pool.size())
+	]
+	return {"last_transition_rock": last_transition_rock, "terminal_rock": terminal_rock}
 
 
 func _test_all_transition_choices() -> void:
@@ -200,7 +260,7 @@ func _test_province_regions_are_continuous() -> void:
 	var count := 1200
 	var graph := _line_graph(count, 99)
 	var terrain := _all_land_terrain(count)
-	var geology := GeologyGenerator.generate(graph, terrain)
+	var geology := GeologyGenerator.generate(graph, _uniform_composition(count, 20), terrain)
 	_expect(geology != null, "Province continuity world should generate")
 	if geology == null:
 		return
@@ -221,7 +281,7 @@ func _test_rock_regions_are_continuous() -> void:
 	var count := 400
 	var graph := _line_graph(count, 123)
 	var terrain := _all_land_terrain(count)
-	var geology := GeologyGenerator.generate(graph, terrain)
+	var geology := GeologyGenerator.generate(graph, _uniform_composition(count, 20), terrain)
 	_expect(geology != null, "Rock Region continuity world should generate")
 	if geology == null:
 		return
@@ -242,7 +302,7 @@ func _test_flat_landmass_does_not_force_orogenic_quota() -> void:
 	var count := 8000
 	var graph := _line_graph(count, 31415)
 	var terrain := _flat_terrain(count)
-	var geology := GeologyGenerator.generate(graph, terrain)
+	var geology := GeologyGenerator.generate(graph, _uniform_composition(count, 20), terrain)
 	_expect(geology != null, "flat landmass should generate Geology")
 	if geology == null:
 		return
@@ -353,6 +413,13 @@ func _line_graph(cell_count: int, world_seed: int) -> SpatialGraph:
 	return graph
 
 
+func _uniform_composition(cell_count: int, continental_value: int) -> WorldCompositionLayer:
+	var composition := WorldCompositionLayer.new()
+	composition.continental_value.resize(cell_count)
+	composition.continental_value.fill(continental_value)
+	return composition
+
+
 func _mixed_terrain(cell_count: int) -> TerrainHeightLayer:
 	var terrain := TerrainHeightLayer.new()
 	terrain.terrain_height.resize(cell_count)
@@ -451,6 +518,25 @@ func _count_transitions(values: PackedInt32Array) -> int:
 		if values[cell_id] != values[cell_id - 1]:
 			transitions += 1
 	return transitions
+
+
+func _cells_are_connected(graph: SpatialGraph, cells: PackedInt32Array) -> bool:
+	if cells.is_empty():
+		return false
+	var allowed := {}
+	for cell_id in cells:
+		allowed[cell_id] = true
+	var reached := {cells[0]: true}
+	var queue := PackedInt32Array([cells[0]])
+	var index := 0
+	while index < queue.size():
+		var cell_id := queue[index]
+		index += 1
+		for neighbor_id in graph.cell_neighbors[cell_id]:
+			if allowed.has(neighbor_id) and not reached.has(neighbor_id):
+				reached[neighbor_id] = true
+				queue.append(neighbor_id)
+	return reached.size() == cells.size()
 
 
 func _minimum_run_length(values: PackedInt32Array) -> int:

@@ -287,7 +287,7 @@ func _standard_world_fixture() -> Dictionary:
 		return {}
 	var composition := WorldCompositionGenerator.generate(graph, WorldCompositionConfig.new(1, &"continents"))
 	var projected := TerrainHeightProjector.project(composition.continental_value)
-	var geology := GeologyGenerator.generate(graph, projected)
+	var geology := GeologyGenerator.generate(graph, composition, projected)
 	var climate_settings := WorldClimateSettings.new(70.0, -20.0)
 	var preliminary_climate := WorldClimateGenerator.generate(graph, projected, climate_settings)
 	var hydrology_settings := WorldHydrologySettings.new()
@@ -304,7 +304,7 @@ func _standard_world_fixture() -> Dictionary:
 		geology, SurfaceWaterSettings.new()
 	)
 	var strata := SubsurfaceStrataGenerator.generate(
-		graph, composition, terrain, geology, 1, SubsurfaceStrataSettings.new()
+		graph, terrain, geology, 1, SubsurfaceStrataSettings.new()
 	)
 	return {
 		"graph": graph,

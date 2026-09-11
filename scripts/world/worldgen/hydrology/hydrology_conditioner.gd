@@ -135,10 +135,11 @@ static func _inputs_are_valid(
 				or preliminary_flow.flow_accumulation[cell_id] < preliminary_flow.local_runoff[cell_id]:
 			push_error("HydrologyConditioner Preliminary Flow values must be finite and non-negative")
 			return false
-	var geology_errors := GeologyValidator.validate(graph, terrain, geology)
-	if not geology_errors.is_empty():
-		push_error("HydrologyConditioner received invalid Geology: " + "; ".join(geology_errors))
-		return false
+		if not is_finite(geology.erodibility[cell_id]) \
+				or geology.erodibility[cell_id] < 0.0 \
+				or geology.erodibility[cell_id] > 1.0:
+			push_error("HydrologyConditioner Geology erodibility must be finite and inside [0, 1]")
+			return false
 	return true
 
 
